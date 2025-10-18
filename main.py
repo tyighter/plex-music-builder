@@ -40,7 +40,7 @@ SAVE_INTERVAL = runtime_cfg.get("save_interval", 100)  # save cache every N item
 PLAYLIST_CHUNK_SIZE = runtime_cfg.get("playlist_chunk_size", 200)
 
 logging_cfg = cfg.get("logging", {})
-LOG_LEVEL = logging_cfg.get("level", "INFO").upper()
+LOG_LEVEL = logging_cfg.get("level", "DEBUG").upper()
 LOG_FILE = logging_cfg.get("file", "/app/logs/plex_music_builder.log")
 ACTIVE_LOG_FILE = None
 
@@ -130,12 +130,11 @@ def _create_playlist_log_handler(playlist_name):
     os.makedirs(PLAYLIST_LOG_DIR, exist_ok=True)
 
     thread_id = threading.get_ident()
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
     safe_name = _sanitize_playlist_name(playlist_name)
-    filename = f"{safe_name}.{timestamp}.{thread_id}.debug.log"
+    filename = f"{safe_name}.debug.log"
     filepath = os.path.join(PLAYLIST_LOG_DIR, filename)
 
-    handler = logging.FileHandler(filepath, encoding="utf-8")
+    handler = logging.FileHandler(filepath, mode="w", encoding="utf-8")
     handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(playlist)s | %(message)s")
     handler.setFormatter(formatter)
