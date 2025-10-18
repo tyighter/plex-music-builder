@@ -21,6 +21,9 @@ def load_yaml(path):
 
 cfg = load_yaml("/app/config.yml")
 
+PLAYLISTS_FILE = "/app/playlists.yml"
+PLAYLISTS_BASE_DIR = os.path.dirname(PLAYLISTS_FILE) or "."
+
 # Backward compatible config loading
 if isinstance(cfg.get("plex"), dict):
     PLEX_URL = cfg["plex"].get("PLEX_URL")
@@ -150,7 +153,7 @@ plex = PlexServer(PLEX_URL, PLEX_TOKEN)
 # ----------------------------
 # Load Playlists Definition
 # ----------------------------
-raw_playlists = load_yaml("/app/playlists.yml")
+raw_playlists = load_yaml(PLAYLISTS_FILE)
 playlists_data = raw_playlists.get("playlists", {}) if isinstance(raw_playlists, dict) else {}
 
 # ----------------------------
@@ -178,6 +181,63 @@ def chunked(iterable, size):
         size = 1
     for idx in range(0, len(iterable), size):
         yield iterable[idx : idx + size]
+
+
+def resolve_cover_path(cover):
+    """Resolve a cover path relative to the playlists file, if needed."""
+    if not cover:
+        return None
+
+    cover = os.path.expanduser(str(cover).strip())
+    if not cover:
+        return None
+
+    candidate_paths = []
+    if os.path.isabs(cover):
+        candidate_paths.append(cover)
+    else:
+        candidate_paths.append(os.path.join(PLAYLISTS_BASE_DIR, cover))
+        candidate_paths.append(os.path.abspath(cover))
+
+    for candidate in candidate_paths:
+        if os.path.exists(candidate):
+            return candidate
+
+    return None
+
+
+def apply_playlist_cover(playlist_obj, cover):
+    """Upload a custom cover image for a playlist if requested."""
+    if not playlist_obj or not cover:
+        return
+
+    resolved_path = resolve_cover_path(cover)
+    if not resolved_path:
+        logger.warning(
+            "Cover image '%s' was not found on disk; skipping cover upload.",
+            cover,
+        )
+        return
+
+    if not hasattr(playlist_obj, "uploadPoster"):
+        logger.debug("Playlist object does not support custom posters; skipping cover upload.")
+        return
+
+    try:
+        playlist_obj.uploadPoster(resolved_path)
+    except Exception as exc:
+        logger.warning(
+            "Failed to upload cover '%s' for playlist '%s': %s",
+            resolved_path,
+            getattr(playlist_obj, "title", "<unknown>"),
+            exc,
+        )
+    else:
+        logger.info(
+            "Applied custom cover to playlist '%s' from '%s'",
+            getattr(playlist_obj, "title", "<unknown>"),
+            resolved_path,
+        )
 
 def fetch_full_metadata(rating_key):
     """Fetch and cache full metadata for a Plex item (track, album, or artist)."""
@@ -338,6 +398,7 @@ def process_playlist(name, config):
         library = plex.library.section(config.get("library", LIBRARY_NAME))
         limit = config.get("limit")
         sort_by = config.get("sort_by")
+        cover_path = config.get("cover")
         sort_field_aliases = {
             "popularity": "ratingCount",
         }
@@ -444,6 +505,7 @@ def process_playlist(name, config):
                 except Exception as exc:
                     logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
                 deleted_existing = True
+            apply_playlist_cover(playlist_obj, cover_path)
             logger.info(f"Playlist '{name}' → {match_count} matching tracks")
             if match_count == 0:
                 logger.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
@@ -582,6 +644,7 @@ def process_playlist(name, config):
                 logger.error(f"Failed to update playlist '{name}': {exc}")
                 raise
 
+        apply_playlist_cover(playlist_obj, cover_path)
         logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
     finally:
         if playlist_handler:
