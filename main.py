@@ -6,6 +6,7 @@ import json
 import time
 from plexapi.server import PlexServer
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import cmp_to_key
 from xml.etree import ElementTree as ET
 from tqdm import tqdm
 
@@ -170,6 +171,38 @@ def parse_field_from_xml(xml_text, field):
 # ----------------------------
 # Attribute Retrieval (with Cache)
 # ----------------------------
+def get_track_popularity(track):
+    """Retrieve a track's popularity from Plex metadata, caching the result on the object."""
+    existing = getattr(track, "popularity", None)
+    if existing not in (None, ""):
+        return existing
+
+    rating_key = getattr(track, "ratingKey", None)
+    if not rating_key:
+        return None
+
+    try:
+        xml_text = fetch_full_metadata(rating_key)
+    except Exception as exc:
+        logger.debug(f"Unable to fetch metadata for popularity (key={rating_key}): {exc}")
+        return None
+
+    popularity_value = parse_field_from_xml(xml_text, "popularity")
+    if popularity_value in (None, ""):
+        return None
+
+    try:
+        popularity_number = float(popularity_value)
+    except (TypeError, ValueError):
+        logger.debug(
+            "Unexpected popularity value for ratingKey %s: %r", rating_key, popularity_value
+        )
+        return None
+
+    setattr(track, "popularity", popularity_number)
+    return popularity_number
+
+
 def get_field_value(track, field):
     """Retrieve and merge a field (e.g., genres) from track, album, and artist levels with caching."""
     values = set()  # use a set to avoid duplicates
@@ -367,7 +400,68 @@ def process_playlist(name, config):
         return
 
     if sort_by:
-        matched_tracks.sort(key=lambda t: getattr(t, sort_by, None), reverse=True)
+        sort_desc = config.get("sort_desc", True)
+
+        def _normalize_sort_value(value):
+            """Return a comparable representation for sorting, handling mixed types safely."""
+            if value is None:
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                return value.lower()
+            # Support datetime-like objects
+            if hasattr(value, "timestamp"):
+                try:
+                    return float(value.timestamp())
+                except Exception:
+                    pass
+            if hasattr(value, "isoformat"):
+                try:
+                    return value.isoformat()
+                except Exception:
+                    pass
+            return str(value)
+
+        def _get_sort_value(track):
+            if sort_by == "popularity":
+                return get_track_popularity(track)
+            return getattr(track, sort_by, None)
+
+        def _compare_tracks(left, right):
+            left_val = _get_sort_value(left)
+            right_val = _get_sort_value(right)
+
+            if left_val is None and right_val is None:
+                return 0
+            if left_val is None:
+                return 1
+            if right_val is None:
+                return -1
+
+            left_key = _normalize_sort_value(left_val)
+            right_key = _normalize_sort_value(right_val)
+
+            try:
+                if left_key < right_key:
+                    result = -1
+                elif left_key > right_key:
+                    result = 1
+                else:
+                    result = 0
+            except TypeError:
+                left_key = str(left_key)
+                right_key = str(right_key)
+                if left_key < right_key:
+                    result = -1
+                elif left_key > right_key:
+                    result = 1
+                else:
+                    result = 0
+
+            return -result if sort_desc else result
+
+        matched_tracks.sort(key=cmp_to_key(_compare_tracks))
     if limit:
         matched_tracks = matched_tracks[:limit]
         match_count = len(matched_tracks)
