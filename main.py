@@ -1,9 +1,11 @@
 import os
+import re
 import yaml
 import logging
 import requests
 import json
 import time
+import threading
 from plexapi.server import PlexServer
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key
@@ -41,6 +43,16 @@ logging_cfg = cfg.get("logging", {})
 LOG_LEVEL = logging_cfg.get("level", "INFO").upper()
 LOG_FILE = logging_cfg.get("file", "/app/logs/plex_music_builder.log")
 ACTIVE_LOG_FILE = None
+
+_default_log_dir = os.path.dirname(LOG_FILE) if LOG_FILE else ""
+if not _default_log_dir:
+    _default_log_dir = "/app/logs"
+
+PLAYLIST_LOG_DIR = logging_cfg.get("playlist_debug_dir")
+if isinstance(PLAYLIST_LOG_DIR, str) and not PLAYLIST_LOG_DIR.strip():
+    PLAYLIST_LOG_DIR = None
+if PLAYLIST_LOG_DIR is None:
+    PLAYLIST_LOG_DIR = os.path.join(_default_log_dir, "playlists")
 
 if not PLEX_URL or not PLEX_TOKEN:
     raise EnvironmentError("PLEX_URL and PLEX_TOKEN must be set in config.yml")
@@ -87,6 +99,49 @@ def setup_logging():
 logger = setup_logging()
 if ACTIVE_LOG_FILE:
     logger.info(f"Detailed logs will be written to: {ACTIVE_LOG_FILE}")
+
+
+class PlaylistThreadFilter(logging.Filter):
+    """Filter log records to a specific thread and inject playlist metadata."""
+
+    def __init__(self, playlist_name, thread_id):
+        super().__init__()
+        self.playlist_name = playlist_name
+        self.thread_id = thread_id
+
+    def filter(self, record):
+        if record.thread != self.thread_id:
+            return False
+        record.playlist = self.playlist_name
+        return True
+
+
+def _sanitize_playlist_name(name):
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", name.strip())
+    return sanitized or "playlist"
+
+
+def _create_playlist_log_handler(playlist_name):
+    """Create a log handler that captures logs for a specific playlist."""
+
+    if not PLAYLIST_LOG_DIR:
+        return None, None
+
+    os.makedirs(PLAYLIST_LOG_DIR, exist_ok=True)
+
+    thread_id = threading.get_ident()
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    safe_name = _sanitize_playlist_name(playlist_name)
+    filename = f"{safe_name}.{timestamp}.{thread_id}.debug.log"
+    filepath = os.path.join(PLAYLIST_LOG_DIR, filename)
+
+    handler = logging.FileHandler(filepath, encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(playlist)s | %(message)s")
+    handler.setFormatter(formatter)
+    handler.addFilter(PlaylistThreadFilter(playlist_name, thread_id))
+
+    return handler, filepath
 
 # ----------------------------
 # Connect to Plex
@@ -260,256 +315,283 @@ def check_condition(value, operator, expected, match_all=True):
 # Playlist Builder
 # ----------------------------
 def process_playlist(name, config):
-    logger.info(f"Building playlist: {name}")
-    filters = config.get("plex_filter", [])
-    library = plex.library.section(config.get("library", LIBRARY_NAME))
-    limit = config.get("limit")
-    sort_by = config.get("sort_by")
-    sort_field_aliases = {
-        "popularity": "ratingCount",
-    }
-    resolved_sort_by = sort_field_aliases.get(sort_by, sort_by)
-    if sort_by and sort_by != resolved_sort_by:
-        logger.debug(
-            "Sort field '%s' mapped to Plex field '%s'",
-            sort_by,
-            resolved_sort_by,
-        )
-    chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
-    stream_requested = config.get("stream_while_filtering", False)
-    stream_enabled = stream_requested and not sort_by and not limit
-
-    all_tracks = library.searchTracks()
-    total_tracks = len(all_tracks)
-    logger.info(f"Fetched {total_tracks} tracks from {config.get('library', LIBRARY_NAME)}")
+    playlist_handler = None
+    playlist_log_path = None
 
     try:
-        existing = plex.playlist(name)
-    except Exception:
-        existing = None
-    deleted_existing = False
+        try:
+            playlist_handler, playlist_log_path = _create_playlist_log_handler(name)
+        except Exception as exc:
+            logger.warning(f"Unable to create debug log for '{name}': {exc}")
+            playlist_handler = None
+            playlist_log_path = None
 
-    matched_tracks = []
-    stream_buffer = []
-    playlist_obj = None
-    match_count = 0
-    debug_logging = logger.isEnabledFor(logging.DEBUG)
+        if playlist_handler:
+            logger.addHandler(playlist_handler)
+            logger.debug(
+                "Per-playlist debug logging for '%s' → %s",
+                name,
+                playlist_log_path,
+            )
 
-    def flush_stream_buffer():
-        nonlocal playlist_obj, stream_buffer, deleted_existing
-        if not stream_buffer:
+        logger.info(f"Building playlist: {name}")
+        filters = config.get("plex_filter", [])
+        library = plex.library.section(config.get("library", LIBRARY_NAME))
+        limit = config.get("limit")
+        sort_by = config.get("sort_by")
+        sort_field_aliases = {
+            "popularity": "ratingCount",
+        }
+        resolved_sort_by = sort_field_aliases.get(sort_by, sort_by)
+        if sort_by and sort_by != resolved_sort_by:
+            logger.debug(
+                "Sort field '%s' mapped to Plex field '%s'",
+                sort_by,
+                resolved_sort_by,
+            )
+        chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
+        stream_requested = config.get("stream_while_filtering", False)
+        stream_enabled = stream_requested and not sort_by and not limit
+
+        all_tracks = library.searchTracks()
+        total_tracks = len(all_tracks)
+        logger.info(f"Fetched {total_tracks} tracks from {config.get('library', LIBRARY_NAME)}")
+
+        try:
+            existing = plex.playlist(name)
+        except Exception:
+            existing = None
+        deleted_existing = False
+
+        matched_tracks = []
+        stream_buffer = []
+        playlist_obj = None
+        match_count = 0
+        debug_logging = logger.isEnabledFor(logging.DEBUG)
+
+        def flush_stream_buffer():
+            nonlocal playlist_obj, stream_buffer, deleted_existing
+            if not stream_buffer:
+                return
+            if existing and not deleted_existing:
+                try:
+                    existing.delete()
+                except Exception as exc:
+                    logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
+                deleted_existing = True
+            try:
+                if playlist_obj is None:
+                    playlist_obj = plex.createPlaylist(name, items=list(stream_buffer))
+                else:
+                    playlist_obj.addItems(list(stream_buffer))
+            except Exception as exc:
+                logger.error(f"Failed to update playlist '{name}': {exc}")
+                raise
+            finally:
+                stream_buffer.clear()
+
+        with tqdm(total=total_tracks, desc=f"Filtering '{name}'", unit="track", dynamic_ncols=True) as pbar:
+            for track in all_tracks:
+                keep = True
+                if debug_logging:
+                    track_title = getattr(track, "title", "<unknown title>")
+                    track_artist = getattr(track, "grandparentTitle", "<unknown artist>")
+                    track_album = getattr(track, "parentTitle", "<unknown album>")
+                    logger.debug(
+                        "Evaluating track '%s' by '%s' on '%s' (ratingKey=%s)",
+                        track_title,
+                        track_artist,
+                        track_album,
+                        getattr(track, "ratingKey", "<no-key>")
+                    )
+                for f in filters:
+                    field = f["field"]
+                    operator = f["operator"]
+                    expected = f["value"]
+                    match_all = f.get("match_all", True)
+
+                    val = get_field_value(track, field)
+                    if debug_logging:
+                        logger.debug(
+                            "  Condition: field='%s', operator='%s', expected=%s, match_all=%s",
+                            field,
+                            operator,
+                            expected,
+                            match_all
+                        )
+                        logger.debug("    Extracted value: %s", val)
+                    if not check_condition(val, operator, expected, match_all):
+                        if debug_logging:
+                            logger.debug("    ❌ Condition failed for field '%s'", field)
+                        keep = False
+                        break
+                if keep:
+                    match_count += 1
+                    if stream_enabled:
+                        stream_buffer.append(track)
+                        if len(stream_buffer) >= chunk_size:
+                            flush_stream_buffer()
+                    else:
+                        matched_tracks.append(track)
+                    if debug_logging:
+                        logger.debug("    ✅ Track matched all conditions")
+                pbar.update(1)
+
+        if stream_enabled:
+            flush_stream_buffer()
+            if not deleted_existing and existing:
+                try:
+                    existing.delete()
+                except Exception as exc:
+                    logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
+                deleted_existing = True
+            logger.info(f"Playlist '{name}' → {match_count} matching tracks")
+            if match_count == 0:
+                logger.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
+            logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
             return
+
+        if resolved_sort_by:
+            sort_desc = config.get("sort_desc", True)
+            sort_value_cache = {}
+
+            def _get_sort_value(track):
+                cache_key = getattr(track, "ratingKey", None)
+                if cache_key in sort_value_cache:
+                    return sort_value_cache[cache_key]
+
+                value = getattr(track, resolved_sort_by, None)
+                if value is not None:
+                    sort_value_cache[cache_key] = value
+                    return value
+
+                try:
+                    xml_text = fetch_full_metadata(track.ratingKey)
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to fetch metadata for sorting field '%s' on ratingKey=%s: %s",
+                        resolved_sort_by,
+                        getattr(track, "ratingKey", "<no-key>"),
+                        exc,
+                    )
+                    sort_value_cache[cache_key] = None
+                    return None
+
+                xml_value = parse_field_from_xml(xml_text, resolved_sort_by)
+
+                if isinstance(xml_value, (list, set, tuple)):
+                    xml_value = next(iter(xml_value), None)
+
+                if isinstance(xml_value, str):
+                    stripped = xml_value.strip()
+                    if stripped:
+                        try:
+                            sort_value_cache[cache_key] = float(stripped)
+                            return sort_value_cache[cache_key]
+                        except ValueError:
+                            sort_value_cache[cache_key] = stripped
+                            return sort_value_cache[cache_key]
+                    sort_value_cache[cache_key] = None
+                    return None
+
+                if isinstance(xml_value, (int, float)):
+                    sort_value_cache[cache_key] = float(xml_value)
+                    return sort_value_cache[cache_key]
+
+                sort_value_cache[cache_key] = xml_value
+                return xml_value
+
+            def _normalize_sort_value(value):
+                """Return a comparable representation for sorting, handling mixed types safely."""
+                if value is None:
+                    return None
+                if isinstance(value, (int, float)):
+                    return float(value)
+                if isinstance(value, str):
+                    return value.lower()
+                # Support datetime-like objects
+                if hasattr(value, "timestamp"):
+                    try:
+                        return float(value.timestamp())
+                    except Exception:
+                        pass
+                if hasattr(value, "isoformat"):
+                    try:
+                        return value.isoformat()
+                    except Exception:
+                        pass
+                return str(value)
+
+            def _compare_tracks(left, right):
+                left_val = _get_sort_value(left)
+                right_val = _get_sort_value(right)
+
+                if left_val is None and right_val is None:
+                    return 0
+                if left_val is None:
+                    return 1
+                if right_val is None:
+                    return -1
+
+                left_key = _normalize_sort_value(left_val)
+                right_key = _normalize_sort_value(right_val)
+
+                try:
+                    if left_key < right_key:
+                        result = -1
+                    elif left_key > right_key:
+                        result = 1
+                    else:
+                        result = 0
+                except TypeError:
+                    left_key = str(left_key)
+                    right_key = str(right_key)
+                    if left_key < right_key:
+                        result = -1
+                    elif left_key > right_key:
+                        result = 1
+                    else:
+                        result = 0
+
+                return -result if sort_desc else result
+
+            matched_tracks.sort(key=cmp_to_key(_compare_tracks))
+        if limit:
+            matched_tracks = matched_tracks[:limit]
+            match_count = len(matched_tracks)
+
+        logger.info(f"Playlist '{name}' → {match_count} matching tracks")
+
         if existing and not deleted_existing:
             try:
                 existing.delete()
             except Exception as exc:
                 logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
-            deleted_existing = True
-        try:
-            if playlist_obj is None:
-                playlist_obj = plex.createPlaylist(name, items=list(stream_buffer))
-            else:
-                playlist_obj.addItems(list(stream_buffer))
-        except Exception as exc:
-            logger.error(f"Failed to update playlist '{name}': {exc}")
-            raise
-        finally:
-            stream_buffer.clear()
 
-    with tqdm(total=total_tracks, desc=f"Filtering '{name}'", unit="track", dynamic_ncols=True) as pbar:
-        for track in all_tracks:
-            keep = True
-            if debug_logging:
-                track_title = getattr(track, "title", "<unknown title>")
-                track_artist = getattr(track, "grandparentTitle", "<unknown artist>")
-                track_album = getattr(track, "parentTitle", "<unknown album>")
-                logger.debug(
-                    "Evaluating track '%s' by '%s' on '%s' (ratingKey=%s)",
-                    track_title,
-                    track_artist,
-                    track_album,
-                    getattr(track, "ratingKey", "<no-key>")
-                )
-            for f in filters:
-                field = f["field"]
-                operator = f["operator"]
-                expected = f["value"]
-                match_all = f.get("match_all", True)
-
-                val = get_field_value(track, field)
-                if debug_logging:
-                    logger.debug(
-                        "  Condition: field='%s', operator='%s', expected=%s, match_all=%s",
-                        field,
-                        operator,
-                        expected,
-                        match_all
-                    )
-                    logger.debug("    Extracted value: %s", val)
-                if not check_condition(val, operator, expected, match_all):
-                    if debug_logging:
-                        logger.debug("    ❌ Condition failed for field '%s'", field)
-                    keep = False
-                    break
-            if keep:
-                match_count += 1
-                if stream_enabled:
-                    stream_buffer.append(track)
-                    if len(stream_buffer) >= chunk_size:
-                        flush_stream_buffer()
-                else:
-                    matched_tracks.append(track)
-                if debug_logging:
-                    logger.debug("    ✅ Track matched all conditions")
-            pbar.update(1)
-
-    if stream_enabled:
-        flush_stream_buffer()
-        if not deleted_existing and existing:
-            try:
-                existing.delete()
-            except Exception as exc:
-                logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
-            deleted_existing = True
-        logger.info(f"Playlist '{name}' → {match_count} matching tracks")
-        if match_count == 0:
+        if not matched_tracks:
             logger.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
-        logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
-        return
+            logger.info(f"✅ Finished building '{name}' (0 tracks)")
+            return
 
-    if resolved_sort_by:
-        sort_desc = config.get("sort_desc", True)
-        sort_value_cache = {}
-
-        def _get_sort_value(track):
-            cache_key = getattr(track, "ratingKey", None)
-            if cache_key in sort_value_cache:
-                return sort_value_cache[cache_key]
-
-            value = getattr(track, resolved_sort_by, None)
-            if value is not None:
-                sort_value_cache[cache_key] = value
-                return value
-
+        for chunk in chunked(matched_tracks, chunk_size):
             try:
-                xml_text = fetch_full_metadata(track.ratingKey)
+                if playlist_obj is None:
+                    playlist_obj = plex.createPlaylist(name, items=chunk)
+                else:
+                    playlist_obj.addItems(chunk)
             except Exception as exc:
-                logger.debug(
-                    "Failed to fetch metadata for sorting field '%s' on ratingKey=%s: %s",
-                    resolved_sort_by,
-                    getattr(track, "ratingKey", "<no-key>"),
-                    exc,
-                )
-                sort_value_cache[cache_key] = None
-                return None
+                logger.error(f"Failed to update playlist '{name}': {exc}")
+                raise
 
-            xml_value = parse_field_from_xml(xml_text, resolved_sort_by)
-
-            if isinstance(xml_value, (list, set, tuple)):
-                xml_value = next(iter(xml_value), None)
-
-            if isinstance(xml_value, str):
-                stripped = xml_value.strip()
-                if stripped:
-                    try:
-                        sort_value_cache[cache_key] = float(stripped)
-                        return sort_value_cache[cache_key]
-                    except ValueError:
-                        sort_value_cache[cache_key] = stripped
-                        return sort_value_cache[cache_key]
-                sort_value_cache[cache_key] = None
-                return None
-
-            if isinstance(xml_value, (int, float)):
-                sort_value_cache[cache_key] = float(xml_value)
-                return sort_value_cache[cache_key]
-
-            sort_value_cache[cache_key] = xml_value
-            return xml_value
-
-        def _normalize_sort_value(value):
-            """Return a comparable representation for sorting, handling mixed types safely."""
-            if value is None:
-                return None
-            if isinstance(value, (int, float)):
-                return float(value)
-            if isinstance(value, str):
-                return value.lower()
-            # Support datetime-like objects
-            if hasattr(value, "timestamp"):
-                try:
-                    return float(value.timestamp())
-                except Exception:
-                    pass
-            if hasattr(value, "isoformat"):
-                try:
-                    return value.isoformat()
-                except Exception:
-                    pass
-            return str(value)
-
-        def _compare_tracks(left, right):
-            left_val = _get_sort_value(left)
-            right_val = _get_sort_value(right)
-
-            if left_val is None and right_val is None:
-                return 0
-            if left_val is None:
-                return 1
-            if right_val is None:
-                return -1
-
-            left_key = _normalize_sort_value(left_val)
-            right_key = _normalize_sort_value(right_val)
-
-            try:
-                if left_key < right_key:
-                    result = -1
-                elif left_key > right_key:
-                    result = 1
-                else:
-                    result = 0
-            except TypeError:
-                left_key = str(left_key)
-                right_key = str(right_key)
-                if left_key < right_key:
-                    result = -1
-                elif left_key > right_key:
-                    result = 1
-                else:
-                    result = 0
-
-            return -result if sort_desc else result
-
-        matched_tracks.sort(key=cmp_to_key(_compare_tracks))
-    if limit:
-        matched_tracks = matched_tracks[:limit]
-        match_count = len(matched_tracks)
-
-    logger.info(f"Playlist '{name}' → {match_count} matching tracks")
-
-    if existing and not deleted_existing:
-        try:
-            existing.delete()
-        except Exception as exc:
-            logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
-
-    if not matched_tracks:
-        logger.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
-        logger.info(f"✅ Finished building '{name}' (0 tracks)")
-        return
-
-    for chunk in chunked(matched_tracks, chunk_size):
-        try:
-            if playlist_obj is None:
-                playlist_obj = plex.createPlaylist(name, items=chunk)
-            else:
-                playlist_obj.addItems(chunk)
-        except Exception as exc:
-            logger.error(f"Failed to update playlist '{name}': {exc}")
-            raise
-
-    logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
+        logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
+    finally:
+        if playlist_handler:
+            logger.debug(
+                "Closing per-playlist debug logging for '%s'",
+                name,
+            )
+            logger.removeHandler(playlist_handler)
+            playlist_handler.close()
 
 # ----------------------------
 # Cache-only Mode with Resume
