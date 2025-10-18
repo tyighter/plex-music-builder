@@ -1,9 +1,69 @@
 playlists:
-     
-  Alt Hip Hop 1000:
+  Alt Hip Hop:
     limit: 1000
     sort_by: popularity
+    cover: /images/althiphop.png
     plex_filter:
       - field: genres
         operator: equals
         value: Alternative Hip Hop
+
+  Classic Rock:
+    limit: 1000
+    sort_by: popularity
+    cover: /images/classic_rock.png
+    plex_filter:
+      - field: parentYear
+        operator: greater_than
+        value: 1963
+      - field: parentYear
+        operator: less_than
+        value: 1990
+      - field: genres
+        operator: equals
+        value:
+          - Hard Rock
+          - Arena Rock
+          - Classic Rock
+          - AOR
+      - field: genres
+        operator: does_not_equal
+        value:
+          - Speed Metal
+          - Thrash Metal
+        match_all: false
+      - field: artist
+        operator: does_not_equal
+        value: Various Artists
+
+  Is it New Wave?:
+    limit: 1000
+    sort_by: popularity
+    cover: /images/punkwave9.png
+    plex_filter:
+      - field: parentYear
+        operator: greater_than
+        value: 1975
+      - field: parentYear
+        operator: less_than
+        value: 1990
+      - field: genres
+        operator: equals
+        value:
+          - New Wave
+          - Post-Punk
+          - Punk Rock
+          - Punk
+        match_all: false
+      - field: title
+        operator: does_not_contain
+        value: christmas
+
+  This is The Beatles:
+    cover: /images/this_is_beatles.png
+    limit: 40
+    sort_by: popularity
+    plex_filter:
+      - field: artist
+        operator: equals
+        value: The Beatles
