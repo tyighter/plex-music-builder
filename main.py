@@ -224,7 +224,7 @@ def apply_playlist_cover(playlist_obj, cover):
         return
 
     try:
-        playlist_obj.uploadPoster(resolved_path)
+        playlist_obj.uploadPoster(filepath=resolved_path)
     except Exception as exc:
         logger.warning(
             "Failed to upload cover '%s' for playlist '%s': %s",
