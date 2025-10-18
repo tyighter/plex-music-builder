@@ -369,6 +369,53 @@ def process_playlist(name, config):
 
     if sort_by:
         sort_desc = config.get("sort_desc", True)
+        sort_value_cache = {}
+
+        def _get_sort_value(track):
+            cache_key = getattr(track, "ratingKey", None)
+            if cache_key in sort_value_cache:
+                return sort_value_cache[cache_key]
+
+            value = getattr(track, sort_by, None)
+            if value is not None:
+                sort_value_cache[cache_key] = value
+                return value
+
+            try:
+                xml_text = fetch_full_metadata(track.ratingKey)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to fetch metadata for sorting field '%s' on ratingKey=%s: %s",
+                    sort_by,
+                    getattr(track, "ratingKey", "<no-key>"),
+                    exc,
+                )
+                sort_value_cache[cache_key] = None
+                return None
+
+            xml_value = parse_field_from_xml(xml_text, sort_by)
+
+            if isinstance(xml_value, (list, set, tuple)):
+                xml_value = next(iter(xml_value), None)
+
+            if isinstance(xml_value, str):
+                stripped = xml_value.strip()
+                if stripped:
+                    try:
+                        sort_value_cache[cache_key] = float(stripped)
+                        return sort_value_cache[cache_key]
+                    except ValueError:
+                        sort_value_cache[cache_key] = stripped
+                        return sort_value_cache[cache_key]
+                sort_value_cache[cache_key] = None
+                return None
+
+            if isinstance(xml_value, (int, float)):
+                sort_value_cache[cache_key] = float(xml_value)
+                return sort_value_cache[cache_key]
+
+            sort_value_cache[cache_key] = xml_value
+            return xml_value
 
         def _normalize_sort_value(value):
             """Return a comparable representation for sorting, handling mixed types safely."""
@@ -392,8 +439,8 @@ def process_playlist(name, config):
             return str(value)
 
         def _compare_tracks(left, right):
-            left_val = getattr(left, sort_by, None)
-            right_val = getattr(right, sort_by, None)
+            left_val = _get_sort_value(left)
+            right_val = _get_sort_value(right)
 
             if left_val is None and right_val is None:
                 return 0
