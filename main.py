@@ -34,6 +34,7 @@ RUN_FOREVER = runtime_cfg.get("run_forever", False)
 CACHE_ONLY = runtime_cfg.get("cache_only", False)
 REFRESH_INTERVAL = runtime_cfg.get("refresh_interval_minutes", 60)
 SAVE_INTERVAL = runtime_cfg.get("save_interval", 100)  # save cache every N items
+PLAYLIST_CHUNK_SIZE = runtime_cfg.get("playlist_chunk_size", 200)
 
 logging_cfg = cfg.get("logging", {})
 LOG_LEVEL = logging_cfg.get("level", "INFO").upper()
@@ -114,6 +115,14 @@ else:
 def save_cache():
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(metadata_cache, f)
+
+
+def chunked(iterable, size):
+    """Yield fixed-size chunks from a list."""
+    if size <= 0:
+        size = 1
+    for idx in range(0, len(iterable), size):
+        yield iterable[idx : idx + size]
 
 def fetch_full_metadata(rating_key):
     """Fetch and cache full metadata for a Plex item (track, album, or artist)."""
@@ -255,13 +264,46 @@ def process_playlist(name, config):
     library = plex.library.section(config.get("library", LIBRARY_NAME))
     limit = config.get("limit")
     sort_by = config.get("sort_by")
+    chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
+    stream_requested = config.get("stream_while_filtering", False)
+    stream_enabled = stream_requested and not sort_by and not limit
 
     all_tracks = library.searchTracks()
     total_tracks = len(all_tracks)
     logger.info(f"Fetched {total_tracks} tracks from {config.get('library', LIBRARY_NAME)}")
 
+    try:
+        existing = plex.playlist(name)
+    except Exception:
+        existing = None
+    deleted_existing = False
+
     matched_tracks = []
+    stream_buffer = []
+    playlist_obj = None
+    match_count = 0
     debug_logging = logger.isEnabledFor(logging.DEBUG)
+
+    def flush_stream_buffer():
+        nonlocal playlist_obj, stream_buffer, deleted_existing
+        if not stream_buffer:
+            return
+        if existing and not deleted_existing:
+            try:
+                existing.delete()
+            except Exception as exc:
+                logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
+            deleted_existing = True
+        try:
+            if playlist_obj is None:
+                playlist_obj = plex.createPlaylist(name, items=list(stream_buffer))
+            else:
+                playlist_obj.addItems(list(stream_buffer))
+        except Exception as exc:
+            logger.error(f"Failed to update playlist '{name}': {exc}")
+            raise
+        finally:
+            stream_buffer.clear()
 
     with tqdm(total=total_tracks, desc=f"Filtering '{name}'", unit="track", dynamic_ncols=True) as pbar:
         for track in all_tracks:
@@ -299,29 +341,61 @@ def process_playlist(name, config):
                     keep = False
                     break
             if keep:
-                matched_tracks.append(track)
+                match_count += 1
+                if stream_enabled:
+                    stream_buffer.append(track)
+                    if len(stream_buffer) >= chunk_size:
+                        flush_stream_buffer()
+                else:
+                    matched_tracks.append(track)
                 if debug_logging:
                     logger.debug("    ✅ Track matched all conditions")
             pbar.update(1)
+
+    if stream_enabled:
+        flush_stream_buffer()
+        if not deleted_existing and existing:
+            try:
+                existing.delete()
+            except Exception as exc:
+                logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
+            deleted_existing = True
+        logger.info(f"Playlist '{name}' → {match_count} matching tracks")
+        if match_count == 0:
+            logger.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
+        logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
+        return
 
     if sort_by:
         matched_tracks.sort(key=lambda t: getattr(t, sort_by, None), reverse=True)
     if limit:
         matched_tracks = matched_tracks[:limit]
+        match_count = len(matched_tracks)
 
-    logger.info(f"Playlist '{name}' → {len(matched_tracks)} matching tracks")
+    logger.info(f"Playlist '{name}' → {match_count} matching tracks")
 
-    try:
-        existing = plex.playlist(name)
-        if existing:
+    if existing and not deleted_existing:
+        try:
             existing.delete()
-    except Exception:
-        pass
+        except Exception as exc:
+            logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
 
-    if matched_tracks:
-        plex.createPlaylist(name, items=matched_tracks)
+    if not matched_tracks:
+        logger.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
+        logger.info(f"✅ Finished building '{name}' (0 tracks)")
+        return
 
-    logger.info(f"✅ Finished building '{name}' ({len(matched_tracks)} tracks)")
+    for chunk in chunked(matched_tracks, chunk_size):
+        try:
+            if playlist_obj is None:
+                playlist_obj = plex.createPlaylist(name, items=chunk)
+            else:
+                playlist_obj.addItems(chunk)
+        except Exception as exc:
+            logger.error(f"Failed to update playlist '{name}': {exc}")
+            raise
+
+    logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
 
 # ----------------------------
 # Cache-only Mode with Resume
@@ -365,10 +439,24 @@ def build_metadata_cache():
 # Main Runtime Logic
 # ----------------------------
 def run_all_playlists():
+    if not playlists_data:
+        logger.warning("No playlists defined. Nothing to process.")
+        return
+
+    errors = False
     with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(process_playlist, name, cfg) for name, cfg in playlists_data.items()]
-        for f in as_completed(futures):
-            f.result()
+        futures = {executor.submit(process_playlist, name, cfg): name for name, cfg in playlists_data.items()}
+        for future in as_completed(futures):
+            playlist_name = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                errors = True
+                logger.exception(f"Playlist '{playlist_name}' failed: {exc}")
+
+    if errors:
+        raise RuntimeError("One or more playlists failed to build.")
+
     logger.info("✅ All playlists processed successfully.")
 
 if __name__ == "__main__":
@@ -378,8 +466,15 @@ if __name__ == "__main__":
     elif RUN_FOREVER:
         logger.info("Running in loop mode.")
         while True:
-            run_all_playlists()
+            try:
+                run_all_playlists()
+            except Exception as exc:
+                logger.exception(f"Error while processing playlists: {exc}")
             logger.info(f"Sleeping for {REFRESH_INTERVAL} minutes before next run...")
-            time.sleep(REFRESH_INTERVAL * 60)
+            try:
+                time.sleep(max(REFRESH_INTERVAL, 0) * 60)
+            except KeyboardInterrupt:
+                logger.info("Loop interrupted by user. Exiting.")
+                break
     else:
         run_all_playlists()
