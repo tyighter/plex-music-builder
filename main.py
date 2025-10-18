@@ -104,6 +104,32 @@ if ACTIVE_LOG_FILE:
     logger.info(f"Detailed logs will be written to: {ACTIVE_LOG_FILE}")
 
 
+# Mapping of user-friendly filter fields to the Plex attribute names
+# exposed on track metadata objects. These aliases line up with the
+# guidance documented in ``legend.txt`` so that filters like
+# ``field: artist`` transparently evaluate the underlying
+# ``grandparentTitle`` value returned by Plex.
+FIELD_ALIASES = {
+    # Artist level shortcuts
+    "artist": "grandparentTitle",
+    "artist.title": "grandparentTitle",
+    "artist.id": "grandparentRatingKey",
+    "artist.ratingKey": "grandparentRatingKey",
+    "artist.guid": "grandparentGuid",
+    "artist.thumb": "grandparentThumb",
+    "artist.art": "grandparentArt",
+    # Album level shortcuts
+    "album": "parentTitle",
+    "album.title": "parentTitle",
+    "album.id": "parentRatingKey",
+    "album.ratingKey": "parentRatingKey",
+    "album.guid": "parentGuid",
+    "album.thumb": "parentThumb",
+    "album.art": "parentArt",
+    "album.year": "parentYear",
+}
+
+
 class PlaylistThreadFilter(logging.Filter):
     """Filter log records to a specific thread and inject playlist metadata."""
 
@@ -333,38 +359,73 @@ def get_field_value(track, field):
     """Retrieve and merge a field (e.g., genres) from track, album, and artist levels with caching."""
     values = set()  # use a set to avoid duplicates
 
+    resolved_field = FIELD_ALIASES.get(field, field)
+    if resolved_field != field:
+        field_candidates = [resolved_field]
+    else:
+        field_candidates = [field]
+
     # Helper to extract and normalize field values
-    def extract_values(source_key):
+    def extract_values(source_key, field_name):
         if not source_key:
             return []
         try:
             xml_text = fetch_full_metadata(source_key)
-            xml_val = parse_field_from_xml(xml_text, field)
+            xml_val = parse_field_from_xml(xml_text, field_name)
             if xml_val:
                 # normalize to string list
-                return [str(v).strip() for v in xml_val] if isinstance(xml_val, (list, set)) else [str(xml_val).strip()]
+                if isinstance(xml_val, (list, set)):
+                    return [str(v).strip() for v in xml_val]
+                return [str(xml_val).strip()]
         except Exception as e:
             logger.debug(f"Metadata error for key {source_key}: {e}")
         return []
 
-    # 1️⃣ Try direct object field (most accurate)
-    val = getattr(track, field, None)
-    if val:
-        if isinstance(val, list):
-            values.update(str(v).strip() for v in val)
-        else:
-            values.add(str(val).strip())
+    seen_fields = set()
 
-    # 2️⃣ Try cached XML for the track
-    values.update(extract_values(track.ratingKey))
+    def collect_from_candidate(candidate):
+        if not candidate or candidate in seen_fields:
+            return False
+        seen_fields.add(candidate)
 
-    # 3️⃣ Try album level
-    if hasattr(track, "parentRatingKey"):
-        values.update(extract_values(track.parentRatingKey))
+        before = len(values)
 
-    # 4️⃣ Try artist level
-    if hasattr(track, "grandparentRatingKey"):
-        values.update(extract_values(track.grandparentRatingKey))
+        # 1️⃣ Try direct object field (most accurate)
+        val = getattr(track, candidate, None)
+        if val:
+            if callable(val):
+                try:
+                    val = val()
+                except TypeError:
+                    val = None
+            if val is not None:
+                if isinstance(val, list):
+                    values.update(str(v).strip() for v in val)
+                else:
+                    values.add(str(val).strip())
+
+        # 2️⃣ Try cached XML for the track
+        values.update(extract_values(track.ratingKey, candidate))
+
+        # 3️⃣ Try album level
+        parent_key = getattr(track, "parentRatingKey", None)
+        if parent_key:
+            values.update(extract_values(parent_key, candidate))
+
+        # 4️⃣ Try artist level
+        artist_key = getattr(track, "grandparentRatingKey", None)
+        if artist_key:
+            values.update(extract_values(artist_key, candidate))
+
+        return len(values) > before
+
+    collected = False
+    for candidate in field_candidates:
+        if collect_from_candidate(candidate):
+            collected = True
+
+    if not collected and resolved_field != field:
+        collect_from_candidate(field)
 
     # Return sorted list for consistency
     return sorted(values)
