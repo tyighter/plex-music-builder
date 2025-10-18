@@ -119,6 +119,50 @@ class PlaylistThreadFilter(logging.Filter):
         return True
 
 
+class PlaylistLoggerProxy:
+    """Proxy logger that always emits DEBUG messages to a playlist handler."""
+
+    def __init__(self, base_logger, playlist_handler):
+        self._base_logger = base_logger
+        self._playlist_handler = playlist_handler
+
+    def __getattr__(self, name):
+        return getattr(self._base_logger, name)
+
+    def isEnabledFor(self, level):
+        if level == logging.DEBUG and self._playlist_handler:
+            return True
+        return self._base_logger.isEnabledFor(level)
+
+    def _emit_playlist_record(self, level, msg, args, kwargs):
+        if not self._playlist_handler:
+            return
+
+        stacklevel = kwargs.get("stacklevel", 1) + 1
+        stack_info = kwargs.get("stack_info", False)
+        fn, lno, func, sinfo = self._base_logger.findCaller(
+            stack_info=stack_info,
+            stacklevel=stacklevel,
+        )
+        record = self._base_logger.makeRecord(
+            self._base_logger.name,
+            level,
+            fn,
+            lno,
+            msg,
+            args,
+            kwargs.get("exc_info"),
+            func,
+            kwargs.get("extra"),
+            sinfo,
+        )
+        self._playlist_handler.handle(record)
+
+    def debug(self, msg, *args, **kwargs):
+        self._emit_playlist_record(logging.DEBUG, msg, args, kwargs)
+        if self._base_logger.isEnabledFor(logging.DEBUG):
+            self._base_logger.debug(msg, *args, **kwargs)
+
 def _sanitize_playlist_name(name):
     sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", name.strip())
     return sanitized or "playlist"
@@ -385,15 +429,16 @@ def process_playlist(name, config):
             playlist_handler = None
             playlist_log_path = None
 
+        log = PlaylistLoggerProxy(logger, playlist_handler)
+
         if playlist_handler:
-            logger.addHandler(playlist_handler)
-            logger.debug(
+            log.debug(
                 "Per-playlist debug logging for '%s' → %s",
                 name,
                 playlist_log_path,
             )
 
-        logger.info(f"Building playlist: {name}")
+        log.info(f"Building playlist: {name}")
         filters = config.get("plex_filter", [])
         library = plex.library.section(config.get("library", LIBRARY_NAME))
         limit = config.get("limit")
@@ -404,7 +449,7 @@ def process_playlist(name, config):
         }
         resolved_sort_by = sort_field_aliases.get(sort_by, sort_by)
         if sort_by and sort_by != resolved_sort_by:
-            logger.debug(
+            log.debug(
                 "Sort field '%s' mapped to Plex field '%s'",
                 sort_by,
                 resolved_sort_by,
@@ -415,7 +460,7 @@ def process_playlist(name, config):
 
         all_tracks = library.searchTracks()
         total_tracks = len(all_tracks)
-        logger.info(f"Fetched {total_tracks} tracks from {config.get('library', LIBRARY_NAME)}")
+        log.info(f"Fetched {total_tracks} tracks from {config.get('library', LIBRARY_NAME)}")
 
         try:
             existing = plex.playlist(name)
@@ -427,7 +472,7 @@ def process_playlist(name, config):
         stream_buffer = []
         playlist_obj = None
         match_count = 0
-        debug_logging = logger.isEnabledFor(logging.DEBUG)
+        debug_logging = log.isEnabledFor(logging.DEBUG)
 
         def flush_stream_buffer():
             nonlocal playlist_obj, stream_buffer, deleted_existing
@@ -437,7 +482,7 @@ def process_playlist(name, config):
                 try:
                     existing.delete()
                 except Exception as exc:
-                    logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
+                    log.warning(f"Failed to delete existing playlist '{name}': {exc}")
                 deleted_existing = True
             try:
                 if playlist_obj is None:
@@ -445,7 +490,7 @@ def process_playlist(name, config):
                 else:
                     playlist_obj.addItems(list(stream_buffer))
             except Exception as exc:
-                logger.error(f"Failed to update playlist '{name}': {exc}")
+                log.error(f"Failed to update playlist '{name}': {exc}")
                 raise
             finally:
                 stream_buffer.clear()
@@ -457,7 +502,7 @@ def process_playlist(name, config):
                     track_title = getattr(track, "title", "<unknown title>")
                     track_artist = getattr(track, "grandparentTitle", "<unknown artist>")
                     track_album = getattr(track, "parentTitle", "<unknown album>")
-                    logger.debug(
+                    log.debug(
                         "Evaluating track '%s' by '%s' on '%s' (ratingKey=%s)",
                         track_title,
                         track_artist,
@@ -472,17 +517,17 @@ def process_playlist(name, config):
 
                     val = get_field_value(track, field)
                     if debug_logging:
-                        logger.debug(
+                        log.debug(
                             "  Condition: field='%s', operator='%s', expected=%s, match_all=%s",
                             field,
                             operator,
                             expected,
                             match_all
                         )
-                        logger.debug("    Extracted value: %s", val)
+                        log.debug("    Extracted value: %s", val)
                     if not check_condition(val, operator, expected, match_all):
                         if debug_logging:
-                            logger.debug("    ❌ Condition failed for field '%s'", field)
+                            log.debug("    ❌ Condition failed for field '%s'", field)
                         keep = False
                         break
                 if keep:
@@ -494,7 +539,7 @@ def process_playlist(name, config):
                     else:
                         matched_tracks.append(track)
                     if debug_logging:
-                        logger.debug("    ✅ Track matched all conditions")
+                        log.debug("    ✅ Track matched all conditions")
                 pbar.update(1)
 
         if stream_enabled:
@@ -503,13 +548,13 @@ def process_playlist(name, config):
                 try:
                     existing.delete()
                 except Exception as exc:
-                    logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
+                    log.warning(f"Failed to delete existing playlist '{name}': {exc}")
                 deleted_existing = True
             apply_playlist_cover(playlist_obj, cover_path)
-            logger.info(f"Playlist '{name}' → {match_count} matching tracks")
+            log.info(f"Playlist '{name}' → {match_count} matching tracks")
             if match_count == 0:
-                logger.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
-            logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
+                log.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
+            log.info(f"✅ Finished building '{name}' ({match_count} tracks)")
             return
 
         if resolved_sort_by:
@@ -529,7 +574,7 @@ def process_playlist(name, config):
                 try:
                     xml_text = fetch_full_metadata(track.ratingKey)
                 except Exception as exc:
-                    logger.debug(
+                    log.debug(
                         "Failed to fetch metadata for sorting field '%s' on ratingKey=%s: %s",
                         resolved_sort_by,
                         getattr(track, "ratingKey", "<no-key>"),
@@ -621,17 +666,17 @@ def process_playlist(name, config):
             matched_tracks = matched_tracks[:limit]
             match_count = len(matched_tracks)
 
-        logger.info(f"Playlist '{name}' → {match_count} matching tracks")
+        log.info(f"Playlist '{name}' → {match_count} matching tracks")
 
         if existing and not deleted_existing:
             try:
                 existing.delete()
             except Exception as exc:
-                logger.warning(f"Failed to delete existing playlist '{name}': {exc}")
+                log.warning(f"Failed to delete existing playlist '{name}': {exc}")
 
         if not matched_tracks:
-            logger.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
-            logger.info(f"✅ Finished building '{name}' (0 tracks)")
+            log.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
+            log.info(f"✅ Finished building '{name}' (0 tracks)")
             return
 
         for chunk in chunked(matched_tracks, chunk_size):
@@ -641,18 +686,17 @@ def process_playlist(name, config):
                 else:
                     playlist_obj.addItems(chunk)
             except Exception as exc:
-                logger.error(f"Failed to update playlist '{name}': {exc}")
+                log.error(f"Failed to update playlist '{name}': {exc}")
                 raise
 
         apply_playlist_cover(playlist_obj, cover_path)
-        logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
+        log.info(f"✅ Finished building '{name}' ({match_count} tracks)")
     finally:
         if playlist_handler:
-            logger.debug(
+            log.debug(
                 "Closing per-playlist debug logging for '%s'",
                 name,
             )
-            logger.removeHandler(playlist_handler)
             playlist_handler.close()
 
 # ----------------------------
