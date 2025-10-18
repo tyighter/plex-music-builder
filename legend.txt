@@ -1,0 +1,266 @@
+========================================
+ PLEXAPI TRACK FILTER FIELDS REFERENCE
+========================================
+
+🔹 CORE TRACK FIELDS
+----------------------------------------
+title
+summary
+ratingKey
+key
+librarySectionID
+ratingCount
+viewCount
+skipCount
+lastViewedAt
+addedAt
+updatedAt
+duration
+originalTitle
+titleSort
+index
+parentIndex
+media
+art
+thumb
+file
+audioCodec
+bitrate
+container
+mediaParts
+audioChannels
+audioProfile
+chapterSource
+rating
+userRating
+lastRatedAt
+skipParent
+viewOffset
+guid
+size
+slug
+uuid
+leafCount
+viewedLeafCount
+viewCount
+skipCount
+lastViewedAt
+addedAt
+updatedAt
+year
+studio
+originallyAvailableAt
+ratingImage
+audienceRating
+audienceRatingImage
+tagline
+contentRating
+summary
+writer
+director
+similar
+collections
+labels
+fields
+genre
+genres
+moods
+style
+styles
+similar
+summary
+viewedAt
+viewOffset
+
+🔹 DERIVED / RELATED TRACK FIELDS
+----------------------------------------
+artist
+artist.id
+artist.title
+artist.guid
+artist.summary
+artist.genre
+artist.moods
+artist.styles
+artist.country
+artist.year
+artist.ratingKey
+artist.addedAt
+artist.updatedAt
+
+album
+album.id
+album.title
+album.guid
+album.summary
+album.genre
+album.moods
+album.styles
+album.year
+album.originallyAvailableAt
+album.ratingKey
+album.type
+album.studio
+album.addedAt
+album.updatedAt
+
+grandparentTitle        (Artist name)
+grandparentRatingKey    (Artist key)
+grandparentGuid         (Artist GUID)
+grandparentThumb        (Artist artwork)
+grandparentArt          (Artist background)
+
+parentTitle             (Album title)
+parentRatingKey         (Album key)
+parentGuid              (Album GUID)
+parentThumb             (Album cover)
+parentArt               (Album background)
+parentYear              (Album year)
+
+🔹 TAG FIELDS
+----------------------------------------
+genres
+moods
+styles
+collections
+labels
+country
+
+🔹 DATE/TIME FIELDS
+----------------------------------------
+addedAt
+updatedAt
+originallyAvailableAt
+lastViewedAt
+lastRatedAt
+viewedAt
+
+🔹 STATISTICAL / NUMERIC FIELDS
+----------------------------------------
+ratingCount
+viewCount
+skipCount
+bitrate
+duration
+audioChannels
+year
+index
+parentIndex
+trackNumber
+
+🔹 FILE METADATA FIELDS
+----------------------------------------
+file
+media.parts
+media.file
+media.container
+media.audioCodec
+media.bitrate
+media.audioProfile
+
+🔹 SORT/ORDER FIELDS
+----------------------------------------
+titleSort
+addedAt
+updatedAt
+ratingCount
+viewCount
+year
+album.year
+artist.title
+album.title
+title
+
+🔹 DERIVED "SMART" SHORTCUTS (for YAML convenience)
+----------------------------------------
+artist          → grandparentTitle
+album           → parentTitle
+album.year      → track.album().year
+album.type      → track.album().type
+album.title     → track.parentTitle
+genres          → [g.tag for g in track.genres]
+moods           → [m.tag for m in track.moods]
+styles          → [s.tag for s in track.styles]
+
+========================================
+ STANDARD PLEX FILTER OPERATORS
+========================================
+
+🔸 String Operators
+----------------------------------------
+equals
+does_not_equal
+contains
+does_not_contain
+begins_with
+ends_with
+is
+is_not
+is_empty
+is_not_empty
+
+🔸 Numeric Operators
+----------------------------------------
+equals
+does_not_equal
+greater_than
+less_than
+greater_than_or_equal
+less_than_or_equal
+between
+
+🔸 Date Operators
+----------------------------------------
+before
+after
+on
+not_on
+in_last
+not_in_last
+
+🔸 Boolean Operators
+----------------------------------------
+is_true
+is_false
+
+🔸 List Operators (for genres, moods, etc.)
+----------------------------------------
+contains
+does_not_contain
+is_in
+is_not_in
+intersects
+
+========================================
+ EXAMPLES
+========================================
+
+# Track Title Contains
+- field: title
+  operator: contains
+  value: Love
+
+# Artist Equals
+- field: artist
+  operator: equals
+  value: Radiohead
+
+# Album Year Greater Than
+- field: album.year
+  operator: greater_than
+  value: 2010
+
+# Genre Contains
+- field: genres
+  operator: contains
+  value: Alternative
+
+# Added After Date
+- field: addedAt
+  operator: after
+  value: 2023-01-01
+
+# Rating Count Greater Than
+- field: ratingCount
+  operator: greater_than
+  value: 10000

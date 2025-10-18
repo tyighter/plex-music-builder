@@ -1,0 +1,4 @@
+plexapi
+PyYAML
+requests
+tqdm

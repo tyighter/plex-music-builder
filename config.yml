@@ -1,0 +1,13 @@
+plex:
+  PLEX_URL: "http://192.168.111.77:32400"  # change to match your Plex server
+  PLEX_TOKEN: "isFgSyj8THjGwnitrzdP"             # get from Plex account or Tautulli
+  library_name: "Music"                # name of your music library in Plex
+
+logging:
+  level: "DEBUG"
+
+runtime:
+  run_forever: true          # true = loop forever, false = run once
+  cache_only: false            # true = only cache metadata and exit
+  refresh_interval_minutes: 60
+  save_interval: 500

@@ -1,0 +1,9 @@
+playlists:
+     
+  Alt Hip Hop 1000:
+    limit: 1000
+    sort_by: popularity
+    plex_filter:
+      - field: genres
+        operator: equals
+        value: Alternative-Hip-Hop

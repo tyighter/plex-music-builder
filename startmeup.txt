@@ -1,0 +1,7 @@
+cd /mnt/appdatacache/appdata/pmb/
+docker build -t plex-music-builder .
+docker run -d \
+  --name=plex-music-builder \
+  -v /mnt/appdatacache/appdata/pmb:/app \
+  --restart unless-stopped \
+  plex-music-builder

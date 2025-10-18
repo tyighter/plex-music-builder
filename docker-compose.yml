@@ -1,0 +1,10 @@
+version: "3.9"
+services:
+  plex-music-builder:
+    image: plex-music-builder
+    container_name: plex-music-builder
+    volumes:
+      - /mnt/appdatacache/appdata/pmb:/app
+    working_dir: /app
+    command: ["python", "main.py"]
+    restart: "no"
