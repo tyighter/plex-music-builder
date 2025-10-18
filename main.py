@@ -35,16 +35,56 @@ CACHE_ONLY = runtime_cfg.get("cache_only", False)
 REFRESH_INTERVAL = runtime_cfg.get("refresh_interval_minutes", 60)
 SAVE_INTERVAL = runtime_cfg.get("save_interval", 100)  # save cache every N items
 
-LOG_LEVEL = cfg.get("logging", {}).get("level", "INFO").upper()
+logging_cfg = cfg.get("logging", {})
+LOG_LEVEL = logging_cfg.get("level", "INFO").upper()
+LOG_FILE = logging_cfg.get("file", "/app/logs/plex_music_builder.log")
+ACTIVE_LOG_FILE = None
 
 if not PLEX_URL or not PLEX_TOKEN:
     raise EnvironmentError("PLEX_URL and PLEX_TOKEN must be set in config.yml")
 
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-logger = logging.getLogger(__name__)
+
+def setup_logging():
+    """Configure logging to stream to stdout and a persistent log file."""
+    logger_name = "plex_music_builder"
+    logger_obj = logging.getLogger(logger_name)
+
+    # Avoid duplicating handlers if setup_logging is called multiple times
+    if logger_obj.handlers:
+        return logger_obj
+
+    global ACTIVE_LOG_FILE
+
+    log_level = getattr(logging, LOG_LEVEL, logging.INFO)
+    logger_obj.setLevel(log_level)
+    logger_obj.propagate = False
+
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger_obj.addHandler(stream_handler)
+
+    if LOG_FILE:
+        log_dir = os.path.dirname(LOG_FILE)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+
+        try:
+            file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        except OSError as exc:
+            logger_obj.error(f"Unable to open log file '{LOG_FILE}': {exc}")
+        else:
+            file_handler.setFormatter(formatter)
+            logger_obj.addHandler(file_handler)
+            ACTIVE_LOG_FILE = LOG_FILE
+
+    return logger_obj
+
+
+logger = setup_logging()
+if ACTIVE_LOG_FILE:
+    logger.info(f"Detailed logs will be written to: {ACTIVE_LOG_FILE}")
 
 # ----------------------------
 # Connect to Plex
@@ -221,10 +261,22 @@ def process_playlist(name, config):
     logger.info(f"Fetched {total_tracks} tracks from {config.get('library', LIBRARY_NAME)}")
 
     matched_tracks = []
+    debug_logging = logger.isEnabledFor(logging.DEBUG)
 
     with tqdm(total=total_tracks, desc=f"Filtering '{name}'", unit="track", dynamic_ncols=True) as pbar:
         for track in all_tracks:
             keep = True
+            if debug_logging:
+                track_title = getattr(track, "title", "<unknown title>")
+                track_artist = getattr(track, "grandparentTitle", "<unknown artist>")
+                track_album = getattr(track, "parentTitle", "<unknown album>")
+                logger.debug(
+                    "Evaluating track '%s' by '%s' on '%s' (ratingKey=%s)",
+                    track_title,
+                    track_artist,
+                    track_album,
+                    getattr(track, "ratingKey", "<no-key>")
+                )
             for f in filters:
                 field = f["field"]
                 operator = f["operator"]
@@ -232,11 +284,24 @@ def process_playlist(name, config):
                 match_all = f.get("match_all", True)
 
                 val = get_field_value(track, field)
+                if debug_logging:
+                    logger.debug(
+                        "  Condition: field='%s', operator='%s', expected=%s, match_all=%s",
+                        field,
+                        operator,
+                        expected,
+                        match_all
+                    )
+                    logger.debug("    Extracted value: %s", val)
                 if not check_condition(val, operator, expected, match_all):
+                    if debug_logging:
+                        logger.debug("    ❌ Condition failed for field '%s'", field)
                     keep = False
                     break
             if keep:
                 matched_tracks.append(track)
+                if debug_logging:
+                    logger.debug("    ✅ Track matched all conditions")
             pbar.update(1)
 
     if sort_by:
