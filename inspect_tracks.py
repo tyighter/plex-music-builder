@@ -10,9 +10,29 @@ def load_yaml(path):
 
 cfg = load_yaml("config.yml")
 
-base_url = cfg["plex"]["base_url"]
-token = cfg["plex"]["token"]
-library_name = cfg["plex"]["library_name"]
+
+def get_config_value(section, *candidate_keys, required=True):
+    """Return the first matching key in *candidate_keys* with a truthy value."""
+
+    for key in candidate_keys:
+        if key in section and section[key]:
+            return section[key]
+
+    if required:
+        tried = ", ".join(candidate_keys)
+        available = ", ".join(section.keys()) if hasattr(section, "keys") else "<none>"
+        raise KeyError(
+            f"Missing configuration value. Tried keys [{tried}] within section containing [{available}]."
+        )
+
+    return None
+
+
+plex_cfg = cfg.get("plex", {})
+
+base_url = get_config_value(plex_cfg, "base_url", "PLEX_URL")
+token = get_config_value(plex_cfg, "token", "PLEX_TOKEN")
+library_name = get_config_value(plex_cfg, "library_name")
 
 plex = PlexServer(base_url, token)
 library = plex.library.section(library_name)
