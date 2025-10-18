@@ -265,6 +265,16 @@ def process_playlist(name, config):
     library = plex.library.section(config.get("library", LIBRARY_NAME))
     limit = config.get("limit")
     sort_by = config.get("sort_by")
+    sort_field_aliases = {
+        "popularity": "ratingCount",
+    }
+    resolved_sort_by = sort_field_aliases.get(sort_by, sort_by)
+    if sort_by and sort_by != resolved_sort_by:
+        logger.debug(
+            "Sort field '%s' mapped to Plex field '%s'",
+            sort_by,
+            resolved_sort_by,
+        )
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
     stream_requested = config.get("stream_while_filtering", False)
     stream_enabled = stream_requested and not sort_by and not limit
@@ -367,7 +377,7 @@ def process_playlist(name, config):
         logger.info(f"✅ Finished building '{name}' ({match_count} tracks)")
         return
 
-    if sort_by:
+    if resolved_sort_by:
         sort_desc = config.get("sort_desc", True)
         sort_value_cache = {}
 
@@ -376,7 +386,7 @@ def process_playlist(name, config):
             if cache_key in sort_value_cache:
                 return sort_value_cache[cache_key]
 
-            value = getattr(track, sort_by, None)
+            value = getattr(track, resolved_sort_by, None)
             if value is not None:
                 sort_value_cache[cache_key] = value
                 return value
@@ -386,14 +396,14 @@ def process_playlist(name, config):
             except Exception as exc:
                 logger.debug(
                     "Failed to fetch metadata for sorting field '%s' on ratingKey=%s: %s",
-                    sort_by,
+                    resolved_sort_by,
                     getattr(track, "ratingKey", "<no-key>"),
                     exc,
                 )
                 sort_value_cache[cache_key] = None
                 return None
 
-            xml_value = parse_field_from_xml(xml_text, sort_by)
+            xml_value = parse_field_from_xml(xml_text, resolved_sort_by)
 
             if isinstance(xml_value, (list, set, tuple)):
                 xml_value = next(iter(xml_value), None)
