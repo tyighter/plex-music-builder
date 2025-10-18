@@ -176,28 +176,28 @@ def check_condition(value, operator, expected, match_all=True):
     else:
         expected_values = [expected]
 
-    value_str = str(value).lower()
+    values = value if isinstance(value, (list, tuple, set)) else [value]
 
     results = []
     for exp in expected_values:
         exp_str = str(exp).lower()
 
         if operator == "equals":
-            results.append(value_str == exp_str)
+            results.append(any(str(v).lower() == exp_str for v in values))
         elif operator == "does_not_equal":
-            results.append(value_str != exp_str)
+            results.append(all(str(v).lower() != exp_str for v in values))
         elif operator == "contains":
-            results.append(exp_str in value_str)
+            results.append(any(exp_str in str(v).lower() for v in values))
         elif operator == "does_not_contain":
-            results.append(exp_str not in value_str)
+            results.append(all(exp_str not in str(v).lower() for v in values))
         elif operator == "greater_than":
             try:
-                results.append(float(value) > float(exp))
+                results.append(any(float(v) > float(exp) for v in values))
             except (ValueError, TypeError):
                 results.append(False)
         elif operator == "less_than":
             try:
-                results.append(float(value) < float(exp))
+                results.append(any(float(v) < float(exp) for v in values))
             except (ValueError, TypeError):
                 results.append(False)
         else:
