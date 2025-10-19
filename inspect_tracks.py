@@ -39,32 +39,33 @@ library = plex.library.section(library_name)
 
 print(f"Connected to Plex: {plex.friendlyName}")
 print(f"Using library: {library_name}")
-print("Fetching Revolver (Super Deluxe) tracks...\n")
+print("Fetching Revolver albums...\n")
 
-ALBUM_TITLE_KEYWORDS = ["revolver", "super deluxe"]
+TITLE_MATCH = "revolver"
 ARTIST_NAME = "the beatles"
 
 
-def find_special_edition_album(section):
+def find_revolver_albums(section):
     candidates = section.searchAlbums("Revolver")
+    revolver_albums = []
     for album in candidates:
         artist = album.artist().title if callable(album.artist) else album.artist
-        title = album.title
-        if not artist or ARTIST_NAME not in artist.lower():
+        title = album.title or ""
+
+        if not title or TITLE_MATCH not in title.lower():
             continue
 
-        lower_title = title.lower()
-        if all(keyword in lower_title for keyword in ALBUM_TITLE_KEYWORDS):
-            return album
+        if artist and ARTIST_NAME in artist.lower():
+            revolver_albums.append(album)
 
-    raise RuntimeError("Could not locate Revolver (Super Deluxe) by The Beatles in Plex.")
+    if not revolver_albums:
+        raise RuntimeError("Could not locate any Revolver albums by The Beatles in Plex.")
+
+    return revolver_albums
 
 
-album = find_special_edition_album(library)
-tracks = album.tracks()
-artist_name = album.artist().title if callable(album.artist) else album.artist
-print(f"Found album: {album.title} by {artist_name}")
-print(f"Total tracks: {len(tracks)}\n")
+albums = find_revolver_albums(library)
+print(f"Found {len(albums)} Revolver album(s) by {ARTIST_NAME.title()}\n")
 
 
 def dump_track_metadata(track):
@@ -75,7 +76,12 @@ def dump_track_metadata(track):
     print(f"=== Track: {track.title} (Disc {track.parentIndex} • Track {track.index}) ===")
     print(xml_text)
     print()
+for album in albums:
+    artist_name = album.artist().title if callable(album.artist) else album.artist
+    tracks = album.tracks()
 
+    print(f"=== Album: {album.title} by {artist_name} ===")
+    print(f"Total tracks: {len(tracks)}\n")
 
-for track in tracks:
-    dump_track_metadata(track)
+    for track in tracks:
+        dump_track_metadata(track)
