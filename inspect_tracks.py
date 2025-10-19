@@ -42,25 +42,15 @@ print(f"Using library: {library_name}")
 print("Fetching Revolver (Super Deluxe) tracks...\n")
 
 ALBUM_TITLE_KEYWORDS = ["revolver", "super deluxe"]
-ARTIST_NAME = "The Beatles"
+ARTIST_NAME = "the beatles"
 
 
 def find_special_edition_album(section):
-    """Locate the Revolver (Super Deluxe) album regardless of PlexAPI version."""
-
-    try:
-        # PlexAPI < 4.15 exposes ``searchAlbums`` but requires keyword usage.
-        candidates = section.searchAlbums(title="Revolver", artist=ARTIST_NAME)
-    except TypeError:
-        # Older PlexAPI versions only accept positional arguments; fall back to
-        # the generic ``search`` API which has been stable for longer.
-        candidates = section.search(
-            libtype="album", title="Revolver", artist=ARTIST_NAME
-        )
+    candidates = section.searchAlbums("Revolver")
     for album in candidates:
         artist = album.artist().title if callable(album.artist) else album.artist
         title = album.title
-        if not artist or ARTIST_NAME.lower() not in artist.lower():
+        if not artist or ARTIST_NAME not in artist.lower():
             continue
 
         lower_title = title.lower()
