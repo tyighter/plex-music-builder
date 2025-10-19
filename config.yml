@@ -11,3 +11,9 @@ runtime:
   cache_only: false            # true = only cache metadata and exit
   refresh_interval_minutes: 60
   save_interval: 500
+
+spotify:
+  client_id: "your-spotify-client-id"
+  client_secret: "your-spotify-client-secret"
+  market: "US"                 # optional: ISO 3166-1 alpha-2 market code
+  search_limit: 10             # optional: number of search results to evaluate
