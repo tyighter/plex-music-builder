@@ -636,7 +636,14 @@ def _search_canonical_guid(artist, album, year):
         {},
     ]
 
-    for base in (METADATA_PROVIDER_URL, PLEX_URL):
+    # Prefer searching against the user's own Plex server first so that we stop
+    # iterating as soon as we find a result.  The metadata provider endpoints
+    # frequently respond with ``404`` for user specific tokens which produced a
+    # lot of noisy debug logging even though the subsequent local search would
+    # succeed.  By prioritizing ``PLEX_URL`` we usually resolve the GUID before
+    # hitting the remote service while still keeping it available as a
+    # fallback.
+    for base in (PLEX_URL, METADATA_PROVIDER_URL):
         for path in search_paths:
             for extra_params in param_variants:
                 # ``type`` is not valid for ``/hubs/search`` endpoints; skip to avoid noisy logs.
