@@ -230,6 +230,7 @@ playlists_data = raw_playlists.get("playlists", {}) if isinstance(raw_playlists,
 # Metadata Cache
 # ----------------------------
 CACHE_FILE = "/app/metadata_cache.json"
+METADATA_PROVIDER_URL = "https://metadata.provider.plex.tv"
 
 if os.path.exists(CACHE_FILE):
     with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -240,9 +241,162 @@ if os.path.exists(CACHE_FILE):
 else:
     metadata_cache = {}
 
+# Cache canonical/original release metadata fetched from Plex's metadata provider.
+# The cache is keyed by the normalized album GUID (with the ``plex://`` prefix
+# removed) and stores the raw XML payload plus any fields we've already parsed
+# from that payload.
+canonical_metadata_cache = {}
+canonical_cache_lock = threading.Lock()
+
+# Canonical metadata exposes album-level attributes (e.g., original release
+# year, popularity counts). Map the fields we request in Plex filters/sorts to
+# their canonical equivalents so we don't have to special case them scattered
+# throughout the codebase.
+CANONICAL_FIELD_MAP = {
+    "parentGuid": "guid",
+    "guid": "guid",
+    "parentYear": "year",
+    "year": "year",
+    "originallyAvailableAt": "originallyAvailableAt",
+    "ratingCount": "ratingCount",
+    "parentRatingCount": "ratingCount",
+}
+
+CANONICAL_SORT_FIELDS = {"ratingCount", "parentRatingCount", "year", "parentYear", "originallyAvailableAt"}
+CANONICAL_NUMERIC_FIELDS = {"ratingCount", "parentRatingCount", "year", "parentYear"}
+
 def save_cache():
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(metadata_cache, f)
+
+
+def _normalize_plex_guid(guid):
+    if not guid:
+        return None
+    guid_str = str(guid).strip()
+    if not guid_str:
+        return None
+    if guid_str.startswith("plex://"):
+        return guid_str[len("plex://") :]
+    return guid_str
+
+
+def _get_album_guid(track):
+    """Return the album GUID (``plex://album/...``) for a track, if available."""
+
+    parent_guid = getattr(track, "parentGuid", None)
+    if parent_guid:
+        return str(parent_guid)
+
+    # Fall back to the track metadata and, if necessary, the album metadata.
+    try:
+        track_xml = fetch_full_metadata(track.ratingKey)
+        parent_guid = parse_field_from_xml(track_xml, "parentGuid")
+        if parent_guid:
+            return str(parent_guid)
+    except Exception as exc:
+        logger.debug(
+            "Unable to resolve parentGuid from track metadata for ratingKey=%s: %s",
+            getattr(track, "ratingKey", "<no-key>"),
+            exc,
+        )
+
+    parent_rating_key = getattr(track, "parentRatingKey", None)
+    if not parent_rating_key:
+        return None
+
+    try:
+        album_xml = fetch_full_metadata(parent_rating_key)
+    except Exception as exc:
+        logger.debug(
+            "Unable to fetch album metadata for ratingKey=%s: %s",
+            parent_rating_key,
+            exc,
+        )
+        return None
+
+    for candidate in ("guid", "parentGuid"):
+        candidate_guid = parse_field_from_xml(album_xml, candidate)
+        if candidate_guid:
+            return str(candidate_guid)
+
+    return None
+
+
+def fetch_canonical_album_metadata(album_guid):
+    """Fetch the canonical/original release metadata for an album GUID."""
+
+    normalized_guid = _normalize_plex_guid(album_guid)
+    if not normalized_guid:
+        return None
+
+    with canonical_cache_lock:
+        cached = canonical_metadata_cache.get(normalized_guid)
+        if cached:
+            return cached.get("xml")
+
+    url = f"{METADATA_PROVIDER_URL}/library/metadata/{normalized_guid}"
+    params = {"X-Plex-Token": PLEX_TOKEN}
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        xml_text = response.text
+    except requests.RequestException as exc:
+        logger.debug(
+            "Failed to fetch canonical metadata for album GUID '%s': %s",
+            normalized_guid,
+            exc,
+        )
+        xml_text = None
+
+    with canonical_cache_lock:
+        canonical_metadata_cache[normalized_guid] = {"xml": xml_text, "fields": {}}
+
+    return xml_text
+
+
+def get_canonical_field_from_guid(album_guid, field):
+    """Return a canonical metadata field for an album GUID, if available."""
+
+    normalized_guid = _normalize_plex_guid(album_guid)
+    if not normalized_guid:
+        return None
+
+    with canonical_cache_lock:
+        cached = canonical_metadata_cache.get(normalized_guid)
+        if cached and field in cached.get("fields", {}):
+            return cached["fields"][field]
+        xml_text = cached.get("xml") if cached else None
+
+    if xml_text is None:
+        xml_text = fetch_canonical_album_metadata(album_guid)
+        if xml_text is None:
+            return None
+
+    value = parse_field_from_xml(xml_text, field)
+
+    with canonical_cache_lock:
+        cached = canonical_metadata_cache.setdefault(
+            normalized_guid, {"xml": xml_text, "fields": {}}
+        )
+        cached["fields"][field] = value
+
+    return value
+
+
+def get_canonical_field_for_track(track, field):
+    """Resolve a canonical album field for the provided track, if supported."""
+
+    canonical_field = CANONICAL_FIELD_MAP.get(field)
+    if not canonical_field:
+        return None
+
+    album_guid = _get_album_guid(track)
+    if not album_guid:
+        return None
+
+    return get_canonical_field_from_guid(album_guid, canonical_field)
 
 
 def chunked(iterable, size):
@@ -381,6 +535,17 @@ def get_field_value(track, field):
             logger.debug(f"Metadata error for key {source_key}: {e}")
         return []
 
+    def extract_canonical_values(field_name):
+        if field_name not in CANONICAL_FIELD_MAP:
+            return []
+        canonical_value = get_canonical_field_for_track(track, field_name)
+        if canonical_value is None:
+            return []
+        if isinstance(canonical_value, (list, set)):
+            return [str(v).strip() for v in canonical_value if str(v).strip()]
+        value_str = str(canonical_value).strip()
+        return [value_str] if value_str else []
+
     seen_fields = set()
 
     def collect_from_candidate(candidate):
@@ -412,7 +577,10 @@ def get_field_value(track, field):
         if parent_key:
             values.update(extract_values(parent_key, candidate))
 
-        # 4️⃣ Try artist level
+        # 4️⃣ Try canonical/original album metadata
+        values.update(extract_canonical_values(candidate))
+
+        # 5️⃣ Try artist level
         artist_key = getattr(track, "grandparentRatingKey", None)
         if artist_key:
             values.update(extract_values(artist_key, candidate))
@@ -628,7 +796,21 @@ def process_playlist(name, config):
                     return sort_value_cache[cache_key]
 
                 value = getattr(track, resolved_sort_by, None)
+                if resolved_sort_by in CANONICAL_SORT_FIELDS:
+                    canonical_value = get_canonical_field_for_track(track, resolved_sort_by)
+                    if canonical_value is not None:
+                        value = canonical_value
                 if value is not None:
+                    if (
+                        resolved_sort_by in CANONICAL_NUMERIC_FIELDS
+                        and isinstance(value, str)
+                    ):
+                        stripped_value = value.strip()
+                        if stripped_value:
+                            try:
+                                value = float(stripped_value)
+                            except ValueError:
+                                pass
                     sort_value_cache[cache_key] = value
                     return value
 
