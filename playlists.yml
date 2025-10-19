@@ -1,6 +1,13 @@
+defaults:
+  plex_filter:
+    - field: artist
+      operator: does_not_equal
+      value: Various Artists
+
 playlists:
   Alt Hip Hop:
     limit: 1000
+    artist_limit: 5
     sort_by: popularity
     cover: /images/althiphop.png
     plex_filter:
@@ -10,6 +17,7 @@ playlists:
 
   Classic Rock:
     limit: 1000
+    artist_limit: 5
     sort_by: popularity
     cover: /images/classic_rock.png
     plex_filter:
@@ -32,12 +40,10 @@ playlists:
           - Speed Metal
           - Thrash Metal
         match_all: false
-      - field: artist
-        operator: does_not_equal
-        value: Various Artists
 
   Is it New Wave?:
     limit: 1000
+    artist_limit: 5
     sort_by: popularity
     cover: /images/punkwave9.png
     plex_filter:
@@ -62,6 +68,7 @@ playlists:
   This is The Beatles:
     cover: /images/this_is_beatles.png
     limit: 40
+    artist_limit: 5
     sort_by: popularity
     plex_filter:
       - field: artist
