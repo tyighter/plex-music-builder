@@ -17,3 +17,8 @@ spotify:
   client_secret: "your-spotify-client-secret"
   market: "US"                 # optional: ISO 3166-1 alpha-2 market code
   search_limit: 10             # optional: number of search results to evaluate
+
+allmusic:
+  enabled: true
+  cache_file: "/app/allmusic_popularity.json"
+  timeout: 10
