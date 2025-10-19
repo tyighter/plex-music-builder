@@ -538,10 +538,30 @@ def _search_canonical_guid(artist, album, year):
     artist_norms = _collect_normalized_candidates([artist])
     year_token = _extract_year_token(year)
 
+    def _build_endpoint(base, path):
+        base = (base or "").rstrip("/")
+        return f"{base}{path}" if base else None
+
     search_endpoints = [
-        f"{METADATA_PROVIDER_URL}/library/metadata/search",
-        f"{METADATA_PROVIDER_URL}/library/search",
+        endpoint
+        for endpoint in (
+            _build_endpoint(METADATA_PROVIDER_URL, "/library/metadata/search"),
+            _build_endpoint(METADATA_PROVIDER_URL, "/library/search"),
+            _build_endpoint(PLEX_URL, "/library/metadata/search"),
+            _build_endpoint(PLEX_URL, "/library/search"),
+        )
+        if endpoint
     ]
+
+    deduped_endpoints = []
+    seen_endpoints = set()
+    for endpoint in search_endpoints:
+        if endpoint in seen_endpoints:
+            continue
+        deduped_endpoints.append(endpoint)
+        seen_endpoints.add(endpoint)
+
+    search_endpoints = deduped_endpoints
 
     for query in deduped_queries:
         for endpoint in search_endpoints:
