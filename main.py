@@ -336,6 +336,70 @@ def _build_canonical_identity_key(artist, album, year):
     return (artist_key, album_key, year_key)
 
 
+def _resolve_album_year(track):
+    """Return the best-known release year for the provided track's album."""
+
+    def _normalize_year(value):
+        token = _extract_year_token(value)
+        return token
+
+    year_candidates = [
+        getattr(track, "parentYear", None),
+        getattr(track, "year", None),
+        getattr(track, "originallyAvailableAt", None),
+        getattr(track, "parentOriginallyAvailableAt", None),
+    ]
+
+    for candidate in year_candidates:
+        normalized = _normalize_year(candidate)
+        if normalized:
+            return normalized
+
+    if CACHE_ONLY:
+        return None
+
+    log = _get_active_logger()
+
+    rating_key = getattr(track, "ratingKey", None)
+    if rating_key:
+        try:
+            track_xml = fetch_full_metadata(rating_key)
+        except Exception as exc:  # pragma: no cover - network/cache errors
+            log.debug(
+                "Unable to fetch track metadata for ratingKey=%s while resolving album year: %s",
+                rating_key,
+                exc,
+            )
+        else:
+            for field in (
+                "parentYear",
+                "year",
+                "originallyAvailableAt",
+                "parentOriginallyAvailableAt",
+            ):
+                normalized = _normalize_year(parse_field_from_xml(track_xml, field))
+                if normalized:
+                    return normalized
+
+    parent_rating_key = getattr(track, "parentRatingKey", None)
+    if parent_rating_key:
+        try:
+            album_xml = fetch_full_metadata(parent_rating_key)
+        except Exception as exc:  # pragma: no cover - network/cache errors
+            log.debug(
+                "Unable to fetch album metadata for ratingKey=%s while resolving album year: %s",
+                parent_rating_key,
+                exc,
+            )
+        else:
+            for field in ("year", "parentYear", "originallyAvailableAt"):
+                normalized = _normalize_year(parse_field_from_xml(album_xml, field))
+                if normalized:
+                    return normalized
+
+    return None
+
+
 def _get_album_guid(track):
     """Return the album GUID (``plex://album/...``) for a track, if available."""
 
@@ -617,7 +681,7 @@ def _search_canonical_guid(artist, album, year):
 def _lookup_canonical_guid_for_track(track):
     artist = getattr(track, "grandparentTitle", None)
     album = getattr(track, "parentTitle", None)
-    year = getattr(track, "parentYear", None)
+    year = _resolve_album_year(track)
 
     identity_key = _build_canonical_identity_key(artist, album, year)
 
