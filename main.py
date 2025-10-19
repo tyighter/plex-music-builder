@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key
 from xml.etree import ElementTree as ET
 from html import unescape
+import unicodedata
 from urllib.parse import quote_plus
 
 from plexapi.server import PlexServer
@@ -1368,35 +1369,79 @@ class AllMusicPopularityProvider:
         if not self._session:
             return None, None
 
-        url = f"https://www.allmusic.com/search/tracks/{quote_plus(query)}"
+        last_error = None
+        final_popularity = None
+        final_details = None
+        used_query = None
 
-        try:
-            response = self._session.get(url, timeout=self._timeout)
-            response.raise_for_status()
-        except Exception as exc:
-            self._error = str(exc)
+        for variant in self._iter_query_variants(query):
+            url = f"https://www.allmusic.com/search/tracks/{quote_plus(variant)}"
+
+            try:
+                response = self._session.get(url, timeout=self._timeout)
+                response.raise_for_status()
+            except Exception as exc:
+                last_error = exc
+                self._error = str(exc)
+                if playlist_logger:
+                    playlist_logger.debug("AllMusic request for '%s' failed: %s", variant, exc)
+                else:
+                    logger.debug("AllMusic request for '%s' failed: %s", variant, exc)
+                self._remember_query_cache_entry(variant, None, None)
+                continue
+
+            popularity, details = self._select_candidate(
+                response.text,
+                {
+                    "title": title,
+                    "artist": artist,
+                    "album": album,
+                },
+            )
+
+            self._remember_query_cache_entry(variant, popularity, details)
+
             if playlist_logger:
-                playlist_logger.debug("AllMusic request for '%s' failed: %s", query, exc)
-            else:
-                logger.debug("AllMusic request for '%s' failed: %s", query, exc)
-            with self._cache_lock:
-                self._query_cache[query] = {
-                    "popularity": None,
-                    "details": None,
-                    "timestamp": time.time(),
-                }
-                self._cache_dirty = True
+                if popularity is None:
+                    playlist_logger.debug(
+                        "AllMusic search for '%s' returned no matching popularity score.",
+                        variant,
+                    )
+                else:
+                    playlist_logger.debug(
+                        "AllMusic matched '%s' → title='%s', artists=%s, album='%s', popularity=%s (rating_count=%s, rating=%s)",
+                        variant,
+                        (details or {}).get("title"),
+                        (details or {}).get("artists"),
+                        (details or {}).get("album"),
+                        popularity,
+                        (details or {}).get("rating_count"),
+                        (details or {}).get("rating"),
+                    )
+
+            used_query = variant
+            final_popularity = popularity
+            final_details = details
+
+            if popularity is not None:
+                break
+
+        if used_query is None:
+            if last_error is None:
+                self._error = "AllMusic search failed for query variations."
+            self._remember_query_cache_entry(query, None, None)
             return None, None
 
-        popularity, details = self._select_candidate(
-            response.text,
-            {
-                "title": title,
-                "artist": artist,
-                "album": album,
-            },
-        )
+        if used_query != query and playlist_logger:
+            playlist_logger.debug(
+                "Retrying AllMusic search for '%s' with simplified query '%s'", query, used_query
+            )
+        if used_query != query:
+            self._remember_query_cache_entry(query, final_popularity, final_details)
 
+        return final_popularity, final_details
+
+    def _remember_query_cache_entry(self, query, popularity, details):
         with self._cache_lock:
             self._query_cache[query] = {
                 "popularity": popularity,
@@ -1405,25 +1450,38 @@ class AllMusicPopularityProvider:
             }
             self._cache_dirty = True
 
-        if playlist_logger:
-            if popularity is None:
-                playlist_logger.debug(
-                    "AllMusic search for '%s' returned no matching popularity score.",
-                    query,
-                )
-            else:
-                playlist_logger.debug(
-                    "AllMusic matched '%s' → title='%s', artists=%s, album='%s', popularity=%s (rating_count=%s, rating=%s)",
-                    query,
-                    (details or {}).get("title"),
-                    (details or {}).get("artists"),
-                    (details or {}).get("album"),
-                    popularity,
-                    (details or {}).get("rating_count"),
-                    (details or {}).get("rating"),
-                )
+    def _iter_query_variants(self, query):
+        seen = set()
 
-        return popularity, details
+        def _normalize(value):
+            if not value:
+                return None
+            collapsed = " ".join(value.split())
+            return collapsed or None
+
+        def _add(value):
+            normalized = _normalize(value)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                variants.append(normalized)
+
+        variants = []
+        _add(query)
+
+        if query:
+            without_parentheses = re.sub(r"\s*\([^)]*\)", "", query)
+            _add(without_parentheses)
+
+            ascii_query = unicodedata.normalize("NFKD", query).encode("ascii", "ignore").decode(
+                "ascii"
+            )
+            _add(ascii_query)
+
+            ascii_without_parentheses = re.sub(r"\s*\([^)]*\)", "", ascii_query)
+            _add(ascii_without_parentheses)
+
+        for variant in variants:
+            yield variant
 
     def _select_candidate(self, html, track_info):
         candidates = list(self._iter_candidates(html))
