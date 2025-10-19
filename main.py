@@ -1093,6 +1093,10 @@ class SpotifyPopularityProvider:
         if not title:
             return None
 
+        stripped_title = _strip_parenthetical(title)
+        if stripped_title:
+            title = stripped_title
+
         def sanitize(value):
             if value is None:
                 return None
