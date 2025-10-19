@@ -64,7 +64,7 @@ ALLMUSIC_USER_AGENT = allmusic_cfg.get(
     "user_agent",
     "plex-music-builder/1.0 (+https://github.com/plexmusicbuilder)",
 )
-ALLMUSIC_CACHE_VERSION = 2
+ALLMUSIC_CACHE_VERSION = 3
 
 logging_cfg = cfg.get("logging", {})
 LOG_LEVEL = logging_cfg.get("level", "DEBUG").upper()
@@ -1435,6 +1435,7 @@ class AllMusicPopularityProvider:
         last_error = None
         final_details = None
         used_query = None
+        fallback_used = False
 
         for variant in self._iter_query_variants(query):
             url = f"https://www.allmusic.com/search/songs/{quote_plus(variant)}"
@@ -1449,7 +1450,7 @@ class AllMusicPopularityProvider:
                     playlist_logger.debug("AllMusic request for '%s' failed: %s", variant, exc)
                 else:
                     logger.debug("AllMusic request for '%s' failed: %s", variant, exc)
-                self._remember_query_cache_entry(variant, None, None)
+                self._remember_query_cache_entry(variant, None)
                 continue
 
             details = self._select_candidate(
@@ -1487,7 +1488,19 @@ class AllMusicPopularityProvider:
             if details is not None:
                 break
 
-        if used_query is None:
+        if final_details is None and album:
+            album_fallback = self._resolve_via_album_page(
+                album,
+                artist,
+                title,
+                playlist_logger=playlist_logger,
+            )
+            if album_fallback:
+                final_details = album_fallback
+                used_query = used_query or query
+                fallback_used = True
+
+        if used_query is None and final_details is None:
             if last_error is None:
                 self._error = "AllMusic search failed for query variations."
             self._remember_query_cache_entry(query, None)
@@ -1499,6 +1512,8 @@ class AllMusicPopularityProvider:
             )
         if used_query != query:
             self._remember_query_cache_entry(query, final_details)
+        elif fallback_used:
+            self._remember_query_cache_entry(query, final_details)
 
         return final_details
 
@@ -1506,6 +1521,91 @@ class AllMusicPopularityProvider:
         with self._cache_lock:
             self._query_cache[query] = details or {}
             self._cache_dirty = True
+
+    def _resolve_via_album_page(self, album, artist, track_title, playlist_logger=None):
+        album_query_parts = []
+        if album:
+            album_query_parts.append(str(album).strip())
+        if artist:
+            album_query_parts.append(str(artist).strip())
+
+        album_query_parts = [part for part in album_query_parts if part]
+        if not album_query_parts:
+            return None
+
+        album_query = " ".join(album_query_parts)
+        last_error = None
+
+        for variant in self._iter_query_variants(album_query):
+            search_url = f"https://www.allmusic.com/search/albums/{quote_plus(variant)}"
+
+            try:
+                response = self._session.get(search_url, timeout=self._timeout)
+                response.raise_for_status()
+            except Exception as exc:
+                last_error = exc
+                if playlist_logger:
+                    playlist_logger.debug(
+                        "AllMusic album search for '%s' failed: %s",
+                        variant,
+                        exc,
+                    )
+                else:
+                    logger.debug("AllMusic album search for '%s' failed: %s", variant, exc)
+                continue
+
+            album_candidate = self._select_album_candidate(
+                response.text,
+                {
+                    "album": album,
+                    "artist": artist,
+                },
+            )
+
+            if not album_candidate:
+                continue
+
+            metadata = self._get_album_metadata(
+                album_candidate.get("album_url"),
+                playlist_logger=playlist_logger,
+            )
+
+            highlighted_tracks = metadata.get("highlighted_tracks") or []
+
+            artists = list(album_candidate.get("artists", []))
+            if not artists and artist:
+                artists = [artist]
+
+            details = {
+                "title": track_title,
+                "artists": artists,
+                "album": album_candidate.get("album"),
+                "album_url": album_candidate.get("album_url"),
+                "rating_count": metadata.get("rating_count"),
+                "album_rating_count": metadata.get("rating_count"),
+                "album_highlighted_tracks": list(highlighted_tracks),
+                "source": "album_search",
+            }
+
+            if playlist_logger:
+                playlist_logger.debug(
+                    "AllMusic album fallback matched '%s' → album_url='%s'",
+                    album_candidate.get("album"),
+                    album_candidate.get("album_url"),
+                )
+            else:
+                logger.debug(
+                    "AllMusic album fallback matched '%s' → album_url='%s'",
+                    album_candidate.get("album"),
+                    album_candidate.get("album_url"),
+                )
+
+            return details
+
+        if last_error is not None:
+            self._error = str(last_error)
+
+        return None
 
     def _iter_query_variants(self, query):
         seen = set()
@@ -1587,10 +1687,15 @@ class AllMusicPopularityProvider:
 
         rating_details = best_candidate.get("_rating_details") or {}
         album_url = best_candidate.get("album_url")
-        album_rating_count = None
+        album_metadata = {}
 
         if album_url:
-            album_rating_count = self._get_album_rating_count(album_url, playlist_logger=playlist_logger)
+            album_metadata = self._get_album_metadata(
+                album_url,
+                playlist_logger=playlist_logger,
+            )
+
+        highlighted_tracks = album_metadata.get("highlighted_tracks") or []
 
         details = {
             "title": best_candidate.get("title"),
@@ -1601,7 +1706,8 @@ class AllMusicPopularityProvider:
             "rating": rating_details.get("rating"),
             "rating_scale": rating_details.get("rating_scale"),
             "album_url": album_url,
-            "album_rating_count": album_rating_count,
+            "album_rating_count": album_metadata.get("rating_count"),
+            "album_highlighted_tracks": list(highlighted_tracks),
         }
 
         return details
@@ -1640,7 +1746,73 @@ class AllMusicPopularityProvider:
                 "album_url": album_url,
             }
 
-    def _extract_text(self, block, pattern):
+    def _iter_album_search_candidates(self, html):
+        if not html:
+            return
+
+        row_pattern = re.compile(
+            r"<tr[^>]*class=\"[^\"]*(?:album|release)[^\"]*\"[^>]*>(.*?)</tr>",
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        for block in row_pattern.findall(html):
+            album_title = self._extract_text(block, r'class=\"title\"[^>]*>(.*?)</a>')
+            if not album_title:
+                album_title = self._extract_text(block, r'class=\"title\"[^>]*>(.*?)</td>')
+
+            artist_text = self._extract_text(block, r'class=\"artist\"[^>]*>(.*?)</td>')
+            if not artist_text:
+                artist_text = self._extract_text(block, r'class=\"performers\"[^>]*>(.*?)</td>')
+
+            album_url = self._extract_album_result_url(block) or self._extract_album_url(block)
+
+            artists = self._split_artists(artist_text)
+
+            if album_title or album_url:
+                yield {
+                    "album": album_title,
+                    "artists": artists,
+                    "album_url": album_url,
+                }
+
+    def _select_album_candidate(self, html, album_info):
+        candidates = list(self._iter_album_search_candidates(html))
+        if not candidates:
+            return None
+
+        target_album_norm = _normalize_compare_value(album_info.get("album"))
+        target_artist_norms = _collect_normalized_candidates([album_info.get("artist")])
+
+        best_candidate = None
+        best_score = float("-inf")
+
+        for candidate in candidates:
+            candidate_album_norm = _normalize_compare_value(candidate.get("album"))
+            candidate_artist_norms = _collect_normalized_candidates(candidate.get("artists", []))
+
+            score = 0.0
+
+            if target_album_norm and candidate_album_norm == target_album_norm:
+                score += 5
+            elif target_album_norm and candidate_album_norm and target_album_norm in candidate_album_norm:
+                score += 2
+
+            if target_artist_norms and candidate_artist_norms & target_artist_norms:
+                score += 3
+
+            if candidate.get("album_url"):
+                score += 1
+
+            candidate["_score"] = score
+
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+
+        return best_candidate
+
+    @staticmethod
+    def _extract_text(block, pattern):
         match = re.search(pattern, block, re.IGNORECASE | re.DOTALL)
         if not match:
             return None
@@ -1650,6 +1822,16 @@ class AllMusicPopularityProvider:
     def _extract_album_url(self, block):
         match = re.search(
             r'class=\"release\"[^>]*>\s*<a[^>]*href=\"([^\"]+)\"',
+            block,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        return self._normalize_album_url(match.group(1))
+
+    def _extract_album_result_url(self, block):
+        match = re.search(
+            r'<a[^>]*href=\"([^\"]+/album/[^\"]+)\"',
             block,
             re.IGNORECASE | re.DOTALL,
         )
@@ -1730,19 +1912,26 @@ class AllMusicPopularityProvider:
         popularity = max(0.0, min(100.0, popularity))
         return round(popularity, 2)
 
-    def _get_album_rating_count(self, album_url, playlist_logger=None):
+    def _get_album_metadata(self, album_url, playlist_logger=None):
         normalized_url = self._normalize_album_url(album_url)
         if not normalized_url:
-            return None
+            return {}
 
         with self._cache_lock:
-            if normalized_url in self._album_cache:
-                return self._album_cache[normalized_url]
+            cached_value = self._album_cache.get(normalized_url)
+
+        if isinstance(cached_value, dict):
+            return dict(cached_value)
+        if cached_value is not None:
+            # Backward compatibility with previous cache versions storing raw integers
+            return {"rating_count": cached_value}
+
+        metadata = {}
 
         try:
             response = self._session.get(normalized_url, timeout=self._timeout)
             response.raise_for_status()
-            rating_count = self._parse_album_rating_count(response.text)
+            metadata = self._parse_album_metadata(response.text)
         except Exception as exc:
             if playlist_logger:
                 playlist_logger.debug(
@@ -1752,13 +1941,26 @@ class AllMusicPopularityProvider:
                 )
             else:
                 logger.debug("Failed to fetch AllMusic album page '%s': %s", normalized_url, exc)
-            rating_count = None
+            metadata = {}
 
         with self._cache_lock:
-            self._album_cache[normalized_url] = rating_count
+            self._album_cache[normalized_url] = metadata
             self._cache_dirty = True
 
-        return rating_count
+        return dict(metadata)
+
+    @classmethod
+    def _parse_album_metadata(cls, html):
+        rating_count = cls._parse_album_rating_count(html)
+        highlighted_tracks = cls._parse_album_highlighted_tracks(html)
+
+        metadata = {}
+        if rating_count is not None:
+            metadata["rating_count"] = rating_count
+        if highlighted_tracks:
+            metadata["highlighted_tracks"] = sorted(highlighted_tracks)
+
+        return metadata
 
     @staticmethod
     def _parse_album_rating_count(html):
@@ -1780,6 +1982,42 @@ class AllMusicPopularityProvider:
                     continue
 
         return None
+
+    @classmethod
+    def _parse_album_highlighted_tracks(cls, html):
+        if not html:
+            return set()
+
+        highlighted = set()
+
+        row_pattern = re.compile(
+            r"<tr[^>]*class=\"[^\"]*(?:track|song)[^\"]*\"[^>]*>(.*?)</tr>",
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        for block in row_pattern.findall(html):
+            if "highlight" not in block.lower():
+                continue
+
+            title = cls._extract_text(block, r'class=\"title\"[^>]*>(.*?)</a>')
+            if not title:
+                title = cls._extract_text(block, r'class=\"title\"[^>]*>(.*?)</td>')
+
+            if title:
+                highlighted.add(title)
+
+        cell_pattern = re.compile(
+            r'<td[^>]*class=\"[^\"]*title[^\"]*highlight[^\"]*\"[^>]*>(.*?)</td>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        for block in cell_pattern.findall(html):
+            text = re.sub(r"<[^>]+>", " ", block)
+            text = unescape(text).strip()
+            if text:
+                highlighted.add(text)
+
+        return highlighted
 
     def _compute_composite_popularity(self, track, details, spotify_provider=None, playlist_logger=None):
         details = details or {}
@@ -1822,7 +2060,11 @@ class AllMusicPopularityProvider:
         else:
             fallback_reason = "no_data"
 
-        is_single = self._detect_single(track, spotify_profile)
+        is_single = self._detect_single(
+            track,
+            spotify_profile,
+            allmusic_details=details,
+        )
         multiplier = 2.0 if is_single else 1.0
 
         final_score = None
@@ -1852,7 +2094,15 @@ class AllMusicPopularityProvider:
 
         return final_score, updated_details
 
-    def _detect_single(self, track, spotify_profile):
+    def _detect_single(self, track, spotify_profile, allmusic_details=None):
+        if isinstance(allmusic_details, dict):
+            highlighted_tracks = allmusic_details.get("album_highlighted_tracks")
+            if highlighted_tracks:
+                track_title_norm = _normalize_compare_value(getattr(track, "title", None))
+                highlighted_norms = _collect_normalized_candidates(highlighted_tracks)
+                if track_title_norm and track_title_norm in highlighted_norms:
+                    return True
+
         if isinstance(spotify_profile, dict):
             album_info = spotify_profile.get("album") or {}
             album_type = (album_info.get("album_type") or "").lower()
