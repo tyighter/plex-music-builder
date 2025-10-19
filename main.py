@@ -7,6 +7,7 @@ import requests
 import json
 import time
 import threading
+import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key
 from xml.etree import ElementTree as ET
@@ -260,7 +261,44 @@ plex = PlexServer(PLEX_URL, PLEX_TOKEN)
 # Load Playlists Definition
 # ----------------------------
 raw_playlists = load_yaml(PLAYLISTS_FILE)
-playlists_data = raw_playlists.get("playlists", {}) if isinstance(raw_playlists, dict) else {}
+
+
+def _merge_playlist_defaults(raw_payload):
+    if not isinstance(raw_payload, dict):
+        return {}
+
+    defaults = raw_payload.get("defaults")
+    playlists = raw_payload.get("playlists")
+
+    if not isinstance(playlists, dict):
+        return {}
+
+    default_cfg = copy.deepcopy(defaults) if isinstance(defaults, dict) else {}
+    default_filters = default_cfg.pop("plex_filter", []) or []
+
+    merged_playlists = {}
+    for playlist_name, playlist_cfg in playlists.items():
+        cfg = copy.deepcopy(playlist_cfg) if isinstance(playlist_cfg, dict) else {}
+
+        combined = copy.deepcopy(default_cfg)
+        combined.update(cfg)
+
+        playlist_filters = cfg.get("plex_filter", []) or []
+        combined_filters = []
+        if default_filters:
+            combined_filters.extend(copy.deepcopy(default_filters))
+        if playlist_filters:
+            combined_filters.extend(copy.deepcopy(playlist_filters))
+
+        if default_filters or playlist_filters or "plex_filter" in combined:
+            combined["plex_filter"] = combined_filters
+
+        merged_playlists[playlist_name] = combined
+
+    return merged_playlists
+
+
+playlists_data = _merge_playlist_defaults(raw_playlists)
 
 # ----------------------------
 # Metadata Cache
@@ -358,6 +396,127 @@ def _build_canonical_identity_key(artist, album, year):
     album_key = _normalize_compare_value(album)
     year_key = str(year).strip() if year else ""
     return (artist_key, album_key, year_key)
+
+
+def _build_track_identity_key(track):
+    raw_title = getattr(track, "title", None)
+    raw_artist = getattr(track, "grandparentTitle", None)
+
+    normalized_title = _normalize_compare_value(_strip_parenthetical(raw_title))
+    if not normalized_title:
+        normalized_title = _normalize_compare_value(raw_title)
+
+    normalized_artist = _normalize_compare_value(raw_artist)
+
+    if normalized_title or normalized_artist:
+        return (normalized_title, normalized_artist)
+
+    rating_key = getattr(track, "ratingKey", None)
+    if rating_key is not None:
+        return ("__rating_key__", str(rating_key))
+
+    guid = getattr(track, "guid", None)
+    if guid:
+        return ("__guid__", str(guid))
+
+    return ("__object_id__", str(id(track)))
+
+
+def _resolve_track_popularity_value(track, allmusic_provider=None, spotify_provider=None, playlist_logger=None):
+    popularity_value = None
+
+    if allmusic_provider and getattr(allmusic_provider, "is_enabled", False):
+        popularity_value = allmusic_provider.get_popularity(
+            track,
+            spotify_provider=spotify_provider,
+            playlist_logger=playlist_logger,
+        )
+
+    if popularity_value is None and spotify_provider and getattr(spotify_provider, "is_enabled", False):
+        popularity_value = spotify_provider.get_popularity(track)
+
+    if popularity_value is None:
+        return None
+
+    try:
+        return float(popularity_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _deduplicate_tracks(tracks, log, allmusic_provider=None, spotify_provider=None):
+    if not tracks:
+        return tracks, {}, 0
+
+    dedup_map = {}
+    order = []
+    popularity_cache = {}
+    duplicates_removed = 0
+
+    for idx, track in enumerate(tracks):
+        key = _build_track_identity_key(track)
+
+        current_entry = dedup_map.get(key)
+
+        popularity = _resolve_track_popularity_value(
+            track,
+            allmusic_provider=allmusic_provider,
+            spotify_provider=spotify_provider,
+            playlist_logger=log,
+        )
+
+        rating_key = getattr(track, "ratingKey", None)
+        if rating_key is not None and popularity is not None:
+            popularity_cache[str(rating_key)] = popularity
+
+        if current_entry is None:
+            dedup_map[key] = {
+                "track": track,
+                "popularity": popularity,
+                "index": idx,
+            }
+            order.append(key)
+            continue
+
+        existing_popularity = current_entry["popularity"]
+
+        better_candidate = False
+        if popularity is None and existing_popularity is None:
+            better_candidate = False
+        elif popularity is None:
+            better_candidate = False
+        elif existing_popularity is None:
+            better_candidate = True
+        else:
+            better_candidate = popularity > existing_popularity
+
+        if better_candidate:
+            duplicates_removed += 1
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "Deduplicated track '%s' by '%s' – replacing with version from album '%s' (pop %.2f → %.2f)",
+                    getattr(current_entry["track"], "title", "<unknown>"),
+                    getattr(current_entry["track"], "grandparentTitle", "<unknown>"),
+                    getattr(track, "parentTitle", getattr(current_entry["track"], "parentTitle", "<unknown album>")),
+                    existing_popularity if existing_popularity is not None else float("nan"),
+                    popularity,
+                )
+            dedup_map[key]["track"] = track
+            dedup_map[key]["popularity"] = popularity
+        else:
+            duplicates_removed += 1
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "Deduplicated track '%s' by '%s' – keeping existing version from album '%s' (pop %.2f ≥ %.2f)",
+                    getattr(track, "title", "<unknown>"),
+                    getattr(track, "grandparentTitle", "<unknown>"),
+                    getattr(current_entry["track"], "parentTitle", "<unknown album>"),
+                    existing_popularity if existing_popularity is not None else float("nan"),
+                    popularity if popularity is not None else float("nan"),
+                )
+
+    deduped_tracks = [dedup_map[key]["track"] for key in sorted(order, key=lambda item: dedup_map[item]["index"])]
+    return deduped_tracks, popularity_cache, duplicates_removed
 
 
 def _resolve_album_year(track):
@@ -2443,8 +2602,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     sort_by = config.get("sort_by")
     cover_path = config.get("cover")
     resolved_sort_by = sort_by
-    spotify_provider = None
-    allmusic_provider = None
+    spotify_provider = SpotifyPopularityProvider.get_shared()
+    allmusic_provider = AllMusicPopularityProvider.get_shared()
     if sort_by == "popularity":
         spotify_provider = SpotifyPopularityProvider.get_shared()
         allmusic_provider = AllMusicPopularityProvider.get_shared()
@@ -2487,6 +2646,13 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
     stream_requested = config.get("stream_while_filtering", False)
     stream_enabled = stream_requested and not sort_by and not limit
+    if stream_enabled:
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "Disabling stream_while_filtering for '%s' to support deduplication and artist limits.",
+                name,
+            )
+        stream_enabled = False
 
     all_tracks = library.searchTracks()
     total_tracks = len(all_tracks)
@@ -2587,14 +2753,36 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         log.info(f"✅ Finished building '{name}' ({match_count} tracks)")
         return
 
+    dedup_popularity_cache = {}
+    if matched_tracks:
+        matched_tracks, dedup_popularity_cache, duplicates_removed = _deduplicate_tracks(
+            matched_tracks,
+            log,
+            allmusic_provider=allmusic_provider,
+            spotify_provider=spotify_provider,
+        )
+        if duplicates_removed:
+            log.info(
+                "Removed %s duplicate track(s) from playlist '%s' after popularity comparison",
+                duplicates_removed,
+                name,
+            )
+    match_count = len(matched_tracks)
+
     if resolved_sort_by:
         sort_desc = config.get("sort_desc", True)
         sort_value_cache = {}
 
         def _get_sort_value(track):
             cache_key = getattr(track, "ratingKey", None)
-            if cache_key in sort_value_cache:
-                return sort_value_cache[cache_key]
+            cache_key_str = str(cache_key) if cache_key is not None else None
+            if cache_key_str and cache_key_str in sort_value_cache:
+                return sort_value_cache[cache_key_str]
+
+            if cache_key_str and cache_key_str in dedup_popularity_cache:
+                value = dedup_popularity_cache[cache_key_str]
+                sort_value_cache[cache_key_str] = value
+                return value
 
             if resolved_sort_by == "spotifyPopularity":
                 popularity_source = None
@@ -2635,10 +2823,13 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
 
                 if popularity_value is None:
                     sentinel = float("-inf") if sort_desc else float("inf")
-                    sort_value_cache[cache_key] = sentinel
-                else:
-                    sort_value_cache[cache_key] = popularity_value
-                return sort_value_cache[cache_key]
+                    if cache_key_str:
+                        sort_value_cache[cache_key_str] = sentinel
+                    return sentinel
+
+                if cache_key_str:
+                    sort_value_cache[cache_key_str] = popularity_value
+                return popularity_value
 
             if resolved_sort_by in {"ratingCount", "parentRatingCount"}:
                 if debug_logging:
@@ -2734,13 +2925,15 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                         getattr(track, "title", "<unknown>"),
                     )
 
-                sort_value_cache[cache_key] = chosen_value
+                if cache_key_str:
+                    sort_value_cache[cache_key_str] = chosen_value
                 return chosen_value
 
             if resolved_sort_by in CANONICAL_ONLY_FIELDS:
                 canonical_value = get_canonical_field_for_track(track, resolved_sort_by)
                 if canonical_value is None:
-                    sort_value_cache[cache_key] = None
+                    if cache_key_str:
+                        sort_value_cache[cache_key_str] = None
                     return None
                 value = canonical_value
             else:
@@ -2760,7 +2953,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                             value = float(stripped_value)
                         except ValueError:
                             pass
-                sort_value_cache[cache_key] = value
+                if cache_key_str:
+                    sort_value_cache[cache_key_str] = value
                 return value
 
             try:
@@ -2772,7 +2966,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                     getattr(track, "ratingKey", "<no-key>"),
                     exc,
                 )
-                sort_value_cache[cache_key] = None
+                if cache_key_str:
+                    sort_value_cache[cache_key_str] = None
                 return None
 
             xml_value = parse_field_from_xml(xml_text, resolved_sort_by)
@@ -2784,19 +2979,24 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 stripped = xml_value.strip()
                 if stripped:
                     try:
-                        sort_value_cache[cache_key] = float(stripped)
-                        return sort_value_cache[cache_key]
+                        if cache_key_str:
+                            sort_value_cache[cache_key_str] = float(stripped)
+                            return sort_value_cache[cache_key_str]
                     except ValueError:
-                        sort_value_cache[cache_key] = stripped
-                        return sort_value_cache[cache_key]
-                sort_value_cache[cache_key] = None
+                        if cache_key_str:
+                            sort_value_cache[cache_key_str] = stripped
+                            return sort_value_cache[cache_key_str]
+                if cache_key_str:
+                    sort_value_cache[cache_key_str] = None
                 return None
 
             if isinstance(xml_value, (int, float)):
-                sort_value_cache[cache_key] = float(xml_value)
-                return sort_value_cache[cache_key]
+                if cache_key_str:
+                    sort_value_cache[cache_key_str] = float(xml_value)
+                    return sort_value_cache[cache_key_str]
 
-            sort_value_cache[cache_key] = xml_value
+            if cache_key_str:
+                sort_value_cache[cache_key_str] = xml_value
             return xml_value
 
         def _normalize_sort_value(value):
@@ -2854,6 +3054,64 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             return -result if sort_desc else result
 
         matched_tracks.sort(key=cmp_to_key(_compare_tracks))
+
+    artist_limit_raw = config.get("artist_limit")
+    if artist_limit_raw is not None:
+        try:
+            artist_limit_value = int(artist_limit_raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "Invalid artist_limit '%s' for playlist '%s'; expected integer.",
+                artist_limit_raw,
+                name,
+            )
+        else:
+            if artist_limit_value > 0:
+                artist_counts = {}
+                limited_tracks = []
+                removed_for_limit = 0
+
+                for track in matched_tracks:
+                    artist_name = _normalize_compare_value(getattr(track, "grandparentTitle", None))
+                    if not artist_name:
+                        fallback_artist = (
+                            getattr(track, "grandparentRatingKey", None)
+                            or getattr(track, "grandparentGuid", None)
+                            or getattr(track, "originalTitle", None)
+                        )
+                        artist_name = _normalize_compare_value(fallback_artist) or "__unknown__"
+
+                    current_count = artist_counts.get(artist_name, 0)
+                    if current_count >= artist_limit_value:
+                        removed_for_limit += 1
+                        if debug_logging:
+                            log.debug(
+                                "Skipping track '%s' by '%s' due to artist limit %s",
+                                getattr(track, "title", "<unknown>"),
+                                getattr(track, "grandparentTitle", "<unknown>"),
+                                artist_limit_value,
+                            )
+                        continue
+
+                    artist_counts[artist_name] = current_count + 1
+                    limited_tracks.append(track)
+
+                if removed_for_limit:
+                    log.info(
+                        "Applied artist limit (%s) for playlist '%s' – removed %s track(s)",
+                        artist_limit_value,
+                        name,
+                        removed_for_limit,
+                    )
+
+                matched_tracks = limited_tracks
+                match_count = len(matched_tracks)
+            else:
+                log.warning(
+                    "Artist limit for playlist '%s' must be positive; received %s.",
+                    name,
+                    artist_limit_raw,
+                )
 
     if limit:
         matched_tracks = matched_tracks[:limit]
