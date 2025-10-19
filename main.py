@@ -264,6 +264,7 @@ CANONICAL_FIELD_MAP = {
 
 CANONICAL_SORT_FIELDS = {"ratingCount", "parentRatingCount", "year", "parentYear", "originallyAvailableAt"}
 CANONICAL_NUMERIC_FIELDS = {"ratingCount", "parentRatingCount", "year", "parentYear"}
+CANONICAL_ONLY_FIELDS = {"ratingCount", "parentRatingCount"}
 
 def save_cache():
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
@@ -561,11 +562,25 @@ def get_field_value(track, field):
             return False
         seen_fields.add(candidate)
 
+        if candidate in CANONICAL_ONLY_FIELDS:
+            canonical_value = get_canonical_field_for_track(track, candidate)
+            if canonical_value is None:
+                return False
+
+            if isinstance(canonical_value, (list, set, tuple)):
+                normalized_values = [str(v).strip() for v in canonical_value if str(v).strip()]
+            else:
+                normalized = str(canonical_value).strip()
+                normalized_values = [normalized] if normalized or canonical_value == 0 else []
+
+            values.update(normalized_values)
+            return bool(normalized_values)
+
         before = len(values)
 
         # 1️⃣ Try direct object field (most accurate)
         val = getattr(track, candidate, None)
-        if val:
+        if val or val == 0:
             if callable(val):
                 try:
                     val = val()
@@ -803,11 +818,18 @@ def process_playlist(name, config):
                 if cache_key in sort_value_cache:
                     return sort_value_cache[cache_key]
 
-                value = getattr(track, resolved_sort_by, None)
-                if resolved_sort_by in CANONICAL_SORT_FIELDS:
+                if resolved_sort_by in CANONICAL_ONLY_FIELDS:
                     canonical_value = get_canonical_field_for_track(track, resolved_sort_by)
-                    if canonical_value is not None:
-                        value = canonical_value
+                    if canonical_value is None:
+                        sort_value_cache[cache_key] = None
+                        return None
+                    value = canonical_value
+                else:
+                    value = getattr(track, resolved_sort_by, None)
+                    if resolved_sort_by in CANONICAL_SORT_FIELDS:
+                        canonical_value = get_canonical_field_for_track(track, resolved_sort_by)
+                        if canonical_value is not None:
+                            value = canonical_value
                 if value is not None:
                     if (
                         resolved_sort_by in CANONICAL_NUMERIC_FIELDS
