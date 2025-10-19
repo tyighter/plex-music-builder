@@ -4,7 +4,7 @@ plex:
   library_name: "Music"                # name of your music library in Plex
 
 logging:
-  level: "DEBUG"
+  level: "INFO"
 
 runtime:
   run_forever: true          # true = loop forever, false = run once
@@ -13,8 +13,8 @@ runtime:
   save_interval: 500
 
 spotify:
-  client_id: "your-spotify-client-id"
-  client_secret: "your-spotify-client-secret"
+  client_id: "97bfb7998acd470ea0f00886921fc927"
+  client_secret: "a014bd8f23f44edfb92d6e3feb05d88e"
   market: "US"                 # optional: ISO 3166-1 alpha-2 market code
   search_limit: 10             # optional: number of search results to evaluate
 
