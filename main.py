@@ -246,6 +246,7 @@ else:
 # removed) and stores the raw XML payload plus any fields we've already parsed
 # from that payload.
 canonical_metadata_cache = {}
+canonical_guid_lookup_cache = {}
 canonical_cache_lock = threading.Lock()
 
 # Canonical metadata exposes album-level attributes (e.g., original release
@@ -279,7 +280,48 @@ def _normalize_plex_guid(guid):
         return None
     if guid_str.startswith("plex://"):
         return guid_str[len("plex://") :]
-    return guid_str
+    return guid_str or None
+
+
+def _strip_parenthetical(value):
+    if not value:
+        return ""
+    return re.sub(r"\s*\([^)]*\)\s*", " ", str(value)).strip()
+
+
+def _normalize_compare_value(value):
+    if not value:
+        return ""
+    normalized = re.sub(r"\s+", " ", str(value)).strip().lower()
+    return normalized
+
+
+def _collect_normalized_candidates(values):
+    candidates = set()
+    for raw_value in values:
+        if not raw_value:
+            continue
+        normalized = _normalize_compare_value(raw_value)
+        if normalized:
+            candidates.add(normalized)
+        stripped = _normalize_compare_value(_strip_parenthetical(raw_value))
+        if stripped:
+            candidates.add(stripped)
+    return candidates
+
+
+def _extract_year_token(value):
+    if not value:
+        return None
+    match = re.search(r"(\d{4})", str(value))
+    return match.group(1) if match else None
+
+
+def _build_canonical_identity_key(artist, album, year):
+    artist_key = _normalize_compare_value(artist)
+    album_key = _normalize_compare_value(album)
+    year_key = str(year).strip() if year else ""
+    return (artist_key, album_key, year_key)
 
 
 def _get_album_guid(track):
@@ -343,6 +385,177 @@ def _get_track_guid(track):
 
     guid = parse_field_from_xml(track_xml, "guid")
     return str(guid) if guid else None
+
+
+def _extract_guid_from_search_results(xml_text, album_norms, artist_norms, target_year):
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        logger.debug("Canonical search XML parse error.")
+        return None
+
+    candidate_nodes = []
+    for tag in ("Directory", "Metadata"):
+        candidate_nodes.extend(root.findall(f".//{tag}"))
+
+    for node in candidate_nodes:
+        node_type = node.attrib.get("type")
+        if node_type and node_type not in {"album", "artist", "collection"}:
+            if node_type != "album":
+                continue
+
+        guid = node.attrib.get("guid") or node.attrib.get("parentGuid")
+        if not guid:
+            continue
+
+        candidate_album_norms = _collect_normalized_candidates(
+            [
+                node.attrib.get("title"),
+                node.attrib.get("parentTitle"),
+                node.attrib.get("originalTitle"),
+                node.attrib.get("albumTitle"),
+            ]
+        )
+        if album_norms and not (album_norms & candidate_album_norms):
+            continue
+
+        if artist_norms:
+            candidate_artist_norms = _collect_normalized_candidates(
+                [
+                    node.attrib.get("grandparentTitle"),
+                    node.attrib.get("parentTitle"),
+                    node.attrib.get("artistTitle"),
+                    node.attrib.get("primaryArtist"),
+                ]
+            )
+            if candidate_artist_norms and not (artist_norms & candidate_artist_norms):
+                continue
+            if not candidate_artist_norms:
+                continue
+
+        if target_year:
+            candidate_year_tokens = set()
+            for attr_name in ("year", "parentYear", "originallyAvailableAt"):
+                year_token = _extract_year_token(node.attrib.get(attr_name))
+                if year_token:
+                    candidate_year_tokens.add(year_token)
+            if candidate_year_tokens and target_year not in candidate_year_tokens:
+                continue
+
+        return guid
+
+    return None
+
+
+def _search_canonical_guid(artist, album, year):
+    if not album:
+        return None
+
+    if CACHE_ONLY:
+        return None
+
+    album_query_candidates = []
+    for candidate in (album, _strip_parenthetical(album)):
+        candidate = (candidate or "").strip()
+        if candidate and candidate not in album_query_candidates:
+            album_query_candidates.append(candidate)
+
+    query_strings = []
+    for base in album_query_candidates or [album]:
+        query_strings.append(base)
+        if artist:
+            query_strings.append(f"{base} {artist}")
+        if year:
+            query_strings.append(f"{base} {year}")
+            if artist:
+                query_strings.append(f"{base} {artist} {year}")
+
+    deduped_queries = []
+    seen = set()
+    for query in query_strings:
+        normalized = query.strip().lower()
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped_queries.append(query.strip())
+
+    if not deduped_queries:
+        deduped_queries = [album]
+
+    album_norms = _collect_normalized_candidates(album_query_candidates or [album])
+    artist_norms = _collect_normalized_candidates([artist])
+    year_token = _extract_year_token(year)
+
+    search_endpoints = [
+        f"{METADATA_PROVIDER_URL}/library/metadata/search",
+        f"{METADATA_PROVIDER_URL}/library/search",
+    ]
+
+    for query in deduped_queries:
+        for endpoint in search_endpoints:
+            params = {
+                "query": query,
+                "type": 9,
+                "X-Plex-Token": PLEX_TOKEN,
+            }
+
+            try:
+                response = requests.get(endpoint, params=params, timeout=10)
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                logger.debug(
+                    "Canonical metadata search failed for query '%s' via %s: %s",
+                    query,
+                    endpoint,
+                    exc,
+                )
+                continue
+
+            guid = _extract_guid_from_search_results(
+                response.text,
+                album_norms,
+                artist_norms,
+                year_token,
+            )
+            if guid:
+                logger.debug(
+                    "Canonical metadata search resolved '%s' by '%s' (%s) to GUID %s",
+                    album,
+                    artist,
+                    year,
+                    _normalize_plex_guid(guid),
+                )
+                return guid
+
+    logger.debug(
+        "Canonical metadata search could not resolve '%s' by '%s' (%s)",
+        album,
+        artist,
+        year,
+    )
+    return None
+
+
+def _lookup_canonical_guid_for_track(track):
+    artist = getattr(track, "grandparentTitle", None)
+    album = getattr(track, "parentTitle", None)
+    year = getattr(track, "parentYear", None)
+
+    identity_key = _build_canonical_identity_key(artist, album, year)
+
+    with canonical_cache_lock:
+        if identity_key in canonical_guid_lookup_cache:
+            cached_guid = canonical_guid_lookup_cache[identity_key]
+            return cached_guid or None
+
+    resolved_guid = _search_canonical_guid(artist, album, year)
+
+    with canonical_cache_lock:
+        canonical_guid_lookup_cache[identity_key] = resolved_guid or ""
+
+    return resolved_guid
 
 
 def fetch_canonical_album_metadata(album_guid):
@@ -450,7 +663,25 @@ def get_canonical_field_for_track(track, field):
             getattr(track, "title", "<unknown>"),
         )
 
-    return get_canonical_field_from_guid(guid, canonical_field)
+    value = get_canonical_field_from_guid(guid, canonical_field)
+    if value is not None:
+        return value
+
+    lookup_guid = _lookup_canonical_guid_for_track(track)
+    if lookup_guid:
+        lookup_normalized = _normalize_plex_guid(lookup_guid)
+        guid_normalized = _normalize_plex_guid(guid)
+        if lookup_normalized != guid_normalized:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Retrying canonical %s lookup for '%s' via searched GUID %s",
+                    field,
+                    getattr(track, "title", "<unknown>"),
+                    lookup_normalized,
+                )
+            return get_canonical_field_from_guid(lookup_guid, canonical_field)
+
+    return value
 
 
 def chunked(iterable, size):
