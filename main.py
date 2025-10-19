@@ -1331,7 +1331,7 @@ class AllMusicPopularityProvider:
         artist = getattr(track, "grandparentTitle", None)
         album = getattr(track, "parentTitle", None)
 
-        track_key = self._build_track_key(title, artist)
+        track_key = self._build_track_key(title, artist, album)
         with self._cache_lock:
             cached_entry = self._track_cache.get(track_key) if track_key else None
 
@@ -1411,108 +1411,127 @@ class AllMusicPopularityProvider:
             }
             self._cache_dirty = True
 
-    def _build_track_key(self, title, artist):
+    def _build_track_key(self, title, artist, album=None):
         if not title or not artist:
             return None
-        return f"{_normalize_compare_value(title)}::{_normalize_compare_value(artist)}"
+
+        base_key = f"{_normalize_compare_value(title)}::{_normalize_compare_value(artist)}"
+        album_norm = _normalize_compare_value(_strip_parenthetical(album)) if album else ""
+
+        if album_norm:
+            return f"{base_key}::{album_norm}"
+        return base_key
 
     def _build_query(self, title, artist, album):
         parts = []
-        for value in (title, artist):
-            if not value:
-                continue
-            cleaned = str(value).strip()
-            if cleaned:
-                parts.append(cleaned)
+
+        if album:
+            cleaned_album = _strip_parenthetical(album)
+            if cleaned_album:
+                parts.append(cleaned_album.strip())
+
+        if artist:
+            cleaned_artist = str(artist).strip()
+            if cleaned_artist:
+                parts.append(cleaned_artist)
+
+        if not parts and title:
+            cleaned_title = str(title).strip()
+            if cleaned_title:
+                parts.append(cleaned_title)
+
         if not parts:
             return None
+
         return " ".join(parts)
 
     def _execute_search(self, query, title, artist, album, playlist_logger=None):
-        if not self._session:
+        if not self._session or not album:
             return None
 
         last_error = None
         final_details = None
         used_query = None
-        fallback_used = False
+
+        album_info = {
+            "album": _strip_parenthetical(album) if album else album,
+            "artist": artist,
+        }
 
         for variant in self._iter_query_variants(query):
-            url = f"https://www.allmusic.com/search/songs/{quote_plus(variant)}"
+            search_url = f"https://www.allmusic.com/search/albums/{quote_plus(variant)}"
+
+            if playlist_logger:
+                playlist_logger.debug("AllMusic album search URL: %s", search_url)
 
             try:
-                response = self._session.get(url, timeout=self._timeout)
+                response = self._session.get(search_url, timeout=self._timeout)
                 response.raise_for_status()
             except Exception as exc:
                 last_error = exc
                 self._error = str(exc)
                 if playlist_logger:
-                    playlist_logger.debug("AllMusic request for '%s' failed: %s", variant, exc)
+                    playlist_logger.debug(
+                        "AllMusic album search for '%s' failed: %s",
+                        variant,
+                        exc,
+                    )
                 else:
-                    logger.debug("AllMusic request for '%s' failed: %s", variant, exc)
+                    logger.debug("AllMusic album search for '%s' failed: %s", variant, exc)
                 self._remember_query_cache_entry(variant, None)
                 continue
 
-            details = self._select_candidate(
-                response.text,
-                {
-                    "title": title,
-                    "artist": artist,
-                    "album": album,
-                },
+            album_candidate = self._select_album_candidate(response.text, album_info)
+
+            if not album_candidate:
+                self._remember_query_cache_entry(variant, None)
+                continue
+
+            album_url = album_candidate.get("album_url")
+
+            if playlist_logger and album_url:
+                playlist_logger.debug("AllMusic album page URL: %s", album_url)
+
+            metadata = self._get_album_metadata(
+                album_url,
                 playlist_logger=playlist_logger,
             )
+
+            highlighted_tracks = metadata.get("highlighted_tracks") or []
+            rating_count = metadata.get("rating_count")
+
+            artists = list(album_candidate.get("artists", []))
+            if not artists and artist:
+                artists = [artist]
+
+            cleaned_album_title = album_candidate.get("album") or (
+                _strip_parenthetical(album) if album else None
+            )
+
+            details = {
+                "title": title,
+                "artists": artists,
+                "album": cleaned_album_title or None,
+                "album_url": album_url,
+                "rating_count": rating_count,
+                "album_rating_count": rating_count,
+                "album_highlighted_tracks": list(highlighted_tracks),
+                "source": "album_search",
+            }
 
             self._remember_query_cache_entry(variant, details)
 
-            if playlist_logger:
-                if details is None:
-                    playlist_logger.debug(
-                        "AllMusic search for '%s' returned no matching popularity score.",
-                        variant,
-                    )
-                else:
-                    playlist_logger.debug(
-                        "AllMusic matched '%s' → title='%s', artists=%s, album='%s', rating_count=%s, album_rating_count=%s",
-                        variant,
-                        (details or {}).get("title"),
-                        (details or {}).get("artists"),
-                        (details or {}).get("album"),
-                        (details or {}).get("rating_count"),
-                        (details or {}).get("album_rating_count"),
-                    )
-
             used_query = variant
             final_details = details
+            break
 
-            if details is not None:
-                break
-
-        if final_details is None and album:
-            album_fallback = self._resolve_via_album_page(
-                album,
-                artist,
-                title,
-                playlist_logger=playlist_logger,
-            )
-            if album_fallback:
-                final_details = album_fallback
-                used_query = used_query or query
-                fallback_used = True
-
-        if used_query is None and final_details is None:
-            if last_error is None:
-                self._error = "AllMusic search failed for query variations."
+        if final_details is None:
+            if last_error is not None:
+                self._error = str(last_error)
             self._remember_query_cache_entry(query, None)
             return None
 
-        if used_query != query and playlist_logger:
-            playlist_logger.debug(
-                "Retrying AllMusic search for '%s' with simplified query '%s'", query, used_query
-            )
         if used_query != query:
-            self._remember_query_cache_entry(query, final_details)
-        elif fallback_used:
             self._remember_query_cache_entry(query, final_details)
 
         return final_details
@@ -1525,7 +1544,7 @@ class AllMusicPopularityProvider:
     def _resolve_via_album_page(self, album, artist, track_title, playlist_logger=None):
         album_query_parts = []
         if album:
-            album_query_parts.append(str(album).strip())
+            album_query_parts.append(_strip_parenthetical(album))
         if artist:
             album_query_parts.append(str(artist).strip())
 
@@ -1538,6 +1557,11 @@ class AllMusicPopularityProvider:
 
         for variant in self._iter_query_variants(album_query):
             search_url = f"https://www.allmusic.com/search/albums/{quote_plus(variant)}"
+
+            if playlist_logger:
+                playlist_logger.debug("AllMusic album search URL: %s", search_url)
+            else:
+                logger.debug("AllMusic album search URL: %s", search_url)
 
             try:
                 response = self._session.get(search_url, timeout=self._timeout)
@@ -1587,17 +1611,23 @@ class AllMusicPopularityProvider:
                 "source": "album_search",
             }
 
+            album_url = album_candidate.get("album_url")
+
             if playlist_logger:
+                if album_url:
+                    playlist_logger.debug("AllMusic album page URL: %s", album_url)
                 playlist_logger.debug(
                     "AllMusic album fallback matched '%s' → album_url='%s'",
                     album_candidate.get("album"),
-                    album_candidate.get("album_url"),
+                    album_url,
                 )
             else:
+                if album_url:
+                    logger.debug("AllMusic album page URL: %s", album_url)
                 logger.debug(
                     "AllMusic album fallback matched '%s' → album_url='%s'",
                     album_candidate.get("album"),
-                    album_candidate.get("album_url"),
+                    album_url,
                 )
 
             return details
@@ -1767,10 +1797,12 @@ class AllMusicPopularityProvider:
             album_url = self._extract_album_result_url(block) or self._extract_album_url(block)
 
             artists = self._split_artists(artist_text)
+            cleaned_album = _strip_parenthetical(album_title) if album_title else None
 
             if album_title or album_url:
                 yield {
-                    "album": album_title,
+                    "album": cleaned_album or album_title,
+                    "raw_album": album_title,
                     "artists": artists,
                     "album_url": album_url,
                 }
@@ -1780,14 +1812,18 @@ class AllMusicPopularityProvider:
         if not candidates:
             return None
 
-        target_album_norm = _normalize_compare_value(album_info.get("album"))
+        target_album_norm = _normalize_compare_value(
+            _strip_parenthetical(album_info.get("album"))
+        )
         target_artist_norms = _collect_normalized_candidates([album_info.get("artist")])
 
         best_candidate = None
         best_score = float("-inf")
 
         for candidate in candidates:
-            candidate_album_norm = _normalize_compare_value(candidate.get("album"))
+            candidate_album_norm = _normalize_compare_value(
+                _strip_parenthetical(candidate.get("raw_album") or candidate.get("album"))
+            )
             candidate_artist_norms = _collect_normalized_candidates(candidate.get("artists", []))
 
             score = 0.0
