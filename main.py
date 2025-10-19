@@ -480,8 +480,16 @@ def parse_field_from_xml(xml_text, field):
     """Extract a field (attribute or tag) from Plex XML metadata."""
     try:
         root = ET.fromstring(xml_text)
-        # Plex responses wrap metadata inside a <MediaContainer> root
-        node = root.find("./Directory") or root.find("./Track") or root.find("./Video") or root.find("./Photo")
+        # Plex responses wrap metadata inside a <MediaContainer> root. Different
+        # endpoints return different child node names (e.g. ``Directory`` for
+        # library lookups, ``Track`` for individual items, ``Metadata`` for the
+        # canonical/original-release provider). Search a list of known element
+        # names so we can reuse this helper for all of them.
+        node = None
+        for candidate in ("Directory", "Track", "Video", "Photo", "Metadata"):
+            node = root.find(f"./{candidate}")
+            if node is not None:
+                break
         if node is None:
             return None
 
