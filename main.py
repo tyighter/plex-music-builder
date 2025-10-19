@@ -9,6 +9,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key
 from xml.etree import ElementTree as ET
+from html import unescape
+from urllib.parse import quote_plus
 
 from plexapi.server import PlexServer
 from spotipy import Spotify
@@ -51,6 +53,16 @@ SPOTIFY_CLIENT_ID = spotify_cfg.get("client_id")
 SPOTIFY_CLIENT_SECRET = spotify_cfg.get("client_secret")
 SPOTIFY_MARKET = spotify_cfg.get("market")
 SPOTIFY_SEARCH_LIMIT = spotify_cfg.get("search_limit", 10)
+
+allmusic_cfg = cfg.get("allmusic", {}) or {}
+ALLMUSIC_ENABLED = allmusic_cfg.get("enabled", True)
+ALLMUSIC_CACHE_FILE = allmusic_cfg.get("cache_file", "/app/allmusic_popularity.json")
+ALLMUSIC_TIMEOUT = allmusic_cfg.get("timeout", 10)
+ALLMUSIC_USER_AGENT = allmusic_cfg.get(
+    "user_agent",
+    "plex-music-builder/1.0 (+https://github.com/plexmusicbuilder)",
+)
+ALLMUSIC_CACHE_VERSION = 1
 
 logging_cfg = cfg.get("logging", {})
 LOG_LEVEL = logging_cfg.get("level", "DEBUG").upper()
@@ -1165,6 +1177,415 @@ class SpotifyPopularityProvider:
         return best_candidate
 
 
+class AllMusicPopularityProvider:
+    """Resolve track popularity using AllMusic search results."""
+
+    _instance = None
+    _instance_lock = threading.Lock()
+
+    def __init__(self):
+        self._enabled = bool(ALLMUSIC_ENABLED)
+        self._error = None
+        self._session = None
+        self._timeout = ALLMUSIC_TIMEOUT or 10
+        self._cache_file = ALLMUSIC_CACHE_FILE
+        self._track_cache = {}
+        self._query_cache = {}
+        self._cache_lock = threading.Lock()
+        self._cache_dirty = False
+
+        if not self._enabled:
+            self._error = "AllMusic integration disabled via configuration."
+            return
+
+        try:
+            self._session = requests.Session()
+            if ALLMUSIC_USER_AGENT:
+                self._session.headers.update({"User-Agent": ALLMUSIC_USER_AGENT})
+        except Exception as exc:  # pragma: no cover - defensive only
+            self._error = f"Failed to initialize HTTP session: {exc}"
+            self._enabled = False
+            return
+
+        self._load_cache()
+
+    @classmethod
+    def get_shared(cls):
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def save_shared_cache(cls):
+        instance = cls._instance
+        if instance is not None:
+            instance.save_cache()
+
+    @property
+    def is_enabled(self):
+        return bool(self._enabled and self._session)
+
+    def describe_error(self):
+        return self._error
+
+    def save_cache(self):
+        if not self._cache_file or not self._cache_dirty:
+            return
+
+        cache_dir = os.path.dirname(self._cache_file)
+        if cache_dir and not os.path.exists(cache_dir):
+            os.makedirs(cache_dir, exist_ok=True)
+
+        payload = {
+            "version": ALLMUSIC_CACHE_VERSION,
+            "tracks": self._track_cache,
+            "queries": self._query_cache,
+        }
+
+        try:
+            with open(self._cache_file, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+        except Exception as exc:  # pragma: no cover - IO safety
+            logger.warning("Unable to persist AllMusic cache to '%s': %s", self._cache_file, exc)
+        else:
+            self._cache_dirty = False
+
+    def _load_cache(self):
+        if not self._cache_file or not os.path.exists(self._cache_file):
+            return
+
+        try:
+            with open(self._cache_file, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            logger.warning("Unable to load AllMusic cache from '%s': %s", self._cache_file, exc)
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        if payload.get("version") != ALLMUSIC_CACHE_VERSION:
+            logger.debug("Ignoring AllMusic cache with mismatched version (%s)", payload.get("version"))
+            return
+
+        self._track_cache = payload.get("tracks", {}) or {}
+        self._query_cache = payload.get("queries", {}) or {}
+
+    def get_popularity(self, track, playlist_logger=None):
+        if not self.is_enabled:
+            return None
+
+        title = getattr(track, "title", None)
+        artist = getattr(track, "grandparentTitle", None)
+        album = getattr(track, "parentTitle", None)
+
+        track_key = self._build_track_key(title, artist)
+        with self._cache_lock:
+            cached_entry = self._track_cache.get(track_key) if track_key else None
+
+        if cached_entry is not None:
+            popularity = cached_entry.get("popularity")
+            if playlist_logger:
+                playlist_logger.debug(
+                    "AllMusic popularity cache hit for '%s' by '%s': %s",
+                    title or "<unknown>",
+                    artist or "<unknown>",
+                    popularity,
+                )
+            return popularity
+
+        query = self._build_query(title, artist, album)
+        if not query:
+            if playlist_logger:
+                playlist_logger.debug(
+                    "Skipping AllMusic popularity lookup for '%s' – insufficient metadata.",
+                    title or "<unknown>",
+                )
+            if track_key:
+                with self._cache_lock:
+                    self._track_cache[track_key] = {"popularity": None, "timestamp": time.time()}
+                    self._cache_dirty = True
+            return None
+
+        if playlist_logger:
+            playlist_logger.debug(
+                "Fetching AllMusic popularity for '%s' by '%s' (query='%s')",
+                title or "<unknown>",
+                artist or "<unknown>",
+                query,
+            )
+
+        with self._cache_lock:
+            cached_query = self._query_cache.get(query)
+
+        if cached_query is not None:
+            popularity = cached_query.get("popularity")
+            details = cached_query.get("details")
+            if playlist_logger:
+                playlist_logger.debug(
+                    "AllMusic query cache hit for '%s': popularity=%s, matched=%s",
+                    query,
+                    popularity,
+                    (details or {}).get("title"),
+                )
+            self._remember_track_cache(track_key, popularity, details)
+            return popularity
+
+        popularity, details = self._execute_search(query, title, artist, album, playlist_logger)
+        self._remember_track_cache(track_key, popularity, details)
+        return popularity
+
+    def _remember_track_cache(self, track_key, popularity, details):
+        if not track_key:
+            return
+        with self._cache_lock:
+            self._track_cache[track_key] = {
+                "popularity": popularity,
+                "timestamp": time.time(),
+                "details": details or {},
+            }
+            self._cache_dirty = True
+
+    def _build_track_key(self, title, artist):
+        if not title or not artist:
+            return None
+        return f"{_normalize_compare_value(title)}::{_normalize_compare_value(artist)}"
+
+    def _build_query(self, title, artist, album):
+        parts = []
+        for value in (title, artist, album):
+            if not value:
+                continue
+            cleaned = str(value).strip()
+            if cleaned:
+                parts.append(cleaned)
+        if not parts:
+            return None
+        return " ".join(parts)
+
+    def _execute_search(self, query, title, artist, album, playlist_logger=None):
+        if not self._session:
+            return None, None
+
+        url = f"https://www.allmusic.com/search/tracks/{quote_plus(query)}"
+
+        try:
+            response = self._session.get(url, timeout=self._timeout)
+            response.raise_for_status()
+        except Exception as exc:
+            self._error = str(exc)
+            if playlist_logger:
+                playlist_logger.debug("AllMusic request for '%s' failed: %s", query, exc)
+            else:
+                logger.debug("AllMusic request for '%s' failed: %s", query, exc)
+            with self._cache_lock:
+                self._query_cache[query] = {
+                    "popularity": None,
+                    "details": None,
+                    "timestamp": time.time(),
+                }
+                self._cache_dirty = True
+            return None, None
+
+        popularity, details = self._select_candidate(
+            response.text,
+            {
+                "title": title,
+                "artist": artist,
+                "album": album,
+            },
+        )
+
+        with self._cache_lock:
+            self._query_cache[query] = {
+                "popularity": popularity,
+                "details": details,
+                "timestamp": time.time(),
+            }
+            self._cache_dirty = True
+
+        if playlist_logger:
+            if popularity is None:
+                playlist_logger.debug(
+                    "AllMusic search for '%s' returned no matching popularity score.",
+                    query,
+                )
+            else:
+                playlist_logger.debug(
+                    "AllMusic matched '%s' → title='%s', artists=%s, album='%s', popularity=%s (rating_count=%s, rating=%s)",
+                    query,
+                    (details or {}).get("title"),
+                    (details or {}).get("artists"),
+                    (details or {}).get("album"),
+                    popularity,
+                    (details or {}).get("rating_count"),
+                    (details or {}).get("rating"),
+                )
+
+        return popularity, details
+
+    def _select_candidate(self, html, track_info):
+        candidates = list(self._iter_candidates(html))
+        if not candidates:
+            return None, None
+
+        track_title_norm = _normalize_compare_value(track_info.get("title"))
+        track_artist_norms = _collect_normalized_candidates([track_info.get("artist")])
+        track_album_norms = _collect_normalized_candidates([track_info.get("album")])
+
+        best_candidate = None
+        best_score = float("-inf")
+
+        for candidate in candidates:
+            candidate_title_norm = _normalize_compare_value(candidate.get("title"))
+            candidate_artist_norms = _collect_normalized_candidates(candidate.get("artists", []))
+            candidate_album_norms = _collect_normalized_candidates(candidate.get("albums", []))
+
+            popularity = candidate.get("popularity") or 0
+            try:
+                popularity_score = float(popularity) / 100.0
+            except (TypeError, ValueError):
+                popularity_score = 0.0
+
+            score = popularity_score
+
+            if track_title_norm and candidate_title_norm == track_title_norm:
+                score += 5
+            elif track_title_norm and candidate_title_norm and track_title_norm in candidate_title_norm:
+                score += 2
+
+            if track_artist_norms and candidate_artist_norms & track_artist_norms:
+                score += 3
+
+            if track_album_norms and candidate_album_norms & track_album_norms:
+                score += 1
+
+            candidate["_score"] = score
+
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+
+        if not best_candidate:
+            return None, None
+
+        rating_details = best_candidate.get("_rating_details") or {}
+
+        details = {
+            "title": best_candidate.get("title"),
+            "artists": list(best_candidate.get("artists", [])),
+            "album": best_candidate.get("albums", [None])[0] if best_candidate.get("albums") else None,
+            "score": best_candidate.get("_score"),
+            "rating_count": rating_details.get("rating_count"),
+            "rating": rating_details.get("rating"),
+            "rating_scale": rating_details.get("rating_scale"),
+        }
+
+        return best_candidate.get("popularity"), details
+
+    def _iter_candidates(self, html):
+        if not html:
+            return
+
+        row_pattern = re.compile(
+            r"<tr[^>]*class=\"[^\"]*(?:song|track)[^\"]*\"[^>]*>(.*?)</tr>",
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        for block in row_pattern.findall(html):
+            title = self._extract_text(block, r'class=\"title\"[^>]*>(.*?)</a>')
+            if not title:
+                title = self._extract_text(block, r'class=\"title\"[^>]*>(.*?)</td>')
+
+            artist_text = self._extract_text(block, r'class=\"performers\"[^>]*>(.*?)</td>')
+            if not artist_text:
+                artist_text = self._extract_text(block, r'class=\"artist\"[^>]*>(.*?)</td>')
+
+            album_text = self._extract_text(block, r'class=\"release\"[^>]*>(.*?)</td>')
+
+            rating_details = self._extract_rating_details(block)
+
+            artists = self._split_artists(artist_text)
+            albums = [album_text] if album_text else []
+
+            yield {
+                "title": title,
+                "artists": artists,
+                "albums": albums,
+                "popularity": rating_details.get("rating_count")
+                if rating_details.get("rating_count") is not None
+                else rating_details.get("rating"),
+                "_rating_details": rating_details,
+            }
+
+    def _extract_text(self, block, pattern):
+        match = re.search(pattern, block, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        text = re.sub(r"<[^>]+>", " ", match.group(1))
+        return unescape(text).strip()
+
+    def _split_artists(self, text):
+        if not text:
+            return []
+        parts = re.split(r"[,/;&]+", text)
+        cleaned = [part.strip() for part in parts if part and part.strip()]
+        return cleaned
+
+    def _extract_rating_details(self, block):
+        details = {
+            "rating_count": None,
+            "rating": None,
+            "rating_scale": None,
+        }
+
+        match = re.search(r'data-ratingcount="([0-9,]+)"', block, re.IGNORECASE)
+        if match:
+            try:
+                details["rating_count"] = int(match.group(1).replace(",", ""))
+            except ValueError:
+                details["rating_count"] = None
+
+        # Direct numeric rating attribute
+        match = re.search(r'data-(?:avg-)?rating="([0-9.]+)"', block, re.IGNORECASE)
+        if match:
+            details["rating_scale"] = "stars"
+            details["rating"] = self._convert_rating_to_popularity(match.group(1), scale="stars")
+            return details
+
+        # CSS class based rating with half-star granularity (e.g. rating-45 → 4.5 stars)
+        match = re.search(r'allmusic-rating[^>]*rating-([0-9]+)', block, re.IGNORECASE)
+        if match:
+            details["rating_scale"] = "half-stars"
+            details["rating"] = self._convert_rating_to_popularity(match.group(1), scale="half-stars")
+            return details
+
+        match = re.search(r'rating-[^>]*?(\d+)', block, re.IGNORECASE)
+        if match:
+            details["rating_scale"] = "half-stars"
+            details["rating"] = self._convert_rating_to_popularity(match.group(1), scale="half-stars")
+            return details
+
+        return details
+
+    def _convert_rating_to_popularity(self, value, scale="stars"):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        if scale == "percentage":
+            popularity = numeric
+        elif scale == "half-stars":
+            stars = numeric / 10.0 if numeric > 5 else numeric
+            popularity = (stars / 5.0) * 100.0
+        else:  # default treat as star count (0-5)
+            popularity = (numeric / 5.0) * 100.0
+
+        popularity = max(0.0, min(100.0, popularity))
+        return round(popularity, 2)
+
 def chunked(iterable, size):
     """Yield fixed-size chunks from a list."""
     if size <= 0:
@@ -1452,27 +1873,50 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     cover_path = config.get("cover")
     resolved_sort_by = sort_by
     spotify_provider = None
+    allmusic_provider = None
     if sort_by == "popularity":
         spotify_provider = SpotifyPopularityProvider.get_shared()
-        if spotify_provider.is_enabled:
-            resolved_sort_by = "spotifyPopularity"
+        allmusic_provider = AllMusicPopularityProvider.get_shared()
+
+        def _log_popularity_source(message, *args):
             if log.isEnabledFor(logging.DEBUG):
-                log.debug(
-                    "Sort field '%s' will use Spotify track popularity",
-                    sort_by,
+                log.debug(message, *args)
+
+        if spotify_provider and spotify_provider.is_enabled:
+            resolved_sort_by = "spotifyPopularity"
+            _log_popularity_source(
+                "Sort field '%s' will use Spotify track popularity",
+                sort_by,
+            )
+            if allmusic_provider and allmusic_provider.is_enabled:
+                _log_popularity_source(
+                    "AllMusic popularity fallback is enabled for playlist '%s'",
+                    name,
                 )
         else:
             error_detail = spotify_provider.describe_error() if spotify_provider else None
-            if error_detail:
-                log.warning(
-                    "Spotify popularity sorting requested but unavailable: %s",
-                    error_detail,
-                )
+            if allmusic_provider and allmusic_provider.is_enabled:
+                resolved_sort_by = "spotifyPopularity"
+                if error_detail:
+                    log.warning(
+                        "Spotify popularity unavailable (%s); falling back to AllMusic popularity data.",
+                        error_detail,
+                    )
+                else:
+                    log.info(
+                        "Spotify credentials missing; using AllMusic popularity data for sorting.",
+                    )
             else:
-                log.warning(
-                    "Spotify popularity sorting requested but Spotify is not configured; skipping popularity sort.",
-                )
-            resolved_sort_by = None
+                if error_detail:
+                    log.warning(
+                        "Spotify popularity sorting requested but unavailable: %s",
+                        error_detail,
+                    )
+                else:
+                    log.warning(
+                        "Spotify popularity sorting requested but Spotify is not configured; skipping popularity sort.",
+                    )
+                resolved_sort_by = None
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
     stream_requested = config.get("stream_while_filtering", False)
     stream_enabled = stream_requested and not sort_by and not limit
@@ -1586,18 +2030,37 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 return sort_value_cache[cache_key]
 
             if resolved_sort_by == "spotifyPopularity":
-                popularity_value = spotify_provider.get_popularity(track) if spotify_provider else None
+                popularity_source = None
+                popularity_value = None
+
+                if spotify_provider and spotify_provider.is_enabled:
+                    popularity_value = spotify_provider.get_popularity(track)
+                    popularity_source = "spotify"
+
+                if popularity_value is None and allmusic_provider and allmusic_provider.is_enabled:
+                    if debug_logging:
+                        log.debug(
+                            "Falling back to AllMusic popularity for track '%s'",
+                            getattr(track, "title", "<unknown>"),
+                        )
+                    popularity_value = allmusic_provider.get_popularity(track, playlist_logger=log)
+                    if popularity_value is not None:
+                        popularity_source = "allmusic"
+
                 if popularity_value is not None:
                     try:
                         popularity_value = float(popularity_value)
                     except (TypeError, ValueError):
                         popularity_value = None
+
                 if debug_logging:
                     log.debug(
-                        "Spotify popularity for track '%s' resolved to %s",
+                        "Popularity source for track '%s': %s (value=%s)",
                         getattr(track, "title", "<unknown>"),
+                        popularity_source or "none",
                         popularity_value,
                     )
+
                 if popularity_value is None:
                     sentinel = float("-inf") if sort_desc else float("inf")
                     sort_value_cache[cache_key] = sentinel
@@ -1877,6 +2340,7 @@ def process_playlist(name, config):
             else:
                 _thread_local_logger.current = previous_thread_logger
     finally:
+        AllMusicPopularityProvider.save_shared_cache()
         if playlist_handler:
             log.debug(
                 "Closing per-playlist debug logging for '%s'",
