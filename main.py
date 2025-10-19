@@ -1355,7 +1355,7 @@ class AllMusicPopularityProvider:
 
     def _build_query(self, title, artist, album):
         parts = []
-        for value in (title, artist, album):
+        for value in (title, artist):
             if not value:
                 continue
             cleaned = str(value).strip()
@@ -1375,7 +1375,7 @@ class AllMusicPopularityProvider:
         used_query = None
 
         for variant in self._iter_query_variants(query):
-            url = f"https://www.allmusic.com/search/tracks/{quote_plus(variant)}"
+            url = f"https://www.allmusic.com/search/songs/{quote_plus(variant)}"
 
             try:
                 response = self._session.get(url, timeout=self._timeout)
@@ -1940,41 +1940,37 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             if log.isEnabledFor(logging.DEBUG):
                 log.debug(message, *args)
 
-        if spotify_provider and spotify_provider.is_enabled:
+        if allmusic_provider and allmusic_provider.is_enabled:
             resolved_sort_by = "spotifyPopularity"
             _log_popularity_source(
-                "Sort field '%s' will use Spotify track popularity",
+                "Sort field '%s' will use AllMusic rating counts",
                 sort_by,
             )
-            if allmusic_provider and allmusic_provider.is_enabled:
+            if spotify_provider and spotify_provider.is_enabled:
                 _log_popularity_source(
-                    "AllMusic popularity fallback is enabled for playlist '%s'",
+                    "Spotify popularity fallback is enabled for playlist '%s'",
                     name,
                 )
+            elif spotify_provider:
+                error_detail = spotify_provider.describe_error()
+                if error_detail:
+                    _log_popularity_source(
+                        "Spotify popularity fallback unavailable (%s)",
+                        error_detail,
+                    )
+        elif spotify_provider and spotify_provider.is_enabled:
+            resolved_sort_by = "spotifyPopularity"
+            _log_popularity_source(
+                "AllMusic popularity disabled; using Spotify track popularity",
+                sort_by,
+            )
         else:
             error_detail = spotify_provider.describe_error() if spotify_provider else None
-            if allmusic_provider and allmusic_provider.is_enabled:
-                resolved_sort_by = "spotifyPopularity"
-                if error_detail:
-                    log.warning(
-                        "Spotify popularity unavailable (%s); falling back to AllMusic popularity data.",
-                        error_detail,
-                    )
-                else:
-                    log.info(
-                        "Spotify credentials missing; using AllMusic popularity data for sorting.",
-                    )
-            else:
-                if error_detail:
-                    log.warning(
-                        "Spotify popularity sorting requested but unavailable: %s",
-                        error_detail,
-                    )
-                else:
-                    log.warning(
-                        "Spotify popularity sorting requested but Spotify is not configured; skipping popularity sort.",
-                    )
-                resolved_sort_by = None
+            log.warning(
+                "Popularity sorting requested but no providers are available%s",
+                f" ({error_detail})" if error_detail else "",
+            )
+            resolved_sort_by = None
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
     stream_requested = config.get("stream_while_filtering", False)
     stream_enabled = stream_requested and not sort_by and not limit
@@ -2091,19 +2087,22 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 popularity_source = None
                 popularity_value = None
 
-                if spotify_provider and spotify_provider.is_enabled:
-                    popularity_value = spotify_provider.get_popularity(track)
-                    popularity_source = "spotify"
-
-                if popularity_value is None and allmusic_provider and allmusic_provider.is_enabled:
-                    if debug_logging:
-                        log.debug(
-                            "Falling back to AllMusic popularity for track '%s'",
-                            getattr(track, "title", "<unknown>"),
-                        )
-                    popularity_value = allmusic_provider.get_popularity(track, playlist_logger=log)
+                if allmusic_provider and allmusic_provider.is_enabled:
+                    popularity_value = allmusic_provider.get_popularity(
+                        track, playlist_logger=log
+                    )
                     if popularity_value is not None:
                         popularity_source = "allmusic"
+
+                if (popularity_value is None) and spotify_provider and spotify_provider.is_enabled:
+                    if debug_logging:
+                        log.debug(
+                            "Falling back to Spotify popularity for track '%s'",
+                            getattr(track, "title", "<unknown>"),
+                        )
+                    popularity_value = spotify_provider.get_popularity(track)
+                    if popularity_value is not None:
+                        popularity_source = "spotify"
 
                 if popularity_value is not None:
                     try:
