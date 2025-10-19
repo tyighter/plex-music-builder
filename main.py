@@ -849,6 +849,66 @@ def process_playlist(name, config):
                 if cache_key in sort_value_cache:
                     return sort_value_cache[cache_key]
 
+                if resolved_sort_by in {"ratingCount", "parentRatingCount"}:
+                    def _coerce_numeric(value):
+                        if value is None:
+                            return None
+                        if isinstance(value, (int, float)):
+                            return float(value)
+                        if isinstance(value, str):
+                            stripped = value.strip()
+                            if not stripped:
+                                return None
+                            try:
+                                return float(stripped)
+                            except ValueError:
+                                return None
+                        return None
+
+                    direct_value = getattr(track, resolved_sort_by, None)
+                    if callable(direct_value):
+                        try:
+                            direct_value = direct_value()
+                        except TypeError:
+                            direct_value = None
+
+                    direct_numeric = _coerce_numeric(direct_value)
+
+                    canonical_value = get_canonical_field_for_track(track, resolved_sort_by)
+                    canonical_numeric = _coerce_numeric(canonical_value)
+
+                    track_album_guid = getattr(track, "parentGuid", None) or _get_album_guid(track)
+                    canonical_album_guid = None
+
+                    if canonical_numeric is not None:
+                        canonical_album_guid = get_canonical_field_for_track(track, "parentGuid")
+
+                    normalized_track_guid = _normalize_plex_guid(track_album_guid)
+                    normalized_canonical_guid = _normalize_plex_guid(canonical_album_guid)
+
+                    is_special = False
+
+                    if (
+                        normalized_track_guid
+                        and normalized_canonical_guid
+                        and normalized_track_guid != normalized_canonical_guid
+                    ):
+                        is_special = True
+
+                    if canonical_numeric is not None:
+                        if direct_numeric is None:
+                            is_special = True
+                        elif direct_numeric == 0 and canonical_numeric > 0:
+                            is_special = True
+
+                    if is_special:
+                        chosen_value = canonical_numeric if canonical_numeric is not None else direct_numeric
+                    else:
+                        chosen_value = direct_numeric if direct_numeric is not None else canonical_numeric
+
+                    sort_value_cache[cache_key] = chosen_value
+                    return chosen_value
+
                 if resolved_sort_by in CANONICAL_ONLY_FIELDS:
                     canonical_value = get_canonical_field_for_track(track, resolved_sort_by)
                     if canonical_value is None:
