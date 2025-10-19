@@ -324,6 +324,27 @@ def _get_album_guid(track):
     return None
 
 
+def _get_track_guid(track):
+    """Return the track GUID (``plex://track/...``) for a track, if available."""
+
+    track_guid = getattr(track, "guid", None)
+    if track_guid:
+        return str(track_guid)
+
+    try:
+        track_xml = fetch_full_metadata(track.ratingKey)
+    except Exception as exc:
+        logger.debug(
+            "Unable to fetch track metadata for ratingKey=%s: %s",
+            getattr(track, "ratingKey", "<no-key>"),
+            exc,
+        )
+        return None
+
+    guid = parse_field_from_xml(track_xml, "guid")
+    return str(guid) if guid else None
+
+
 def fetch_canonical_album_metadata(album_guid):
     """Fetch the canonical/original release metadata for an album GUID."""
 
@@ -387,17 +408,27 @@ def get_canonical_field_from_guid(album_guid, field):
 
 
 def get_canonical_field_for_track(track, field):
-    """Resolve a canonical album field for the provided track, if supported."""
+    """Resolve a canonical/original-release field for the provided track."""
 
     canonical_field = CANONICAL_FIELD_MAP.get(field)
     if not canonical_field:
         return None
 
-    album_guid = _get_album_guid(track)
-    if not album_guid:
-        return None
+    guid = None
 
-    return get_canonical_field_from_guid(album_guid, canonical_field)
+    if field == "ratingCount":
+        guid = _get_track_guid(track)
+        if guid:
+            value = get_canonical_field_from_guid(guid, canonical_field)
+            if value is not None:
+                return value
+
+    if guid is None:
+        guid = _get_album_guid(track)
+        if not guid:
+            return None
+
+    return get_canonical_field_from_guid(guid, canonical_field)
 
 
 def chunked(iterable, size):
