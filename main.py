@@ -418,15 +418,37 @@ def get_canonical_field_for_track(track, field):
 
     if field == "ratingCount":
         guid = _get_track_guid(track)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Attempting canonical %s lookup for track '%s' via track GUID %s",
+                field,
+                getattr(track, "title", "<unknown>"),
+                _normalize_plex_guid(guid),
+            )
         if guid:
             value = get_canonical_field_from_guid(guid, canonical_field)
             if value is not None:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Resolved canonical %s=%s from track GUID %s",
+                        field,
+                        value,
+                        _normalize_plex_guid(guid),
+                    )
                 return value
 
     if guid is None:
         guid = _get_album_guid(track)
         if not guid:
             return None
+
+    if logger.isEnabledFor(logging.DEBUG) and field == "ratingCount":
+        logger.debug(
+            "Falling back to album GUID %s for canonical %s lookup on track '%s'",
+            _normalize_plex_guid(guid),
+            field,
+            getattr(track, "title", "<unknown>"),
+        )
 
     return get_canonical_field_from_guid(guid, canonical_field)
 
@@ -850,6 +872,15 @@ def process_playlist(name, config):
                     return sort_value_cache[cache_key]
 
                 if resolved_sort_by in {"ratingCount", "parentRatingCount"}:
+                    if debug_logging:
+                        log.debug(
+                            "Evaluating %s for track '%s' (album='%s', ratingKey=%s)",
+                            resolved_sort_by,
+                            getattr(track, "title", "<unknown>"),
+                            getattr(track, "parentTitle", "<unknown>"),
+                            cache_key,
+                        )
+
                     def _coerce_numeric(value):
                         if value is None:
                             return None
@@ -887,6 +918,7 @@ def process_playlist(name, config):
                     normalized_canonical_guid = _normalize_plex_guid(canonical_album_guid)
 
                     is_special = False
+                    special_reasons = []
 
                     if (
                         normalized_track_guid
@@ -894,17 +926,44 @@ def process_playlist(name, config):
                         and normalized_track_guid != normalized_canonical_guid
                     ):
                         is_special = True
+                        special_reasons.append("album GUID mismatch")
 
                     if canonical_numeric is not None:
                         if direct_numeric is None:
                             is_special = True
+                            special_reasons.append("missing direct value")
                         elif direct_numeric == 0 and canonical_numeric > 0:
                             is_special = True
+                            special_reasons.append("direct zero but canonical > 0")
+
+                    if debug_logging:
+                        log.debug(
+                            "Direct %s=%s (guid=%s); canonical %s=%s (guid=%s)",
+                            resolved_sort_by,
+                            direct_numeric,
+                            normalized_track_guid,
+                            resolved_sort_by,
+                            canonical_numeric,
+                            normalized_canonical_guid,
+                        )
 
                     if is_special:
+                        if debug_logging:
+                            log.debug(
+                                "Identified potential special edition (reasons: %s)",
+                                "; ".join(special_reasons) if special_reasons else "none",
+                            )
                         chosen_value = canonical_numeric if canonical_numeric is not None else direct_numeric
                     else:
                         chosen_value = direct_numeric if direct_numeric is not None else canonical_numeric
+
+                    if debug_logging:
+                        log.debug(
+                            "Chosen %s=%s for track '%s'",
+                            resolved_sort_by,
+                            chosen_value,
+                            getattr(track, "title", "<unknown>"),
+                        )
 
                     sort_value_cache[cache_key] = chosen_value
                     return chosen_value
