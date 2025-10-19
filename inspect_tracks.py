@@ -46,7 +46,7 @@ ARTIST_NAME = "the beatles"
 
 
 def find_revolver_albums(section):
-    candidates = section.searchAlbums("Revolver")
+    candidates = section.searchAlbums(title="Revolver")
     revolver_albums = []
     for album in candidates:
         artist = album.artist().title if callable(album.artist) else album.artist
