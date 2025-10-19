@@ -606,49 +606,79 @@ def _search_canonical_guid(artist, album, year):
         base = (base or "").rstrip("/")
         return f"{base}{path}" if base else None
 
-    search_endpoints = [
-        endpoint
-        for endpoint in (
-            _build_endpoint(METADATA_PROVIDER_URL, "/library/metadata/search"),
-            _build_endpoint(METADATA_PROVIDER_URL, "/library/search"),
-            _build_endpoint(PLEX_URL, "/library/metadata/search"),
-            _build_endpoint(PLEX_URL, "/library/search"),
-        )
-        if endpoint
+    endpoint_variants = []
+
+    def _append_variant(base, path, extra_params):
+        endpoint = _build_endpoint(base, path)
+        if not endpoint:
+            return
+        variant_key = (endpoint, tuple(sorted(extra_params.items())))
+        if variant_key in seen_variants:
+            return
+        seen_variants.add(variant_key)
+        endpoint_variants.append((endpoint, extra_params))
+
+    seen_variants = set()
+
+    search_paths = [
+        "/library/metadata/search",
+        "/library/search",
+        "/search",
+        "/hubs/search",
     ]
 
-    deduped_endpoints = []
-    seen_endpoints = set()
-    for endpoint in search_endpoints:
-        if endpoint in seen_endpoints:
-            continue
-        deduped_endpoints.append(endpoint)
-        seen_endpoints.add(endpoint)
+    param_variants = [
+        {"type": 9},
+        {"searchTypes": "albums"},
+        {"searchTypes": "album"},
+        {"includeCollections": 1, "includeExternalMedia": 1, "searchTypes": "album"},
+        {"includeCollections": 1, "includeExternalMedia": 1},
+        {},
+    ]
 
-    search_endpoints = deduped_endpoints
+    for base in (METADATA_PROVIDER_URL, PLEX_URL):
+        for path in search_paths:
+            for extra_params in param_variants:
+                # ``type`` is not valid for ``/hubs/search`` endpoints; skip to avoid noisy logs.
+                if path == "/hubs/search" and "type" in extra_params:
+                    continue
+                # ``searchTypes`` is not valid for legacy metadata endpoints; they expect ``type``
+                # or no extra parameters. Keep the combinations flexible but avoid duplicates.
+                if path in {"/library/metadata/search", "/library/search"}:
+                    if extra_params.get("searchTypes") == "album":
+                        continue
+                    if extra_params.get("includeCollections"):
+                        continue
+                _append_variant(base, path, extra_params)
+
+    search_endpoints = endpoint_variants
 
     for query in deduped_queries:
-        for endpoint in search_endpoints:
+        for endpoint, extra_params in search_endpoints:
             params = {
                 "query": query,
-                "type": 9,
                 "X-Plex-Token": PLEX_TOKEN,
             }
+            params.update(extra_params)
+            params = {k: v for k, v in params.items() if v is not None}
+            debug_params = {k: v for k, v in params.items() if k != "X-Plex-Token"}
 
             try:
                 if log.isEnabledFor(logging.DEBUG):
                     log.debug(
-                        "Canonical search requesting '%s' from %s",
+                        "Canonical search requesting '%s' from %s with params %s",
                         query,
                         endpoint,
+                        debug_params,
                     )
                 response = requests.get(endpoint, params=params, timeout=10)
                 response.raise_for_status()
             except requests.RequestException as exc:
                 log.debug(
-                    "Canonical metadata search failed for query '%s' via %s: %s",
+                    "Canonical metadata search failed for query '%s' via %s with params %s: %s",
                     query,
                     endpoint,
+                    debug_params,
                     exc,
                 )
                 continue
