@@ -6,10 +6,14 @@ import requests
 import json
 import time
 import threading
-from plexapi.server import PlexServer
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key
 from xml.etree import ElementTree as ET
+
+from plexapi.server import PlexServer
+from spotipy import Spotify
+from spotipy.exceptions import SpotifyException
+from spotipy.oauth2 import SpotifyClientCredentials
 from tqdm import tqdm
 
 # ----------------------------
@@ -41,6 +45,12 @@ CACHE_ONLY = runtime_cfg.get("cache_only", False)
 REFRESH_INTERVAL = runtime_cfg.get("refresh_interval_minutes", 60)
 SAVE_INTERVAL = runtime_cfg.get("save_interval", 100)  # save cache every N items
 PLAYLIST_CHUNK_SIZE = runtime_cfg.get("playlist_chunk_size", 200)
+
+spotify_cfg = cfg.get("spotify", {}) or {}
+SPOTIFY_CLIENT_ID = spotify_cfg.get("client_id")
+SPOTIFY_CLIENT_SECRET = spotify_cfg.get("client_secret")
+SPOTIFY_MARKET = spotify_cfg.get("market")
+SPOTIFY_SEARCH_LIMIT = spotify_cfg.get("search_limit", 10)
 
 logging_cfg = cfg.get("logging", {})
 LOG_LEVEL = logging_cfg.get("level", "DEBUG").upper()
@@ -861,6 +871,296 @@ def get_canonical_field_for_track(track, field):
     return value
 
 
+class SpotifyPopularityProvider:
+    """Shared Spotify client that resolves track popularity for sorting."""
+
+    _instance = None
+    _instance_lock = threading.Lock()
+
+    def __init__(self):
+        self._client = None
+        self._client_lock = threading.Lock()
+        self._track_cache = {}
+        self._id_cache = {}
+        self._query_cache = {}
+        self._enabled = False
+        self._error = None
+        self.market = self._normalize_market(SPOTIFY_MARKET)
+        self.search_limit = self._coerce_search_limit(SPOTIFY_SEARCH_LIMIT)
+
+        if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET):
+            self._error = "Missing Spotify client credentials."
+            return
+
+        try:
+            auth_manager = SpotifyClientCredentials(
+                client_id=SPOTIFY_CLIENT_ID,
+                client_secret=SPOTIFY_CLIENT_SECRET,
+            )
+            self._client = Spotify(
+                auth_manager=auth_manager,
+                requests_timeout=10,
+                retries=3,
+            )
+            self._enabled = True
+        except Exception as exc:
+            logger.warning("Failed to initialize Spotify client: %s", exc)
+            self._error = str(exc)
+            self._client = None
+
+    @staticmethod
+    def _normalize_market(market):
+        if not market:
+            return None
+        normalized = str(market).strip().upper()
+        return normalized or None
+
+    @staticmethod
+    def _coerce_search_limit(value):
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            numeric = 10
+        return max(1, numeric)
+
+    @classmethod
+    def get_shared(cls):
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+
+    @property
+    def is_enabled(self):
+        return self._enabled and self._client is not None
+
+    def describe_error(self):
+        return self._error
+
+    def get_popularity(self, track):
+        if not self.is_enabled:
+            return None
+
+        track_key = getattr(track, "ratingKey", None)
+        if track_key in self._track_cache:
+            return self._track_cache[track_key]
+
+        popularity = None
+        for spotify_id in self._iter_spotify_track_ids(track):
+            popularity = self._get_popularity_by_id(spotify_id)
+            if popularity is not None:
+                break
+
+        if popularity is None:
+            popularity = self._search_for_track_popularity(track)
+
+        if track_key is not None:
+            self._track_cache[track_key] = popularity
+        return popularity
+
+    def _iter_spotify_track_ids(self, track):
+        seen = set()
+        for guid in self._iter_guid_strings(track):
+            spotify_id = self._extract_spotify_track_id(guid)
+            if spotify_id and spotify_id not in seen:
+                seen.add(spotify_id)
+                yield spotify_id
+
+    @staticmethod
+    def _iter_guid_strings(track):
+        candidates = []
+        direct_guid = getattr(track, "guid", None)
+        if direct_guid:
+            candidates.append(direct_guid)
+
+        for attr_name in ("guids", "providerGuids"):
+            attr = getattr(track, attr_name, None)
+            if not attr:
+                continue
+            for item in attr:
+                if isinstance(item, str):
+                    candidates.append(item)
+                else:
+                    value = getattr(item, "id", None) or getattr(item, "idUri", None)
+                    if value:
+                        candidates.append(value)
+
+        for candidate in candidates:
+            if candidate:
+                yield str(candidate)
+
+    @staticmethod
+    def _extract_spotify_track_id(guid):
+        if not guid:
+            return None
+        guid_str = str(guid)
+        match = re.search(r"spotify[:/]+track[:/](?P<id>[A-Za-z0-9]+)", guid_str)
+        if not match:
+            match = re.search(r"spotify:track:(?P<id>[A-Za-z0-9]+)", guid_str)
+        if not match:
+            return None
+        track_id = match.group("id")
+        if not track_id:
+            return None
+        return track_id.split("?")[0]
+
+    def _get_popularity_by_id(self, spotify_id):
+        if spotify_id in self._id_cache:
+            return self._id_cache[spotify_id]
+
+        try:
+            with self._client_lock:
+                data = self._client.track(spotify_id)
+        except SpotifyException as exc:
+            logger.debug(
+                "Spotify track lookup failed for %s: %s",
+                spotify_id,
+                exc,
+            )
+            self._id_cache[spotify_id] = None
+            return None
+        except Exception as exc:
+            logger.debug(
+                "Unexpected Spotify error during track lookup for %s: %s",
+                spotify_id,
+                exc,
+            )
+            self._id_cache[spotify_id] = None
+            return None
+
+        popularity = data.get("popularity") if isinstance(data, dict) else None
+        if popularity is not None:
+            try:
+                popularity = float(popularity)
+            except (TypeError, ValueError):
+                popularity = None
+
+        self._id_cache[spotify_id] = popularity
+        return popularity
+
+    def _search_for_track_popularity(self, track):
+        query = self._build_search_query(track)
+        if not query:
+            return None
+
+        cache_key = (query, self.market)
+        if cache_key in self._query_cache:
+            candidates = self._query_cache[cache_key]
+        else:
+            try:
+                with self._client_lock:
+                    response = self._client.search(
+                        q=query,
+                        type="track",
+                        market=self.market,
+                        limit=self.search_limit,
+                    )
+            except SpotifyException as exc:
+                logger.debug("Spotify search failed for '%s': %s", query, exc)
+                self._query_cache[cache_key] = []
+                return None
+            except Exception as exc:
+                logger.debug("Unexpected Spotify error during search for '%s': %s", query, exc)
+                self._query_cache[cache_key] = []
+                return None
+
+            candidates = response.get("tracks", {}).get("items", []) if isinstance(response, dict) else []
+            self._query_cache[cache_key] = candidates
+
+        if not candidates:
+            return None
+
+        best_candidate = self._select_best_candidate(track, candidates)
+        if not best_candidate and candidates:
+            best_candidate = max(
+                candidates,
+                key=lambda item: (item or {}).get("popularity") or -1,
+            )
+
+        if not best_candidate:
+            return None
+
+        popularity = best_candidate.get("popularity")
+        if popularity is None:
+            return None
+        try:
+            return float(popularity)
+        except (TypeError, ValueError):
+            return None
+
+    def _build_search_query(self, track):
+        title = getattr(track, "title", None)
+        if not title:
+            return None
+
+        def sanitize(value):
+            if value is None:
+                return None
+            return str(value).replace('"', "").strip()
+
+        parts = [f'track:"{sanitize(title)}"']
+
+        artist = getattr(track, "grandparentTitle", None) or getattr(track, "originalTitle", None)
+        if artist:
+            parts.append(f'artist:"{sanitize(artist)}"')
+
+        album = getattr(track, "parentTitle", None)
+        if album:
+            parts.append(f'album:"{sanitize(album)}"')
+
+        return " ".join(part for part in parts if part)
+
+    def _select_best_candidate(self, track, candidates):
+        track_title_norm = _normalize_compare_value(getattr(track, "title", ""))
+        track_artist_norms = _collect_normalized_candidates(
+            [
+                getattr(track, "grandparentTitle", None),
+                getattr(track, "originalTitle", None),
+            ]
+        )
+        track_album_norms = _collect_normalized_candidates([getattr(track, "parentTitle", None)])
+
+        best_candidate = None
+        best_score = float("-inf")
+
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+
+            popularity = item.get("popularity") or 0
+            try:
+                popularity_score = float(popularity) / 100.0
+            except (TypeError, ValueError):
+                popularity_score = 0.0
+
+            item_title_norm = _normalize_compare_value(item.get("name"))
+            item_artist_norms = _collect_normalized_candidates(
+                artist.get("name") for artist in item.get("artists", []) if isinstance(artist, dict)
+            )
+            album_info = item.get("album") if isinstance(item.get("album"), dict) else item.get("album")
+            album_name = album_info.get("name") if isinstance(album_info, dict) else None
+            item_album_norms = _collect_normalized_candidates([album_name])
+
+            score = popularity_score
+
+            if track_title_norm and item_title_norm == track_title_norm:
+                score += 5
+            elif track_title_norm and item_title_norm and track_title_norm in item_title_norm:
+                score += 2
+
+            if track_artist_norms and item_artist_norms & track_artist_norms:
+                score += 3
+
+            if track_album_norms and item_album_norms & track_album_norms:
+                score += 1
+
+            if score > best_score:
+                best_score = score
+                best_candidate = item
+
+        return best_candidate
+
+
 def chunked(iterable, size):
     """Yield fixed-size chunks from a list."""
     if size <= 0:
@@ -1146,16 +1446,29 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     limit = config.get("limit")
     sort_by = config.get("sort_by")
     cover_path = config.get("cover")
-    sort_field_aliases = {
-        "popularity": "ratingCount",
-    }
-    resolved_sort_by = sort_field_aliases.get(sort_by, sort_by)
-    if sort_by and sort_by != resolved_sort_by:
-        log.debug(
-            "Sort field '%s' mapped to Plex field '%s'",
-            sort_by,
-            resolved_sort_by,
-        )
+    resolved_sort_by = sort_by
+    spotify_provider = None
+    if sort_by == "popularity":
+        spotify_provider = SpotifyPopularityProvider.get_shared()
+        if spotify_provider.is_enabled:
+            resolved_sort_by = "spotifyPopularity"
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "Sort field '%s' will use Spotify track popularity",
+                    sort_by,
+                )
+        else:
+            error_detail = spotify_provider.describe_error() if spotify_provider else None
+            if error_detail:
+                log.warning(
+                    "Spotify popularity sorting requested but unavailable: %s",
+                    error_detail,
+                )
+            else:
+                log.warning(
+                    "Spotify popularity sorting requested but Spotify is not configured; skipping popularity sort.",
+                )
+            resolved_sort_by = None
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
     stream_requested = config.get("stream_while_filtering", False)
     stream_enabled = stream_requested and not sort_by and not limit
@@ -1266,6 +1579,26 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         def _get_sort_value(track):
             cache_key = getattr(track, "ratingKey", None)
             if cache_key in sort_value_cache:
+                return sort_value_cache[cache_key]
+
+            if resolved_sort_by == "spotifyPopularity":
+                popularity_value = spotify_provider.get_popularity(track) if spotify_provider else None
+                if popularity_value is not None:
+                    try:
+                        popularity_value = float(popularity_value)
+                    except (TypeError, ValueError):
+                        popularity_value = None
+                if debug_logging:
+                    log.debug(
+                        "Spotify popularity for track '%s' resolved to %s",
+                        getattr(track, "title", "<unknown>"),
+                        popularity_value,
+                    )
+                if popularity_value is None:
+                    sentinel = float("-inf") if sort_desc else float("inf")
+                    sort_value_cache[cache_key] = sentinel
+                else:
+                    sort_value_cache[cache_key] = popularity_value
                 return sort_value_cache[cache_key]
 
             if resolved_sort_by in {"ratingCount", "parentRatingCount"}:

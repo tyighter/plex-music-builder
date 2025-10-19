@@ -2,3 +2,4 @@ plexapi
 PyYAML
 requests
 tqdm
+spotipy
