@@ -9,6 +9,15 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from flask import Flask, jsonify, render_template, request
 
+
+def _represent_ordered_dict(dumper: yaml.Dumper, data: OrderedDict) -> Any:
+    """Ensure OrderedDict values can be serialized by ``yaml.safe_dump``."""
+
+    return dumper.represent_mapping("tag:yaml.org,2002:map", data.items())
+
+
+yaml.SafeDumper.add_representer(OrderedDict, _represent_ordered_dict)
+
 BASE_DIR = Path(__file__).resolve().parent
 PLAYLISTS_PATH = BASE_DIR / "playlists.yml"
 LEGEND_PATH = BASE_DIR / "legend.txt"
