@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import re
 import os
+import subprocess
+import sys
+import threading
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -93,6 +97,237 @@ SORT_OPTIONS = OrderedDict(
         ("newest_first", "Newest First"),
     ]
 )
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _format_timestamp(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    return value.astimezone(timezone.utc).isoformat()
+
+
+class BuildManager:
+    def __init__(
+        self,
+        command: Optional[List[str]] = None,
+        work_dir: Optional[Path] = None,
+    ) -> None:
+        self._command = command or [sys.executable, "main.py"]
+        self._work_dir = str(work_dir) if work_dir is not None else None
+        self._lock = threading.Lock()
+        self._process: Optional[subprocess.Popen] = None
+        self._last_exit_code: Optional[int] = None
+        self._last_message: Optional[str] = None
+        self._last_started_at: Optional[datetime] = None
+        self._last_finished_at: Optional[datetime] = None
+        self._active_job: Optional[Dict[str, Any]] = None
+        self._last_all_result: Optional[Dict[str, Any]] = None
+        self._last_playlist_results: Dict[str, Dict[str, Any]] = {}
+        self._stop_requested = False
+
+    def _record_job_result_locked(
+        self,
+        job: Optional[Dict[str, Any]],
+        exit_code: Optional[int],
+        started_at: Optional[datetime],
+        finished_at: Optional[datetime],
+        state: str,
+        message: Optional[str],
+    ) -> None:
+        if not job:
+            return
+
+        result = {
+            "state": state,
+            "exit_code": exit_code,
+            "message": message,
+            "started_at": _format_timestamp(started_at),
+            "finished_at": _format_timestamp(finished_at),
+        }
+
+        if job.get("type") == "all":
+            self._last_all_result = result
+        elif job.get("type") == "playlist":
+            playlist_name = job.get("playlist")
+            if playlist_name:
+                self._last_playlist_results[playlist_name] = result
+
+    def _normalize_process_state_locked(self) -> None:
+        if self._process is None:
+            return
+
+        return_code = self._process.poll()
+        if return_code is None:
+            return
+
+        job = self._active_job.copy() if self._active_job is not None else None
+        started_at = self._last_started_at
+        finished_at = _utcnow()
+        self._last_exit_code = return_code
+        self._process = None
+        self._last_finished_at = finished_at
+
+        if self._stop_requested:
+            if job and job.get("type") == "playlist" and job.get("playlist"):
+                self._last_message = (
+                    self._last_message
+                    or f"Build for playlist '{job['playlist']}' stopped."
+                )
+            elif job and job.get("type") == "all":
+                self._last_message = (
+                    self._last_message or "Build for all playlists stopped."
+                )
+            else:
+                self._last_message = self._last_message or "Build process stopped."
+            state = "stopped"
+        else:
+            if return_code == 0:
+                self._last_message = self._last_message or "Build completed successfully."
+                state = "success"
+            else:
+                self._last_message = (
+                    self._last_message or f"Build exited with code {return_code}."
+                )
+                state = "error"
+
+        self._record_job_result_locked(
+            job,
+            return_code,
+            started_at,
+            finished_at,
+            state,
+            self._last_message,
+        )
+        self._active_job = None
+        self._stop_requested = False
+
+    def _status_snapshot_locked(self) -> Dict[str, Any]:
+        self._normalize_process_state_locked()
+
+        running = self._process is not None
+        status_label = "running" if running else "idle"
+        if not running and self._last_exit_code not in (None, 0):
+            status_label = "error"
+
+        job = self._active_job.copy() if self._active_job is not None else None
+        playlist_results = {
+            name: result.copy()
+            for name, result in self._last_playlist_results.items()
+        }
+
+        return {
+            "running": running,
+            "status": status_label,
+            "pid": self._process.pid if running and self._process is not None else None,
+            "since": _format_timestamp(self._last_started_at),
+            "last_finished": _format_timestamp(self._last_finished_at),
+            "exit_code": self._last_exit_code,
+            "message": self._last_message,
+            "job": job,
+            "results": {
+                "all": self._last_all_result.copy() if self._last_all_result else None,
+                "playlists": playlist_results,
+            },
+        }
+
+    def get_status(self) -> Dict[str, Any]:
+        with self._lock:
+            return self._status_snapshot_locked()
+
+    def start(self, playlist: Optional[str] = None) -> Tuple[bool, Dict[str, Any], Optional[str]]:
+        with self._lock:
+            self._normalize_process_state_locked()
+            if self._process is not None:
+                message = "Builder is already running."
+                self._last_message = message
+                return False, self._status_snapshot_locked(), message
+
+            playlist_name: Optional[str]
+            if playlist is None:
+                playlist_name = None
+            else:
+                playlist_name = str(playlist).strip() or None
+                if playlist_name is None:
+                    message = "Playlist name is required to start a build."
+                    self._last_message = message
+                    return False, self._status_snapshot_locked(), message
+
+            command = list(self._command)
+            job: Dict[str, Any]
+            if playlist_name:
+                command = command + ["--playlist", playlist_name]
+                job = {"type": "playlist", "playlist": playlist_name}
+                job_message = f"Build started for playlist '{playlist_name}'."
+            else:
+                job = {"type": "all"}
+                job_message = "Build for all playlists started."
+
+            try:
+                process = subprocess.Popen(command, cwd=self._work_dir)
+            except Exception as exc:  # pragma: no cover - defensive
+                error_message = f"Unable to start build: {exc}"
+                self._process = None
+                self._last_message = error_message
+                self._last_started_at = None
+                self._last_finished_at = _utcnow()
+                self._last_exit_code = None
+                status = self._status_snapshot_locked()
+                status["status"] = "error"
+                return False, status, error_message
+
+            self._process = process
+            self._active_job = job
+            self._last_exit_code = None
+            self._last_finished_at = None
+            self._last_started_at = _utcnow()
+            self._last_message = job_message
+            self._stop_requested = False
+            status = self._status_snapshot_locked()
+            return True, status, job_message
+
+    def stop(self, timeout: float = 10.0) -> Tuple[bool, Dict[str, Any], Optional[str]]:
+        with self._lock:
+            self._normalize_process_state_locked()
+            if self._process is None:
+                message = "Builder is not running."
+                self._last_message = message
+                return False, self._status_snapshot_locked(), message
+
+            process = self._process
+            job = self._active_job.copy() if self._active_job is not None else None
+            if job and job.get("type") == "playlist" and job.get("playlist"):
+                stopping_message = f"Stopping build for playlist '{job['playlist']}'."
+            elif job and job.get("type") == "all":
+                stopping_message = "Stopping build for all playlists."
+            else:
+                stopping_message = "Stopping build."
+            self._last_message = stopping_message
+            self._stop_requested = True
+
+        try:
+            process.terminate()
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        except Exception as exc:  # pragma: no cover - defensive
+            with self._lock:
+                self._stop_requested = False
+                error_message = f"Unable to stop build: {exc}"
+                self._last_message = error_message
+                status = self._status_snapshot_locked()
+                status["status"] = "error"
+                return False, status, error_message
+
+        with self._lock:
+            self._normalize_process_state_locked()
+            message = self._last_message or "Build process stopped."
+            status = self._status_snapshot_locked()
+            return True, status, message
 
 
 def humanize_field_name(field: str) -> str:
@@ -393,9 +628,62 @@ def create_app() -> Flask:
         {"value": value, "label": label} for value, label in SORT_OPTIONS.items()
     ]
 
+    build_manager = BuildManager([sys.executable, "main.py"], BASE_DIR)
+
     @app.route("/")
     def index() -> str:
         return render_template("index.html")
+
+    @app.route("/api/build/status", methods=["GET"])
+    def build_status() -> Any:
+        return jsonify(build_manager.get_status())
+
+    @app.route("/api/build/start", methods=["POST"])
+    def start_build() -> Any:
+        payload = request.get_json(silent=True)
+        playlist_name: Optional[str] = None
+        if isinstance(payload, dict) and "playlist" in payload:
+            raw_value = payload.get("playlist")
+            if raw_value is not None:
+                playlist_candidate = str(raw_value).strip()
+                if not playlist_candidate:
+                    current_status = build_manager.get_status()
+                    return (
+                        jsonify(
+                            {
+                                "status": current_status,
+                                "message": "Playlist name is required to start a build.",
+                            }
+                        ),
+                        400,
+                    )
+                playlist_name = playlist_candidate
+
+        started, status, message = build_manager.start(playlist=playlist_name)
+        response: Dict[str, Any] = {"status": status}
+        if message:
+            response["message"] = message
+        http_status = 200
+        if not started:
+            if message == "Builder is already running.":
+                http_status = 409
+            elif message == "Playlist name is required to start a build.":
+                http_status = 400
+            else:
+                http_status = 500
+        return jsonify(response), http_status
+
+    @app.route("/api/build/stop", methods=["POST"])
+    def stop_build() -> Any:
+        stopped, status, message = build_manager.stop()
+        response: Dict[str, Any] = {"status": status}
+        if message:
+            response["message"] = message
+        if stopped:
+            http_status = 200
+        else:
+            http_status = 409 if message == "Builder is not running." else 500
+        return jsonify(response), http_status
 
     @app.route("/api/playlists", methods=["GET"])
     def get_playlists() -> Any:
