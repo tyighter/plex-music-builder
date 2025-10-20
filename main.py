@@ -50,6 +50,7 @@ CACHE_ONLY = runtime_cfg.get("cache_only", False)
 REFRESH_INTERVAL = runtime_cfg.get("refresh_interval_minutes", 60)
 SAVE_INTERVAL = runtime_cfg.get("save_interval", 100)  # save cache every N items
 PLAYLIST_CHUNK_SIZE = runtime_cfg.get("playlist_chunk_size", 200)
+MAX_WORKERS = runtime_cfg.get("max_workers", 3)
 
 spotify_cfg = cfg.get("spotify", {}) or {}
 SPOTIFY_CLIENT_ID = spotify_cfg.get("client_id")
@@ -2676,6 +2677,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         )
 
     log.info(f"Building playlist: {name}")
+    build_start = time.perf_counter()
     filters = config.get("plex_filter", [])
     library = plex.library.section(config.get("library", LIBRARY_NAME))
     limit = config.get("limit")
@@ -2753,9 +2755,16 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             )
         stream_enabled = False
 
+    fetch_start = time.perf_counter()
     all_tracks = library.searchTracks()
     total_tracks = len(all_tracks)
-    log.info(f"Fetched {total_tracks} tracks from {config.get('library', LIBRARY_NAME)}")
+    fetch_duration = time.perf_counter() - fetch_start
+    log.info(
+        "Fetched %s tracks from %s in %.2fs",
+        total_tracks,
+        config.get("library", LIBRARY_NAME),
+        fetch_duration,
+    )
 
     try:
         existing = plex.playlist(name)
@@ -2768,9 +2777,10 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     playlist_obj = None
     match_count = 0
     debug_logging = log.isEnabledFor(logging.DEBUG)
+    playlist_update_duration = 0.0
 
     def flush_stream_buffer():
-        nonlocal playlist_obj, stream_buffer, deleted_existing
+        nonlocal playlist_obj, stream_buffer, deleted_existing, playlist_update_duration
         if not stream_buffer:
             return
         if existing and not deleted_existing:
@@ -2779,6 +2789,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             except Exception as exc:
                 log.warning(f"Failed to delete existing playlist '{name}': {exc}")
             deleted_existing = True
+        flush_start = time.perf_counter()
         try:
             if playlist_obj is None:
                 playlist_obj = plex.createPlaylist(name, items=list(stream_buffer))
@@ -2789,7 +2800,9 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             raise
         finally:
             stream_buffer.clear()
+            playlist_update_duration += time.perf_counter() - flush_start
 
+    filter_start = time.perf_counter()
     with tqdm(total=total_tracks, desc=f"Filtering '{name}'", unit="track", dynamic_ncols=True) as pbar:
         for track in all_tracks:
             keep = True
@@ -2837,6 +2850,9 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                     log.debug("    ✅ Track matched all conditions")
             pbar.update(1)
 
+    filter_duration = time.perf_counter() - filter_start
+    filter_rate = (total_tracks / filter_duration) if filter_duration > 0 else 0.0
+
     if stream_enabled:
         flush_stream_buffer()
         if not deleted_existing and existing:
@@ -2849,17 +2865,30 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         log.info(f"Playlist '{name}' → {match_count} matching tracks")
         if match_count == 0:
             log.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
+        total_duration = time.perf_counter() - build_start
+        log.info(
+            "Performance summary for '%s': fetch=%.2fs, filter=%.2fs (%.1f track/s), update=%.2fs, total=%.2fs",
+            name,
+            fetch_duration,
+            filter_duration,
+            filter_rate,
+            playlist_update_duration,
+            total_duration,
+        )
         log.info(f"✅ Finished building '{name}' ({match_count} tracks)")
         return
 
     dedup_popularity_cache = {}
+    dedup_duration = 0.0
     if matched_tracks:
+        dedup_start = time.perf_counter()
         matched_tracks, dedup_popularity_cache, duplicates_removed = _deduplicate_tracks(
             matched_tracks,
             log,
             allmusic_provider=allmusic_provider,
             spotify_provider=spotify_provider,
         )
+        dedup_duration = time.perf_counter() - dedup_start
         if duplicates_removed:
             log.info(
                 "Removed %s duplicate track(s) from playlist '%s' after popularity comparison",
@@ -2868,6 +2897,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             )
     match_count = len(matched_tracks)
 
+    sort_duration = 0.0
     if resolved_sort_by:
         sort_value_cache = {}
 
@@ -3163,7 +3193,9 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
 
             return -result if sort_desc else result
 
+        sort_start = time.perf_counter()
         matched_tracks.sort(key=cmp_to_key(_compare_tracks))
+        sort_duration = time.perf_counter() - sort_start
 
     artist_limit_raw = config.get("artist_limit")
     if artist_limit_raw is not None:
@@ -3294,9 +3326,22 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
 
     if not matched_tracks:
         log.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
+        total_duration = time.perf_counter() - build_start
+        log.info(
+            "Performance summary for '%s': fetch=%.2fs, filter=%.2fs (%.1f track/s), dedup=%.2fs, sort=%.2fs, update=%.2fs, total=%.2fs",
+            name,
+            fetch_duration,
+            filter_duration,
+            filter_rate,
+            dedup_duration,
+            sort_duration,
+            playlist_update_duration,
+            total_duration,
+        )
         log.info(f"✅ Finished building '{name}' (0 tracks)")
         return
 
+    update_start = time.perf_counter()
     for chunk in chunked(matched_tracks, chunk_size):
         try:
             if playlist_obj is None:
@@ -3306,8 +3351,23 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         except Exception as exc:
             log.error(f"Failed to update playlist '{name}': {exc}")
             raise
+    playlist_update_duration += time.perf_counter() - update_start
 
     apply_playlist_cover(playlist_obj, cover_path)
+    total_duration = time.perf_counter() - build_start
+    update_rate = (match_count / playlist_update_duration) if playlist_update_duration > 0 else 0.0
+    log.info(
+        "Performance summary for '%s': fetch=%.2fs, filter=%.2fs (%.1f track/s), dedup=%.2fs, sort=%.2fs, update=%.2fs (%.1f track/s), total=%.2fs",
+        name,
+        fetch_duration,
+        filter_duration,
+        filter_rate,
+        dedup_duration,
+        sort_duration,
+        playlist_update_duration,
+        update_rate,
+        total_duration,
+    )
     log.info(f"✅ Finished building '{name}' ({match_count} tracks)")
 
 
@@ -3392,7 +3452,15 @@ def run_all_playlists():
         return
 
     errors = False
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    configured_workers = MAX_WORKERS
+    if not isinstance(configured_workers, int) or configured_workers < 1:
+        logger.warning(
+            "Invalid runtime.max_workers value '%s'; defaulting to 1 worker.",
+            configured_workers,
+        )
+        configured_workers = 1
+
+    with ThreadPoolExecutor(max_workers=configured_workers) as executor:
         futures = {executor.submit(process_playlist, name, cfg): name for name, cfg in playlists_data.items()}
         for future in as_completed(futures):
             playlist_name = futures[future]

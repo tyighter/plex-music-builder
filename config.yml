@@ -11,6 +11,7 @@ runtime:
   cache_only: false            # true = only cache metadata and exit
   refresh_interval_minutes: 60
   save_interval: 500
+  max_workers: 3             # number of playlists to process in parallel
 
 spotify:
   client_id: "97bfb7998acd470ea0f00886921fc927"
