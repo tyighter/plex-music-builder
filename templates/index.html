@@ -339,6 +339,7 @@
       <h1><span class="icon">▶</span>Plex Playlist Builder</h1>
       <div class="action-bar">
         <button id="reloadBtn" class="secondary" type="button">⟳ Refresh from File</button>
+        <button id="clearAllmusicCacheBtn" class="secondary" type="button">🧹 Clear AllMusic Cache</button>
         <button id="saveBtn" type="button">💾 Save to playlists.yml</button>
         <span id="message" class="message"></span>
       </div>
@@ -676,6 +677,13 @@
           const sortLabel = document.createElement("label");
           sortLabel.textContent = "Sort By";
           const sortSelect = document.createElement("select");
+          const sortFieldValues = options.sort_fields.map((opt) => opt.value);
+          if (
+            (!playlist.sort_by || !sortFieldValues.includes(playlist.sort_by)) &&
+            options.sort_fields.length
+          ) {
+            playlist.sort_by = options.sort_fields[0].value;
+          }
           options.sort_fields.forEach((opt) => {
             const option = document.createElement("option");
             option.value = opt.value;
@@ -854,12 +862,13 @@
       });
 
       document.getElementById("addPlaylist").addEventListener("click", () => {
+        const defaultSort = options.sort_fields?.[0]?.value || "";
         state.playlists.push({
           name: "New Playlist",
           limit: 0,
           artist_limit: 0,
           album_limit: 0,
-          sort_by: "",
+          sort_by: defaultSort,
           plex_filter: [],
           extras: {},
         });
@@ -869,6 +878,28 @@
       document.getElementById("reloadBtn").addEventListener("click", () => {
         loadData().then(() => showMessage("Reloaded from playlists.yml"));
       });
+
+      document
+        .getElementById("clearAllmusicCacheBtn")
+        .addEventListener("click", async () => {
+          try {
+            const response = await fetch("/api/cache/allmusic", { method: "POST" });
+            const result = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+              throw new Error(result.error || "Failed to clear AllMusic cache.");
+            }
+
+            if (result.status === "missing") {
+              showMessage("AllMusic cache already clear.");
+            } else {
+              showMessage("AllMusic cache cleared.");
+            }
+          } catch (error) {
+            console.error(error);
+            showMessage(error.message, true);
+          }
+        });
 
       document.getElementById("saveBtn").addEventListener("click", saveData);
 

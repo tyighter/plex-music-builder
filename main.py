@@ -164,6 +164,10 @@ FIELD_ALIASES = {
     "album.thumb": "parentThumb",
     "album.art": "parentArt",
     "album.year": "parentYear",
+    # Track level shortcuts
+    "title": "title",
+    "track": "title",
+    "track.title": "title",
 }
 
 
@@ -2678,6 +2682,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     sort_by = config.get("sort_by")
     cover_path = config.get("cover")
     resolved_sort_by = sort_by
+    sort_desc_in_config = "sort_desc" in config
+    sort_desc = config.get("sort_desc", True)
     spotify_provider = SpotifyPopularityProvider.get_shared()
     allmusic_provider = AllMusicPopularityProvider.get_shared()
     if sort_by == "popularity":
@@ -2719,6 +2725,23 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 f" ({error_detail})" if error_detail else "",
             )
             resolved_sort_by = None
+
+    if sort_by == "alphabetical":
+        resolved_sort_by = "__alphabetical__"
+        if not sort_desc_in_config:
+            sort_desc = False
+    elif sort_by == "reverse_alphabetical":
+        resolved_sort_by = "__alphabetical__"
+        if not sort_desc_in_config:
+            sort_desc = True
+    elif sort_by == "oldest_first":
+        resolved_sort_by = "originallyAvailableAt"
+        if not sort_desc_in_config:
+            sort_desc = False
+    elif sort_by == "newest_first":
+        resolved_sort_by = "originallyAvailableAt"
+        if not sort_desc_in_config:
+            sort_desc = True
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
     stream_requested = config.get("stream_while_filtering", False)
     stream_enabled = stream_requested and not sort_by and not limit
@@ -2846,7 +2869,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     match_count = len(matched_tracks)
 
     if resolved_sort_by:
-        sort_desc = config.get("sort_desc", True)
         sort_value_cache = {}
 
         def _get_sort_value(track):
@@ -2906,6 +2928,16 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 if cache_key_str:
                     sort_value_cache[cache_key_str] = popularity_value
                 return popularity_value
+
+            if resolved_sort_by == "__alphabetical__":
+                raw_title = getattr(track, "title", "") or ""
+                raw_artist = getattr(track, "grandparentTitle", "") or ""
+                normalized_title = unicodedata.normalize("NFKD", str(raw_title)).casefold()
+                normalized_artist = unicodedata.normalize("NFKD", str(raw_artist)).casefold()
+                sort_value = (normalized_title, normalized_artist, str(raw_title))
+                if cache_key_str:
+                    sort_value_cache[cache_key_str] = sort_value
+                return sort_value
 
             if resolved_sort_by in {"ratingCount", "parentRatingCount"}:
                 if debug_logging:
@@ -3079,6 +3111,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             """Return a comparable representation for sorting, handling mixed types safely."""
             if value is None:
                 return None
+            if isinstance(value, tuple):
+                return tuple(_normalize_sort_value(item) for item in value)
             if isinstance(value, (int, float)):
                 return float(value)
             if isinstance(value, str):
