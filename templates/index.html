@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Plex Playlist Builder</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --plex-orange: #e5a00d;
+        --plex-orange-dark: #d48c07;
+        --plex-dark: #1a1a1a;
+        --plex-gray: #2b2b2b;
+        --plex-light: #f5f5f5;
+        --card-bg: rgba(34, 34, 34, 0.92);
+        --border-radius: 14px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Roboto", sans-serif;
+        background: radial-gradient(circle at top, #2a2a2a 0%, #111 70%);
+        color: var(--plex-light);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header {
+        background: linear-gradient(135deg, var(--plex-dark), #0d0d0d);
+        padding: 24px 48px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: 28px;
+        letter-spacing: 0.04em;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      header h1 span.icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        background: var(--plex-orange);
+        color: #111;
+        font-size: 22px;
+        box-shadow: 0 8px 20px rgba(229, 160, 13, 0.45);
+      }
+
+      .action-bar {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      main {
+        flex: 1;
+        padding: 32px 48px 64px;
+        overflow-y: auto;
+      }
+
+      section {
+        margin-bottom: 32px;
+      }
+
+      h2 {
+        margin: 0 0 16px;
+        font-size: 22px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      h2 .section-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 12px;
+        background: rgba(229, 160, 13, 0.2);
+        color: var(--plex-orange);
+        font-size: 16px;
+      }
+
+      .card {
+        background: var(--card-bg);
+        border-radius: var(--border-radius);
+        padding: 20px;
+        margin-bottom: 18px;
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+        border: 1px solid rgba(229, 160, 13, 0.18);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 24px 45px rgba(0, 0, 0, 0.55);
+      }
+
+      .playlist-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-bottom: 18px;
+      }
+
+      .playlist-header h3 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 600;
+      }
+
+      .input-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.8);
+      }
+
+      input[type="text"],
+      input[type="number"],
+      select,
+      textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(229, 160, 13, 0.25);
+        background: rgba(17, 17, 17, 0.6);
+        color: var(--plex-light);
+        font-size: 15px;
+        transition: border 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: none;
+        border-color: var(--plex-orange);
+        box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.25);
+      }
+
+      textarea {
+        min-height: 42px;
+        resize: vertical;
+      }
+
+      .filter-row {
+        display: grid;
+        grid-template-columns: 1.1fr 1fr 1fr auto;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+
+      .filter-row .value-input {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .filter-row .value-input input {
+        flex: 1;
+      }
+
+      .filter-row .match-all {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.7);
+      }
+
+      .button,
+      button {
+        cursor: pointer;
+        border: none;
+        border-radius: 999px;
+        padding: 10px 18px;
+        font-size: 15px;
+        font-weight: 500;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: #111;
+        background: var(--plex-orange);
+        transition: background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+        box-shadow: 0 12px 24px rgba(229, 160, 13, 0.35);
+      }
+
+      button.secondary {
+        background: rgba(229, 160, 13, 0.16);
+        color: var(--plex-light);
+        box-shadow: none;
+        border: 1px solid rgba(229, 160, 13, 0.35);
+      }
+
+      button.danger {
+        background: rgba(229, 65, 70, 0.85);
+        color: #fff;
+        box-shadow: 0 12px 24px rgba(229, 65, 70, 0.45);
+      }
+
+      button.icon-only {
+        padding: 8px;
+        border-radius: 12px;
+        width: 36px;
+        height: 36px;
+        justify-content: center;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      .filters-container {
+        border: 1px dashed rgba(229, 160, 13, 0.25);
+        border-radius: 12px;
+        padding: 16px;
+        background: rgba(14, 14, 14, 0.55);
+      }
+
+      .no-filters {
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.6);
+        margin-bottom: 12px;
+      }
+
+      .message {
+        margin-left: auto;
+        padding: 10px 16px;
+        border-radius: 999px;
+        font-size: 14px;
+        background: rgba(229, 160, 13, 0.2);
+        color: var(--plex-light);
+        display: none;
+      }
+
+      .message.show {
+        display: inline-flex;
+      }
+
+      @media (max-width: 960px) {
+        main {
+          padding: 24px;
+        }
+
+        header {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 16px;
+        }
+
+        .filter-row {
+          grid-template-columns: 1fr;
+        }
+
+        .filter-row .match-all {
+          justify-content: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><span class="icon">▶</span>Plex Playlist Builder</h1>
+      <div class="action-bar">
+        <button id="reloadBtn" class="secondary" type="button">⟳ Refresh from File</button>
+        <button id="saveBtn" type="button">💾 Save to playlists.yml</button>
+        <span id="message" class="message"></span>
+      </div>
+    </header>
+    <main>
+      <section>
+        <h2><span class="section-icon">⚙</span>Default Plex Filters</h2>
+        <div class="card">
+          <div id="defaultFilters" class="filters-container"></div>
+          <button id="addDefaultFilter" class="secondary" type="button">＋ Add Default Filter</button>
+        </div>
+      </section>
+
+      <section>
+        <div class="playlist-header">
+          <h2><span class="section-icon">🎵</span>Playlists</h2>
+          <button id="addPlaylist" type="button">＋ Add Playlist</button>
+        </div>
+        <div id="playlistsContainer"></div>
+      </section>
+    </main>
+
+    <script>
+      const state = {
+        defaults: { plex_filter: [], extras: {} },
+        playlists: [],
+      };
+
+      let options = {
+        fields: [],
+        operators: [],
+        sort_fields: [],
+      };
+
+      const messageEl = document.getElementById("message");
+      const playlistsContainer = document.getElementById("playlistsContainer");
+      const defaultFiltersContainer = document.getElementById("defaultFilters");
+
+      function showMessage(text, isError = false) {
+        if (!text) {
+          messageEl.classList.remove("show");
+          return;
+        }
+        messageEl.textContent = text;
+        messageEl.style.background = isError
+          ? "rgba(229, 65, 70, 0.25)"
+          : "rgba(229, 160, 13, 0.2)";
+        messageEl.classList.add("show");
+        setTimeout(() => messageEl.classList.remove("show"), 4000);
+      }
+
+      function createOptionElements(selectEl, opts, selectedValue = "") {
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Select...";
+        selectEl.appendChild(placeholder);
+
+        opts.forEach((opt) => {
+          const option = document.createElement("option");
+          option.value = opt.value;
+          option.textContent = opt.label;
+          if (opt.value === selectedValue) {
+            option.selected = true;
+          }
+          selectEl.appendChild(option);
+        });
+      }
+
+      function renderFilters(containerEl, filters, onRemove) {
+        containerEl.innerHTML = "";
+
+        if (!filters.length) {
+          const emptyState = document.createElement("p");
+          emptyState.className = "no-filters";
+          emptyState.textContent = "No filters configured.";
+          containerEl.appendChild(emptyState);
+        }
+
+        filters.forEach((filter, index) => {
+          const row = document.createElement("div");
+          row.className = "filter-row";
+
+          const fieldSelect = document.createElement("select");
+          createOptionElements(fieldSelect, options.fields, filter.field || "");
+          fieldSelect.value = filter.field || "";
+          fieldSelect.addEventListener("change", (event) => {
+            filter.field = event.target.value;
+          });
+
+          const operatorSelect = document.createElement("select");
+          createOptionElements(operatorSelect, options.operators, filter.operator || "equals");
+          operatorSelect.value = filter.operator || "";
+          operatorSelect.addEventListener("change", (event) => {
+            filter.operator = event.target.value;
+          });
+
+          const valueWrapper = document.createElement("div");
+          valueWrapper.className = "value-input";
+          const valueInput = document.createElement("input");
+          valueInput.type = "text";
+          valueInput.placeholder = "Value (comma separated for multiple)";
+          valueInput.value = filter.value || "";
+          valueInput.addEventListener("input", (event) => {
+            filter.value = event.target.value;
+          });
+
+          const matchAllLabel = document.createElement("label");
+          matchAllLabel.className = "match-all";
+          const matchAllInput = document.createElement("input");
+          matchAllInput.type = "checkbox";
+          matchAllInput.checked = filter.match_all !== undefined ? !!filter.match_all : true;
+          matchAllInput.addEventListener("change", (event) => {
+            filter.match_all = event.target.checked;
+          });
+          matchAllLabel.appendChild(matchAllInput);
+          matchAllLabel.appendChild(document.createTextNode("Match all values"));
+          valueWrapper.appendChild(valueInput);
+          valueWrapper.appendChild(matchAllLabel);
+
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.className = "icon-only danger";
+          removeBtn.textContent = "✕";
+          removeBtn.title = "Remove filter";
+          removeBtn.addEventListener("click", () => onRemove(index));
+
+          row.appendChild(fieldSelect);
+          row.appendChild(operatorSelect);
+          row.appendChild(valueWrapper);
+          row.appendChild(removeBtn);
+
+          containerEl.appendChild(row);
+        });
+      }
+
+      function renderPlaylists() {
+        playlistsContainer.innerHTML = "";
+
+        if (!state.playlists.length) {
+          const empty = document.createElement("p");
+          empty.className = "no-filters";
+          empty.textContent = "No playlists yet. Add one to get started.";
+          playlistsContainer.appendChild(empty);
+          return;
+        }
+
+        state.playlists.forEach((playlist, index) => {
+          const card = document.createElement("div");
+          card.className = "card";
+
+          const header = document.createElement("div");
+          header.className = "playlist-header";
+
+          const title = document.createElement("h3");
+          title.textContent = playlist.name || "Untitled Playlist";
+
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.className = "icon-only danger";
+          removeBtn.textContent = "✕";
+          removeBtn.title = "Delete playlist";
+          removeBtn.addEventListener("click", () => {
+            state.playlists.splice(index, 1);
+            renderPlaylists();
+          });
+
+          header.appendChild(title);
+          header.appendChild(removeBtn);
+          card.appendChild(header);
+
+          const grid = document.createElement("div");
+          grid.className = "input-grid";
+
+          const nameLabel = document.createElement("label");
+          nameLabel.textContent = "Playlist Name";
+          const nameInput = document.createElement("input");
+          nameInput.type = "text";
+          nameInput.value = playlist.name || "";
+          nameInput.addEventListener("input", (event) => {
+            playlist.name = event.target.value;
+            title.textContent = event.target.value || "Untitled Playlist";
+          });
+          nameLabel.appendChild(nameInput);
+
+          const limitLabel = document.createElement("label");
+          limitLabel.textContent = "Limit";
+          const limitInput = document.createElement("input");
+          limitInput.type = "number";
+          limitInput.min = "0";
+          limitInput.value = playlist.limit ?? 0;
+          limitInput.addEventListener("input", (event) => {
+            playlist.limit = event.target.value;
+          });
+          limitLabel.appendChild(limitInput);
+
+          const artistLimitLabel = document.createElement("label");
+          artistLimitLabel.textContent = "Artist Limit";
+          const artistLimitInput = document.createElement("input");
+          artistLimitInput.type = "number";
+          artistLimitInput.min = "0";
+          artistLimitInput.value = playlist.artist_limit ?? 0;
+          artistLimitInput.addEventListener("input", (event) => {
+            playlist.artist_limit = event.target.value;
+          });
+          artistLimitLabel.appendChild(artistLimitInput);
+
+          const sortLabel = document.createElement("label");
+          sortLabel.textContent = "Sort By";
+          const sortSelect = document.createElement("select");
+          options.sort_fields.forEach((opt) => {
+            const option = document.createElement("option");
+            option.value = opt.value;
+            option.textContent = opt.label;
+            sortSelect.appendChild(option);
+          });
+          sortSelect.value = playlist.sort_by || "";
+          sortSelect.addEventListener("change", (event) => {
+            playlist.sort_by = event.target.value;
+          });
+          sortLabel.appendChild(sortSelect);
+
+          grid.appendChild(nameLabel);
+          grid.appendChild(limitLabel);
+          grid.appendChild(artistLimitLabel);
+          grid.appendChild(sortLabel);
+
+          card.appendChild(grid);
+
+          const filtersWrapper = document.createElement("div");
+          filtersWrapper.className = "filters-container";
+          renderFilters(filtersWrapper, playlist.plex_filter, (filterIndex) => {
+            playlist.plex_filter.splice(filterIndex, 1);
+            renderPlaylists();
+          });
+
+          card.appendChild(filtersWrapper);
+
+          const addFilterBtn = document.createElement("button");
+          addFilterBtn.type = "button";
+          addFilterBtn.className = "secondary";
+          addFilterBtn.textContent = "＋ Add Filter";
+          addFilterBtn.addEventListener("click", () => {
+            playlist.plex_filter.push({
+              field: "",
+              operator: "equals",
+              value: "",
+              match_all: true,
+            });
+            renderPlaylists();
+          });
+
+          card.appendChild(addFilterBtn);
+
+          playlistsContainer.appendChild(card);
+        });
+      }
+
+      function renderDefaultFilters() {
+        renderFilters(defaultFiltersContainer, state.defaults.plex_filter, (index) => {
+          state.defaults.plex_filter.splice(index, 1);
+          renderDefaultFilters();
+        });
+      }
+
+      function renderAll() {
+        renderDefaultFilters();
+        renderPlaylists();
+      }
+
+      async function loadData() {
+        try {
+          const response = await fetch("/api/playlists");
+          if (!response.ok) {
+            throw new Error("Unable to load playlists.");
+          }
+          const data = await response.json();
+          options = data.options || options;
+
+          state.defaults.plex_filter = (data.defaults?.plex_filter || []).map((filter) => ({
+            field: filter.field || "",
+            operator: filter.operator || "equals",
+            value: filter.value || "",
+            match_all: filter.match_all !== undefined ? filter.match_all : true,
+          }));
+          state.defaults.extras = data.defaults?.extras || {};
+
+          state.playlists = (data.playlists || []).map((playlist) => ({
+            name: playlist.name || "",
+            limit: playlist.limit ?? 0,
+            artist_limit: playlist.artist_limit ?? 0,
+            sort_by: playlist.sort_by || "",
+            plex_filter: (playlist.plex_filter || []).map((filter) => ({
+              field: filter.field || "",
+              operator: filter.operator || "equals",
+              value: filter.value || "",
+              match_all: filter.match_all !== undefined ? filter.match_all : true,
+            })),
+            extras: playlist.extras || {},
+          }));
+
+          renderAll();
+        } catch (error) {
+          console.error(error);
+          showMessage(error.message, true);
+        }
+      }
+
+      function prepareFiltersForSave(filters) {
+        return filters.map((filter) => ({
+          field: filter.field || "",
+          operator: filter.operator || "equals",
+          value: filter.value || "",
+          match_all: filter.match_all !== undefined ? !!filter.match_all : true,
+        }));
+      }
+
+      async function saveData() {
+        const payload = {
+          defaults: {
+            plex_filter: prepareFiltersForSave(state.defaults.plex_filter),
+            extras: state.defaults.extras || {},
+          },
+          playlists: state.playlists.map((playlist) => ({
+            name: playlist.name || "",
+            limit: playlist.limit ?? 0,
+            artist_limit: playlist.artist_limit ?? 0,
+            sort_by: playlist.sort_by || "",
+            plex_filter: prepareFiltersForSave(playlist.plex_filter),
+            extras: playlist.extras || {},
+          })),
+        };
+
+        try {
+          const response = await fetch("/api/playlists", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+          });
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({ error: "Unknown error" }));
+            throw new Error(error.error || "Failed to save playlists.");
+          }
+
+          showMessage("Playlists saved successfully.");
+        } catch (error) {
+          console.error(error);
+          showMessage(error.message, true);
+        }
+      }
+
+      document.getElementById("addDefaultFilter").addEventListener("click", () => {
+        state.defaults.plex_filter.push({
+          field: "",
+          operator: "equals",
+          value: "",
+          match_all: true,
+        });
+        renderDefaultFilters();
+      });
+
+      document.getElementById("addPlaylist").addEventListener("click", () => {
+        state.playlists.push({
+          name: "New Playlist",
+          limit: 0,
+          artist_limit: 0,
+          sort_by: "",
+          plex_filter: [],
+          extras: {},
+        });
+        renderPlaylists();
+      });
+
+      document.getElementById("reloadBtn").addEventListener("click", () => {
+        loadData().then(() => showMessage("Reloaded from playlists.yml"));
+      });
+
+      document.getElementById("saveBtn").addEventListener("click", saveData);
+
+      loadData();
+    </script>
+  </body>
+</html>
