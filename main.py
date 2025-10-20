@@ -13,7 +13,7 @@ from functools import cmp_to_key
 from xml.etree import ElementTree as ET
 from html import unescape
 import unicodedata
-from urllib.parse import quote_plus
+from urllib.parse import unquote
 
 from plexapi.server import PlexServer
 from spotipy import Spotify
@@ -1618,37 +1618,36 @@ class AllMusicPopularityProvider:
         }
 
         for variant in self._iter_query_variants(query):
-            search_url = f"https://www.allmusic.com/search/albums/{quote_plus(variant)}"
-
-            if playlist_logger:
-                playlist_logger.debug("AllMusic album search URL: %s", search_url)
+            google_query = self._build_google_search_query(variant)
+            if not google_query:
+                continue
 
             try:
-                response = self._session.get(search_url, timeout=self._timeout)
-                response.raise_for_status()
+                response_html = self._perform_google_search(
+                    google_query,
+                    playlist_logger=playlist_logger,
+                )
             except Exception as exc:
                 last_error = exc
                 self._error = str(exc)
                 if playlist_logger:
                     playlist_logger.debug(
-                        "AllMusic album search for '%s' failed: %s",
-                        variant,
+                        "Google search for '%s' failed: %s",
+                        google_query,
                         exc,
                     )
                 else:
-                    logger.debug("AllMusic album search for '%s' failed: %s", variant, exc)
+                    logger.debug("Google search for '%s' failed: %s", google_query, exc)
                 self._remember_query_cache_entry(variant, None)
                 continue
 
-            album_candidate = self._select_album_candidate(response.text, album_info)
+            album_url = self._extract_first_allmusic_album_url(response_html)
 
-            if not album_candidate:
+            if not album_url:
                 self._remember_query_cache_entry(variant, None)
                 continue
 
-            album_url = album_candidate.get("album_url")
-
-            if playlist_logger and album_url:
+            if playlist_logger:
                 playlist_logger.debug("AllMusic album page URL: %s", album_url)
 
             metadata = self._get_album_metadata(
@@ -1659,13 +1658,11 @@ class AllMusicPopularityProvider:
             highlighted_tracks = metadata.get("highlighted_tracks") or []
             rating_count = metadata.get("rating_count")
 
-            artists = list(album_candidate.get("artists", []))
-            if not artists and artist:
-                artists = [artist]
+            artists = []
+            if artist:
+                artists.append(str(artist).strip())
 
-            cleaned_album_title = album_candidate.get("album") or (
-                _strip_parenthetical(album) if album else None
-            )
+            cleaned_album_title = _strip_parenthetical(album) if album else None
 
             details = {
                 "title": title,
@@ -1675,7 +1672,7 @@ class AllMusicPopularityProvider:
                 "rating_count": rating_count,
                 "album_rating_count": rating_count,
                 "album_highlighted_tracks": list(highlighted_tracks),
-                "source": "album_search",
+                "source": "google_album_search",
             }
 
             self._remember_query_cache_entry(variant, details)
@@ -1715,77 +1712,66 @@ class AllMusicPopularityProvider:
         last_error = None
 
         for variant in self._iter_query_variants(album_query):
-            search_url = f"https://www.allmusic.com/search/albums/{quote_plus(variant)}"
-
-            if playlist_logger:
-                playlist_logger.debug("AllMusic album search URL: %s", search_url)
-            else:
-                logger.debug("AllMusic album search URL: %s", search_url)
+            google_query = self._build_google_search_query(variant)
+            if not google_query:
+                continue
 
             try:
-                response = self._session.get(search_url, timeout=self._timeout)
-                response.raise_for_status()
+                response_html = self._perform_google_search(
+                    google_query,
+                    playlist_logger=playlist_logger,
+                )
             except Exception as exc:
                 last_error = exc
                 if playlist_logger:
                     playlist_logger.debug(
-                        "AllMusic album search for '%s' failed: %s",
-                        variant,
+                        "Google search for '%s' failed: %s",
+                        google_query,
                         exc,
                     )
                 else:
-                    logger.debug("AllMusic album search for '%s' failed: %s", variant, exc)
+                    logger.debug("Google search for '%s' failed: %s", google_query, exc)
                 continue
 
-            album_candidate = self._select_album_candidate(
-                response.text,
-                {
-                    "album": album,
-                    "artist": artist,
-                },
-            )
+            album_url = self._extract_first_allmusic_album_url(response_html)
 
-            if not album_candidate:
+            if not album_url:
                 continue
 
             metadata = self._get_album_metadata(
-                album_candidate.get("album_url"),
+                album_url,
                 playlist_logger=playlist_logger,
             )
 
             highlighted_tracks = metadata.get("highlighted_tracks") or []
 
-            artists = list(album_candidate.get("artists", []))
-            if not artists and artist:
-                artists = [artist]
+            artists = []
+            if artist:
+                artists.append(str(artist).strip())
 
             details = {
                 "title": track_title,
                 "artists": artists,
-                "album": album_candidate.get("album"),
-                "album_url": album_candidate.get("album_url"),
+                "album": _strip_parenthetical(album) if album else album,
+                "album_url": album_url,
                 "rating_count": metadata.get("rating_count"),
                 "album_rating_count": metadata.get("rating_count"),
                 "album_highlighted_tracks": list(highlighted_tracks),
-                "source": "album_search",
+                "source": "google_album_search",
             }
 
-            album_url = album_candidate.get("album_url")
-
             if playlist_logger:
-                if album_url:
-                    playlist_logger.debug("AllMusic album page URL: %s", album_url)
+                playlist_logger.debug("AllMusic album page URL: %s", album_url)
                 playlist_logger.debug(
                     "AllMusic album fallback matched '%s' → album_url='%s'",
-                    album_candidate.get("album"),
+                    details.get("album"),
                     album_url,
                 )
             else:
-                if album_url:
-                    logger.debug("AllMusic album page URL: %s", album_url)
+                logger.debug("AllMusic album page URL: %s", album_url)
                 logger.debug(
                     "AllMusic album fallback matched '%s' → album_url='%s'",
-                    album_candidate.get("album"),
+                    details.get("album"),
                     album_url,
                 )
 
@@ -1828,6 +1814,50 @@ class AllMusicPopularityProvider:
 
         for variant in variants:
             yield variant
+
+    @staticmethod
+    def _build_google_search_query(value):
+        if not value:
+            return None
+
+        without_parentheses = re.sub(r"\s*\([^)]*\)", " ", value)
+        cleaned = " ".join(without_parentheses.split())
+        if not cleaned:
+            return None
+
+        return f"allmusic.com: {cleaned}"
+
+    def _perform_google_search(self, query, playlist_logger=None):
+        logger_fn = playlist_logger.debug if playlist_logger else logger.debug
+        logger_fn("Google search query: %s", query)
+
+        response = self._session.get(
+            "https://www.google.com/search",
+            params={"q": query, "num": "5", "hl": "en"},
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+        return response.text
+
+    def _extract_first_allmusic_album_url(self, html):
+        if not html:
+            return None
+
+        patterns = [
+            r'href="/url\?q=(https?://www\.allmusic\.com/(?:album|release)/[^"&]+)',
+            r'href="(https?://www\.allmusic\.com/(?:album|release)/[^"&]+)"',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
+            if not match:
+                continue
+            raw_url = unquote(match.group(1))
+            normalized = self._normalize_album_url(raw_url)
+            if normalized:
+                return normalized
+
+        return None
 
     def _select_candidate(self, html, track_info, playlist_logger=None):
         candidates = list(self._iter_candidates(html))
