@@ -2414,12 +2414,18 @@ def parse_field_from_xml(xml_text, field):
         if field in node.attrib:
             return node.attrib[field]
 
-        # Special handling for genres
-        if field == "genres":
-            # Return a list of genre strings
-            genres = [el.attrib.get("tag").strip() for el in root.findall(".//Genre") if "tag" in el.attrib]
-            if genres:
-                return genres  # <- return list, no join
+        # Special handling for tag-based collections like genres/moods/styles
+        if field in {"genres", "moods", "styles"}:
+            tag_name = {"genres": "Genre", "moods": "Mood", "styles": "Style"}[field]
+            tags = []
+            for el in root.findall(f".//{tag_name}"):
+                raw_tag = el.attrib.get("tag")
+                if raw_tag:
+                    normalized = raw_tag.strip()
+                    if normalized:
+                        tags.append(normalized)
+            if tags:
+                return tags  # return list, no join so downstream can merge intelligently
 
         # Optionally handle titles or other fields
         if field in ("title", "parentTitle", "grandparentTitle"):
@@ -2444,6 +2450,37 @@ def get_field_value(track, field):
     else:
         field_candidates = [field]
 
+    def _normalize_to_list(raw_value):
+        """Normalize Plex metadata values into a flat list of strings."""
+        normalized = []
+        if raw_value is None:
+            return normalized
+
+        if isinstance(raw_value, (list, tuple, set)):
+            iterable = raw_value
+        else:
+            iterable = [raw_value]
+
+        for item in iterable:
+            if item is None:
+                continue
+            if isinstance(item, (list, tuple, set)):
+                normalized.extend(_normalize_to_list(item))
+                continue
+
+            candidate = getattr(item, "tag", item)
+            if isinstance(candidate, (list, tuple, set)):
+                normalized.extend(_normalize_to_list(candidate))
+                continue
+
+            text = str(candidate).strip()
+            if text:
+                normalized.append(text)
+            elif candidate in {0, 0.0}:
+                normalized.append(str(candidate))
+
+        return normalized
+
     # Helper to extract and normalize field values
     def extract_values(source_key, field_name):
         if not source_key:
@@ -2451,11 +2488,8 @@ def get_field_value(track, field):
         try:
             xml_text = fetch_full_metadata(source_key)
             xml_val = parse_field_from_xml(xml_text, field_name)
-            if xml_val:
-                # normalize to string list
-                if isinstance(xml_val, (list, set)):
-                    return [str(v).strip() for v in xml_val]
-                return [str(xml_val).strip()]
+            if xml_val is not None:
+                return _normalize_to_list(xml_val)
         except Exception as e:
             logger.debug(f"Metadata error for key {source_key}: {e}")
         return []
@@ -2466,10 +2500,30 @@ def get_field_value(track, field):
         canonical_value = get_canonical_field_for_track(track, field_name)
         if canonical_value is None:
             return []
-        if isinstance(canonical_value, (list, set)):
-            return [str(v).strip() for v in canonical_value if str(v).strip()]
-        value_str = str(canonical_value).strip()
-        return [value_str] if value_str else []
+        return _normalize_to_list(canonical_value)
+
+    # Album type needs to collate information explicitly from album objects
+    if field == "album.type":
+        parent_key = getattr(track, "parentRatingKey", None)
+        if parent_key:
+            values.update(extract_values(parent_key, "type"))
+
+        parent_type = getattr(track, "parentType", None)
+        values.update(_normalize_to_list(parent_type))
+
+        album_obj = getattr(track, "album", None)
+        album = None
+        if callable(album_obj):
+            try:
+                album = album_obj()
+            except TypeError:
+                album = None
+        else:
+            album = album_obj
+        if album is not None:
+            values.update(_normalize_to_list(getattr(album, "type", None)))
+
+        return sorted(values)
 
     seen_fields = set()
 
@@ -2483,11 +2537,7 @@ def get_field_value(track, field):
             if canonical_value is None:
                 return False
 
-            if isinstance(canonical_value, (list, set, tuple)):
-                normalized_values = [str(v).strip() for v in canonical_value if str(v).strip()]
-            else:
-                normalized = str(canonical_value).strip()
-                normalized_values = [normalized] if normalized or canonical_value == 0 else []
+            normalized_values = _normalize_to_list(canonical_value)
 
             values.update(normalized_values)
             return bool(normalized_values)
@@ -2496,17 +2546,13 @@ def get_field_value(track, field):
 
         # 1️⃣ Try direct object field (most accurate)
         val = getattr(track, candidate, None)
-        if val or val == 0:
+        if val is not None:
             if callable(val):
                 try:
                     val = val()
                 except TypeError:
                     val = None
-            if val is not None:
-                if isinstance(val, list):
-                    values.update(str(v).strip() for v in val)
-                else:
-                    values.add(str(val).strip())
+            values.update(_normalize_to_list(val))
 
         # 2️⃣ Try cached XML for the track
         values.update(extract_values(track.ratingKey, candidate))
