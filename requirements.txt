@@ -3,3 +3,4 @@ PyYAML
 requests
 tqdm
 spotipy
+Flask
