@@ -55,6 +55,21 @@ FIELD_LABEL_OVERRIDES: Dict[str, str] = {
     "librarySectionID": "Library Section ID",
 }
 
+# Focused subset of Plex metadata fields that are meaningful for
+# playlist building. These are exposed in the GUI instead of the
+# exhaustive list from ``legend.txt`` to keep the dropdown manageable
+# and aligned with the fields the app understands natively.
+CURATED_FIELD_CHOICES: List[str] = [
+    "artist",
+    "album",
+    "album.year",
+    "album.type",
+    "album.title",
+    "genres",
+    "moods",
+    "styles",
+]
+
 OPERATOR_OPTIONS = OrderedDict(
     [
         ("equals", "Equals"),
@@ -91,41 +106,10 @@ def humanize_field_name(field: str) -> str:
 
 
 def load_field_options() -> List[Dict[str, str]]:
-    if not LEGEND_PATH.exists():
-        # Fallback to a minimal set if the legend is unavailable
-        fallback_fields = {
-            "title",
-            "artist",
-            "album",
-            "genres",
-            "year",
-            "parentYear",
-            "grandparentTitle",
-            "ratingCount",
-        }
-        return [
-            {"value": field, "label": humanize_field_name(field)}
-            for field in sorted(fallback_fields)
-        ]
-
-    fields: Dict[str, str] = {}
-    with LEGEND_PATH.open("r", encoding="utf-8") as legend_file:
-        for raw_line in legend_file:
-            line = raw_line.strip()
-            if not line or line.startswith("=") or line.startswith("-") or line.startswith("🔹"):
-                continue
-            if line.startswith(":"):
-                continue
-            line = line.split("(")[0].strip()
-            if not line:
-                continue
-            field_name = line.split()[0]
-            if not field_name:
-                continue
-            fields[field_name] = humanize_field_name(field_name)
-
-    sorted_fields = sorted(fields.items(), key=lambda item: item[1].lower())
-    return [{"value": value, "label": label} for value, label in sorted_fields]
+    return [
+        {"value": field, "label": humanize_field_name(field)}
+        for field in CURATED_FIELD_CHOICES
+    ]
 
 
 def load_yaml_data() -> Dict[str, Any]:
