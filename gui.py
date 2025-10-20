@@ -21,6 +21,8 @@ yaml.SafeDumper.add_representer(OrderedDict, _represent_ordered_dict)
 BASE_DIR = Path(__file__).resolve().parent
 PLAYLISTS_PATH = BASE_DIR / "playlists.yml"
 LEGEND_PATH = BASE_DIR / "legend.txt"
+CONFIG_PATH = BASE_DIR / "config.yml"
+DEFAULT_ALLMUSIC_CACHE = Path("/app/allmusic_popularity.json")
 
 # Human-friendly overrides for certain Plex field names
 FIELD_LABEL_OVERRIDES: Dict[str, str] = {
@@ -62,6 +64,7 @@ FIELD_LABEL_OVERRIDES: Dict[str, str] = {
 CURATED_FIELD_CHOICES: List[str] = [
     "artist",
     "album",
+    "title",
     "album.year",
     "album.type",
     "album.title",
@@ -83,13 +86,11 @@ OPERATOR_OPTIONS = OrderedDict(
 
 SORT_OPTIONS = OrderedDict(
     [
-        ("", "None"),
-        ("popularity", "Spotify Popularity"),
-        ("ratingCount", "Rating Count"),
-        ("parentRatingCount", "Album Rating Count"),
-        ("year", "Track Year"),
-        ("parentYear", "Album Year"),
-        ("originallyAvailableAt", "Release Date"),
+        ("popularity", "Popularity"),
+        ("alphabetical", "Alphabetical"),
+        ("reverse_alphabetical", "Lacitebahpla"),
+        ("oldest_first", "Oldest First"),
+        ("newest_first", "Newest First"),
     ]
 )
 
@@ -110,6 +111,30 @@ def load_field_options() -> List[Dict[str, str]]:
         {"value": field, "label": humanize_field_name(field)}
         for field in CURATED_FIELD_CHOICES
     ]
+
+
+def resolve_allmusic_cache_path() -> Path:
+    """Return the filesystem path used for the AllMusic popularity cache."""
+
+    cache_path = DEFAULT_ALLMUSIC_CACHE
+
+    if CONFIG_PATH.exists():
+        try:
+            with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+                config_data = yaml.safe_load(config_file) or {}
+        except Exception:
+            config_data = {}
+
+        allmusic_cfg = config_data.get("allmusic") or {}
+        if isinstance(allmusic_cfg, dict):
+            cache_file_raw = allmusic_cfg.get("cache_file")
+            if isinstance(cache_file_raw, str) and cache_file_raw.strip():
+                candidate = Path(cache_file_raw.strip())
+                if not candidate.is_absolute():
+                    candidate = (CONFIG_PATH.parent / candidate).resolve()
+                cache_path = candidate
+
+    return cache_path
 
 
 def load_yaml_data() -> Dict[str, Any]:
@@ -441,6 +466,25 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"status": "saved"})
+
+    @app.route("/api/cache/allmusic", methods=["POST"])
+    def clear_allmusic_cache() -> Any:
+        cache_path = resolve_allmusic_cache_path()
+
+        try:
+            if cache_path.exists():
+                cache_path.unlink()
+                return jsonify({
+                    "status": "cleared",
+                    "path": str(cache_path),
+                })
+        except Exception as exc:
+            return jsonify({"error": f"Unable to clear AllMusic cache: {exc}"}), 500
+
+        return jsonify({
+            "status": "missing",
+            "path": str(cache_path),
+        })
 
     return app
 
