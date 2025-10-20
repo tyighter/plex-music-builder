@@ -514,6 +514,70 @@
         color: rgba(255, 255, 255, 0.55);
       }
 
+      .playlist-log-entry.general-entry {
+        background: rgba(120, 120, 120, 0.18);
+        border-color: rgba(255, 255, 255, 0.16);
+      }
+
+      .playlist-log-entry.general-entry::after {
+        background: radial-gradient(
+          circle at top right,
+          rgba(255, 255, 255, 0.18),
+          transparent 55%
+        );
+      }
+
+      .build-log-card {
+        margin-top: 18px;
+      }
+
+      .build-log-card.running {
+        box-shadow: inset 0 0 0 1px rgba(229, 160, 13, 0.2),
+          0 10px 30px rgba(229, 160, 13, 0.12);
+      }
+
+      .build-log-list {
+        margin-top: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .build-log-playlist {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .build-log-playlist-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.78);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .build-log-playlist-title::before {
+        content: "";
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: rgba(229, 160, 13, 0.6);
+        box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.12);
+      }
+
+      .build-log-playlist.is-active .build-log-playlist-title::before {
+        background: #4caf50;
+        box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
+      }
+
+      .build-log-playlist-entries {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
       @keyframes filteringPulse {
         0% {
           filter: brightness(0.95);
@@ -625,6 +689,10 @@
             <button id="buildToggleBtn" type="button">▶ Build All</button>
           </div>
         </div>
+        <div id="buildLogPanel" class="card playlist-log-panel build-log-card">
+          <div class="playlist-log-header">Playlist Activity</div>
+          <div id="buildLogContainer" class="build-log-list"></div>
+        </div>
       </section>
 
       <section>
@@ -664,6 +732,8 @@
       const buildStatusMessage = document.getElementById("buildStatusMessage");
       const buildStatusMeta = document.getElementById("buildStatusMeta");
       const buildToggleBtn = document.getElementById("buildToggleBtn");
+      const buildLogPanel = document.getElementById("buildLogPanel");
+      const buildLogContainer = document.getElementById("buildLogContainer");
       let latestBuildStatus = null;
       let buildStatusTimer = null;
 
@@ -691,63 +761,12 @@
         return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
       }
 
-      function updatePlaylistLogsUi(playlist) {
-        if (!playlist || !playlist._statusElements) {
-          return;
-        }
-
-        const { logsContainer, logPanel } = playlist._statusElements;
-        if (!logsContainer) {
-          return;
-        }
-
-        const playlistName = (playlist.name || "").trim();
-        const logsByPlaylist = latestBuildStatus?.logs?.playlists || {};
-        const entries = playlistName ? logsByPlaylist[playlistName] || [] : [];
-
-        logsContainer.innerHTML = "";
-
-        if (!entries.length) {
-          const empty = document.createElement("div");
-          empty.className = "playlist-log-empty";
-          empty.textContent = playlistName
-            ? "No recent filter activity yet."
-            : "Name this playlist to start tracking activity.";
-          logsContainer.appendChild(empty);
-          return;
-        }
-
-        entries.forEach((entry, index) => {
-          const item = document.createElement("div");
-          item.className = "playlist-log-entry";
-
-          const progressWrapper = document.createElement("div");
-          progressWrapper.className = "playlist-log-bar";
-          const progressFill = document.createElement("span");
-          const progressValue = ((index + 1) / entries.length) * 100;
-          progressFill.style.setProperty("--progress", `${progressValue}%`);
-          progressWrapper.appendChild(progressFill);
-
-          const text = document.createElement("div");
-          text.className = "playlist-log-text";
-          text.textContent = entry;
-
-          item.appendChild(progressWrapper);
-          item.appendChild(text);
-          logsContainer.appendChild(item);
-        });
-
-        if (logPanel) {
-          logPanel.classList.toggle("has-entries", entries.length > 0);
-        }
-      }
-
       function updatePlaylistBuildUi(playlist) {
         if (!playlist || !playlist._statusElements) {
           return;
         }
 
-        const { indicator, line, message, button, logPanel } = playlist._statusElements;
+        const { indicator, line, message, button } = playlist._statusElements;
         const playlistName = (playlist.name || "").trim();
         const status = latestBuildStatus;
         const activeJob = status?.job || null;
@@ -845,10 +864,6 @@
           button.classList.remove("danger");
         }
 
-        if (logPanel) {
-          logPanel.classList.toggle("running", isRunningThisPlaylist);
-        }
-
         const disableButton = !playlistName || (status?.running && !isRunningThisPlaylist);
         button.disabled = Boolean(disableButton);
         if (!playlistName) {
@@ -865,7 +880,127 @@
           button.title = "";
         }
 
-        updatePlaylistLogsUi(playlist);
+      }
+
+      function updateBuildLogsUi(status) {
+        if (!buildLogPanel || !buildLogContainer) {
+          return;
+        }
+
+        const running = Boolean(status?.running);
+        const activeJob = status?.job || null;
+        const activePlaylistName =
+          running && activeJob?.type === "playlist"
+            ? (activeJob.playlist || "").trim()
+            : "";
+
+        buildLogPanel.classList.toggle("running", running);
+
+        const logsByPlaylist = status?.logs?.playlists || {};
+        const generalLogs = status?.logs?.general || [];
+
+        const playlistNames = Object.keys(logsByPlaylist).filter(
+          (name) => name && name.trim()
+        );
+        if (activePlaylistName && !playlistNames.includes(activePlaylistName)) {
+          playlistNames.push(activePlaylistName);
+        }
+
+        playlistNames.sort((a, b) => a.localeCompare(b));
+
+        buildLogContainer.innerHTML = "";
+
+        let renderedGroups = 0;
+
+        playlistNames.forEach((name) => {
+          const trimmedName = name.trim();
+          const entries = logsByPlaylist[name] || [];
+          if (!entries.length && !running) {
+            return;
+          }
+
+          renderedGroups += 1;
+          const block = document.createElement("div");
+          block.className = "build-log-playlist";
+          if (running && trimmedName === activePlaylistName) {
+            block.classList.add("is-active");
+          }
+
+          const title = document.createElement("div");
+          title.className = "build-log-playlist-title";
+          title.textContent = trimmedName || "Unnamed Playlist";
+          block.appendChild(title);
+
+          const listEl = document.createElement("div");
+          listEl.className = "build-log-playlist-entries";
+
+          if (entries.length) {
+            entries.forEach((entry, index) => {
+              const item = document.createElement("div");
+              item.className = "playlist-log-entry";
+
+              const progressWrapper = document.createElement("div");
+              progressWrapper.className = "playlist-log-bar";
+              const progressFill = document.createElement("span");
+              const progressValue = ((index + 1) / entries.length) * 100;
+              progressFill.style.setProperty("--progress", `${progressValue}%`);
+              progressWrapper.appendChild(progressFill);
+
+              const text = document.createElement("div");
+              text.className = "playlist-log-text";
+              text.textContent = entry;
+
+              item.appendChild(progressWrapper);
+              item.appendChild(text);
+              listEl.appendChild(item);
+            });
+          } else {
+            const empty = document.createElement("div");
+            empty.className = "playlist-log-empty";
+            empty.textContent = running
+              ? "Waiting for playlist activity…"
+              : "No recent activity.";
+            listEl.appendChild(empty);
+          }
+
+          block.appendChild(listEl);
+          buildLogContainer.appendChild(block);
+        });
+
+        if (generalLogs.length) {
+          renderedGroups += 1;
+          const block = document.createElement("div");
+          block.className = "build-log-playlist";
+          const title = document.createElement("div");
+          title.className = "build-log-playlist-title";
+          title.textContent = "General Activity";
+          block.appendChild(title);
+
+          const listEl = document.createElement("div");
+          listEl.className = "build-log-playlist-entries";
+
+          generalLogs.slice(-40).forEach((entry) => {
+            const item = document.createElement("div");
+            item.className = "playlist-log-entry general-entry";
+            const text = document.createElement("div");
+            text.className = "playlist-log-text";
+            text.textContent = entry;
+            item.appendChild(text);
+            listEl.appendChild(item);
+          });
+
+          block.appendChild(listEl);
+          buildLogContainer.appendChild(block);
+        }
+
+        if (!renderedGroups) {
+          const empty = document.createElement("div");
+          empty.className = "playlist-log-empty";
+          empty.textContent = running
+            ? "Waiting for playlist activity…"
+            : "No playlist activity recorded yet.";
+          buildLogContainer.appendChild(empty);
+        }
       }
 
       function updateBuildStatusUi(status) {
@@ -874,6 +1009,7 @@
         }
 
         latestBuildStatus = status;
+        updateBuildLogsUi(status);
         const isRunning = Boolean(status.running);
         const activeJob = status.job || null;
         const isAllRunning = Boolean(isRunning && activeJob?.type === "all");
@@ -1364,24 +1500,11 @@
 
           const extras = ensureExtras(playlist);
 
-          const logPanel = document.createElement("div");
-          logPanel.className = "playlist-log-panel";
-          const logHeader = document.createElement("div");
-          logHeader.className = "playlist-log-header";
-          logHeader.textContent = "Filter Activity";
-          const logList = document.createElement("div");
-          logList.className = "playlist-log-list";
-          logPanel.appendChild(logHeader);
-          logPanel.appendChild(logList);
-          card.appendChild(logPanel);
-
           playlist._statusElements = {
             indicator: statusIndicator,
             line: statusLine,
             message: statusMessage,
             button: buildBtn,
-            logsContainer: logList,
-            logPanel,
           };
           updatePlaylistBuildUi(playlist);
 
