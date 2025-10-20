@@ -13,7 +13,7 @@ from functools import cmp_to_key
 from xml.etree import ElementTree as ET
 from html import unescape
 import unicodedata
-from urllib.parse import unquote
+from urllib.parse import unquote, quote
 
 from plexapi.server import PlexServer
 from spotipy import Spotify
@@ -66,6 +66,8 @@ ALLMUSIC_USER_AGENT = allmusic_cfg.get(
     "user_agent",
     "plex-music-builder/1.0 (+https://github.com/plexmusicbuilder)",
 )
+ALLMUSIC_GOOGLE_MIN_INTERVAL = float(allmusic_cfg.get("google_min_interval", 2.0))
+ALLMUSIC_GOOGLE_BACKOFF = float(allmusic_cfg.get("google_backoff_seconds", 30.0))
 ALLMUSIC_CACHE_VERSION = 3
 
 logging_cfg = cfg.get("logging", {})
@@ -1406,6 +1408,10 @@ class AllMusicPopularityProvider:
         self._cache_lock = threading.Lock()
         self._cache_dirty = False
         self._default_spotify_baseline = 50.0
+        self._google_min_interval = max(0.0, ALLMUSIC_GOOGLE_MIN_INTERVAL)
+        self._google_backoff = max(0.0, ALLMUSIC_GOOGLE_BACKOFF)
+        self._google_rate_lock = threading.Lock()
+        self._google_next_allowed = 0.0
 
         if not self._enabled:
             self._error = "AllMusic integration disabled via configuration."
@@ -1630,6 +1636,7 @@ class AllMusicPopularityProvider:
             try:
                 response_html = self._perform_google_search(
                     google_query,
+                    original_query=variant,
                     playlist_logger=playlist_logger,
                 )
             except Exception as exc:
@@ -1724,6 +1731,7 @@ class AllMusicPopularityProvider:
             try:
                 response_html = self._perform_google_search(
                     google_query,
+                    original_query=variant,
                     playlist_logger=playlist_logger,
                 )
             except Exception as exc:
@@ -1832,13 +1840,86 @@ class AllMusicPopularityProvider:
 
         return f"allmusic.com: {cleaned}"
 
-    def _perform_google_search(self, query, playlist_logger=None):
+    def _perform_google_search(self, query, original_query=None, playlist_logger=None):
         logger_fn = playlist_logger.debug if playlist_logger else logger.debug
         logger_fn("Google search query: %s", query)
 
+        self._throttle_google_request()
+
+        try:
+            response = self._session.get(
+                "https://www.google.com/search",
+                params={"q": query, "num": "5", "hl": "en"},
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            if status_code == 429:
+                self._register_google_backoff()
+                fallback_source = original_query or query
+                logger_fn(
+                    "Google search returned HTTP 429; attempting direct AllMusic search for '%s'",
+                    fallback_source,
+                )
+                fallback_html = self._perform_allmusic_search(
+                    fallback_source, playlist_logger=playlist_logger
+                )
+                if fallback_html:
+                    return fallback_html
+            raise
+
+        return response.text
+
+    def _throttle_google_request(self):
+        min_interval = self._google_min_interval
+        if min_interval <= 0:
+            return
+
+        while True:
+            now = time.monotonic()
+            with self._google_rate_lock:
+                wait_time = self._google_next_allowed - now
+                if wait_time <= 0:
+                    self._google_next_allowed = now + min_interval
+                    return
+
+            sleep_for = min(wait_time, min_interval)
+            if sleep_for > 0:
+                logger.debug(
+                    "Throttling Google search request for %.2fs to respect rate limits",
+                    sleep_for,
+                )
+                time.sleep(sleep_for)
+
+    def _register_google_backoff(self):
+        backoff = self._google_backoff
+        if backoff <= 0:
+            return
+
+        now = time.monotonic()
+        with self._google_rate_lock:
+            next_allowed = now + backoff
+            if next_allowed > self._google_next_allowed:
+                self._google_next_allowed = next_allowed
+
+    def _perform_allmusic_search(self, value, playlist_logger=None):
+        if not value:
+            return None
+
+        search_term = value
+        if value.lower().startswith("allmusic.com:"):
+            search_term = value.split(":", 1)[1].strip()
+
+        if not search_term:
+            return None
+
+        logger_fn = playlist_logger.debug if playlist_logger else logger.debug
+        logger_fn("AllMusic fallback search query: %s", search_term)
+
+        encoded_term = quote(search_term, safe="")
         response = self._session.get(
-            "https://www.google.com/search",
-            params={"q": query, "num": "5", "hl": "en"},
+            f"https://www.allmusic.com/search/all/{encoded_term}",
             timeout=self._timeout,
         )
         response.raise_for_status()

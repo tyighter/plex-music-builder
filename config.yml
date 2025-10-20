@@ -23,3 +23,5 @@ allmusic:
   enabled: true
   cache_file: "/app/allmusic_popularity.json"
   timeout: 10
+  google_min_interval: 2.0          # seconds to wait between Google requests
+  google_backoff_seconds: 30.0      # pause duration after Google returns HTTP 429
