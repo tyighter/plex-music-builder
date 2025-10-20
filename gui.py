@@ -181,13 +181,14 @@ def load_playlists() -> Dict[str, Any]:
         extras = {
             key: value
             for key, value in config.items()
-            if key not in {"limit", "artist_limit", "sort_by", "plex_filter"}
+            if key not in {"limit", "artist_limit", "album_limit", "sort_by", "plex_filter"}
         }
         playlists_data.append(
             {
                 "name": name,
                 "limit": config.get("limit", 0) or 0,
                 "artist_limit": config.get("artist_limit", 0) or 0,
+                "album_limit": config.get("album_limit", 0) or 0,
                 "sort_by": config.get("sort_by", ""),
                 "plex_filter": serialize_filters(config.get("plex_filter")),
                 "extras": extras,
@@ -287,6 +288,7 @@ def save_playlists(payload: Dict[str, Any]) -> None:
 
         limit = to_int(playlist_entry.get("limit", 0))
         artist_limit = to_int(playlist_entry.get("artist_limit", 0))
+        album_limit = to_int(playlist_entry.get("album_limit", 0))
         sort_by = playlist_entry.get("sort_by") or None
 
         playlist_config: Dict[str, Any] = {}
@@ -295,6 +297,7 @@ def save_playlists(payload: Dict[str, Any]) -> None:
             playlist_config.update(extras)
         playlist_config["limit"] = max(limit, 0)
         playlist_config["artist_limit"] = max(artist_limit, 0)
+        playlist_config["album_limit"] = max(album_limit, 0)
         if sort_by:
             playlist_config["sort_by"] = sort_by
 
