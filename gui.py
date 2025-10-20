@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
+import os
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from flask import Flask, jsonify, render_template, request
@@ -306,6 +307,60 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         yaml.safe_dump(yaml_structure, playlist_file, sort_keys=False, allow_unicode=True)
 
 
+def _determine_separator(raw_path: str) -> str:
+    if raw_path.count("\\") > raw_path.count("/"):
+        return "\\"
+    return "/"
+
+
+def _find_existing_directory(path: Path) -> Optional[Path]:
+    current = path
+    visited = set()
+    while True:
+        if current in visited:
+            break
+        visited.add(current)
+        if current.exists() and current.is_dir():
+            return current
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def resolve_directory_request(raw_path: str) -> Tuple[Path, str, str]:
+    trimmed = (raw_path or "").strip()
+    separator = _determine_separator(trimmed) if trimmed else os.sep
+
+    base_dir = PLAYLISTS_PATH.parent
+    if not trimmed:
+        return base_dir, "", separator
+
+    expanded = os.path.expanduser(trimmed)
+    path = Path(expanded)
+    if not path.is_absolute():
+        path = (PLAYLISTS_PATH.parent / path).resolve()
+    else:
+        path = path.resolve()
+
+    if trimmed.endswith(("/", "\\")):
+        directory_candidate = path
+        prefix = trimmed
+    else:
+        directory_candidate = path.parent
+        last_slash = max(trimmed.rfind("/"), trimmed.rfind("\\"))
+        prefix = trimmed[: last_slash + 1] if last_slash >= 0 else ""
+
+    existing_directory = _find_existing_directory(directory_candidate)
+    if existing_directory is None:
+        return base_dir, "", separator
+
+    if prefix and not prefix.endswith(("/", "\\")):
+        prefix = f"{prefix}{separator}"
+
+    return existing_directory, prefix, separator
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
 
@@ -334,6 +389,49 @@ def create_app() -> Flask:
             },
         }
         return jsonify(response)
+
+    @app.route("/api/list_directory", methods=["GET"])
+    def list_directory() -> Any:
+        raw_path = request.args.get("path", "") or ""
+        directory, prefix, separator = resolve_directory_request(raw_path)
+
+        entries: List[Dict[str, Any]] = []
+        try:
+            candidates = sorted(
+                directory.iterdir(),
+                key=lambda candidate: (not candidate.is_dir(), candidate.name.lower()),
+            )
+        except OSError:
+            candidates = []
+
+        for candidate in candidates[:50]:
+            try:
+                is_dir = candidate.is_dir()
+            except OSError:
+                continue
+
+            display_name = f"{candidate.name}{separator}" if is_dir else candidate.name
+            if prefix and not prefix.endswith(("/", "\\")):
+                suggestion_prefix = f"{prefix}{separator}"
+            else:
+                suggestion_prefix = prefix
+            suggestion = f"{suggestion_prefix}{candidate.name}"
+            if is_dir:
+                suggestion = f"{suggestion}{separator}"
+
+            entries.append(
+                {
+                    "name": candidate.name,
+                    "is_dir": is_dir,
+                    "display": display_name,
+                    "suggestion": suggestion,
+                }
+            )
+
+        return jsonify({
+            "directory": str(directory),
+            "entries": entries,
+        })
 
     @app.route("/api/playlists", methods=["POST"])
     def write_playlists() -> Any:

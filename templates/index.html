@@ -199,6 +199,47 @@
         color: rgba(255, 255, 255, 0.7);
       }
 
+      .path-input {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .path-suggestions {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        right: 0;
+        background: rgba(18, 18, 18, 0.95);
+        border: 1px solid rgba(229, 160, 13, 0.25);
+        border-radius: 10px;
+        box-shadow: 0 18px 32px rgba(0, 0, 0, 0.45);
+        max-height: 220px;
+        overflow-y: auto;
+        display: none;
+        flex-direction: column;
+        z-index: 20;
+      }
+
+      .path-suggestions.show {
+        display: flex;
+      }
+
+      .path-suggestions button {
+        background: transparent;
+        border: none;
+        text-align: left;
+        padding: 10px 12px;
+        color: var(--plex-light);
+        font-size: 14px;
+        cursor: pointer;
+        transition: background 0.15s ease;
+      }
+
+      .path-suggestions button:hover {
+        background: rgba(229, 160, 13, 0.18);
+      }
+
       .button,
       button {
         cursor: pointer;
@@ -349,6 +390,121 @@
         setTimeout(() => messageEl.classList.remove("show"), 4000);
       }
 
+      function ensureExtras(target) {
+        if (!target.extras || typeof target.extras !== "object") {
+          target.extras = {};
+        }
+        return target.extras;
+      }
+
+      function sanitizeExtras(extras) {
+        const sanitized = {};
+        Object.entries(extras || {}).forEach(([key, value]) => {
+          if (value === undefined || value === null) {
+            return;
+          }
+          const trimmed = String(value).trim();
+          if (trimmed) {
+            sanitized[key] = trimmed;
+          }
+        });
+        return sanitized;
+      }
+
+      function setupPathAutocomplete(inputEl, suggestionsEl, playlist, extrasKey) {
+        const extras = ensureExtras(playlist);
+        let debounceTimer = null;
+        let controller = null;
+
+        function hideSuggestions() {
+          suggestionsEl.classList.remove("show");
+          suggestionsEl.innerHTML = "";
+        }
+
+        function renderSuggestions(entries) {
+          if (!entries.length) {
+            hideSuggestions();
+            return;
+          }
+          suggestionsEl.innerHTML = "";
+          entries.forEach((entry) => {
+            const optionBtn = document.createElement("button");
+            optionBtn.type = "button";
+            optionBtn.textContent = entry.display;
+            optionBtn.addEventListener("mousedown", (event) => {
+              event.preventDefault();
+              const suggestion = entry.suggestion;
+              inputEl.value = suggestion;
+              extras[extrasKey] = suggestion;
+              hideSuggestions();
+            });
+            suggestionsEl.appendChild(optionBtn);
+          });
+          suggestionsEl.classList.add("show");
+        }
+
+        async function requestSuggestions(value) {
+          if (controller) {
+            controller.abort();
+          }
+
+          controller = new AbortController();
+          const { signal } = controller;
+
+          const params = new URLSearchParams();
+          if (value) {
+            params.set("path", value);
+          }
+          const query = params.toString();
+          const url = query
+            ? `/api/list_directory?${query}`
+            : "/api/list_directory";
+
+          try {
+            const response = await fetch(url, {
+              signal,
+            });
+            if (!response.ok) {
+              throw new Error("Unable to fetch directory suggestions");
+            }
+            const data = await response.json();
+            if (signal.aborted) {
+              return;
+            }
+            renderSuggestions(data.entries || []);
+          } catch (error) {
+            if (signal.aborted) {
+              return;
+            }
+            console.error(error);
+            hideSuggestions();
+          }
+        }
+
+        function scheduleSuggestions(value) {
+          if (debounceTimer) {
+            clearTimeout(debounceTimer);
+          }
+          debounceTimer = setTimeout(() => {
+            requestSuggestions(value);
+          }, 180);
+        }
+
+        inputEl.addEventListener("input", (event) => {
+          const value = event.target.value;
+          extras[extrasKey] = value;
+          scheduleSuggestions(value);
+        });
+
+        inputEl.addEventListener("focus", () => {
+          scheduleSuggestions(inputEl.value);
+        });
+
+        inputEl.addEventListener("blur", () => {
+          setTimeout(hideSuggestions, 150);
+        });
+      }
+
       function createOptionElements(selectEl, opts, selectedValue = "") {
         const placeholder = document.createElement("option");
         placeholder.value = "";
@@ -454,6 +610,8 @@
           const title = document.createElement("h3");
           title.textContent = playlist.name || "Untitled Playlist";
 
+          const extras = ensureExtras(playlist);
+
           const removeBtn = document.createElement("button");
           removeBtn.type = "button";
           removeBtn.className = "icon-only danger";
@@ -519,10 +677,28 @@
           });
           sortLabel.appendChild(sortSelect);
 
+          const coverLabel = document.createElement("label");
+          coverLabel.textContent = "Cover Image Path";
+          const coverWrapper = document.createElement("div");
+          coverWrapper.className = "path-input";
+          const coverInput = document.createElement("input");
+          coverInput.type = "text";
+          coverInput.placeholder = "/images/cover.png";
+          coverInput.value = extras.cover || "";
+          coverInput.addEventListener("input", (event) => {
+            extras.cover = event.target.value;
+          });
+          const suggestionsList = document.createElement("div");
+          suggestionsList.className = "path-suggestions";
+          coverWrapper.appendChild(coverInput);
+          coverWrapper.appendChild(suggestionsList);
+          coverLabel.appendChild(coverWrapper);
+
           grid.appendChild(nameLabel);
           grid.appendChild(limitLabel);
           grid.appendChild(artistLimitLabel);
           grid.appendChild(sortLabel);
+          grid.appendChild(coverLabel);
 
           card.appendChild(grid);
 
@@ -550,6 +726,8 @@
           });
 
           card.appendChild(addFilterBtn);
+
+          setupPathAutocomplete(coverInput, suggestionsList, playlist, "cover");
 
           playlistsContainer.appendChild(card);
         });
@@ -618,7 +796,7 @@
         const payload = {
           defaults: {
             plex_filter: prepareFiltersForSave(state.defaults.plex_filter),
-            extras: state.defaults.extras || {},
+            extras: sanitizeExtras(state.defaults.extras || {}),
           },
           playlists: state.playlists.map((playlist) => ({
             name: playlist.name || "",
@@ -626,7 +804,7 @@
             artist_limit: playlist.artist_limit ?? 0,
             sort_by: playlist.sort_by || "",
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
-            extras: playlist.extras || {},
+            extras: sanitizeExtras(playlist.extras || {}),
           })),
         };
 
