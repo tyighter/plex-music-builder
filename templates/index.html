@@ -117,6 +117,88 @@
         box-shadow: 0 24px 45px rgba(0, 0, 0, 0.55);
       }
 
+      .status-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+      }
+
+      .status-info {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        flex: 1;
+      }
+
+      .status-headline {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      .status-text {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .status-indicator {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.35);
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+        flex-shrink: 0;
+      }
+
+      .status-indicator.running {
+        background: #4caf50;
+        box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
+      }
+
+      .status-indicator.idle {
+        background: #f5c150;
+        box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.25);
+      }
+
+      .status-indicator.error {
+        background: #e94146;
+        box-shadow: 0 0 0 3px rgba(233, 65, 70, 0.3);
+      }
+
+      .status-indicator.success {
+        background: #3fbf61;
+        box-shadow: 0 0 0 3px rgba(63, 191, 97, 0.25);
+      }
+
+      .status-indicator.stopped {
+        background: #9e9e9e;
+        box-shadow: 0 0 0 3px rgba(158, 158, 158, 0.25);
+      }
+
+      .status-message {
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.75);
+      }
+
+      .status-meta {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.6);
+      }
+
+      .status-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .status-actions button {
+        white-space: nowrap;
+      }
+
       .playlist-header {
         display: flex;
         align-items: center;
@@ -129,6 +211,58 @@
         margin: 0;
         font-size: 20px;
         font-weight: 600;
+      }
+
+      .playlist-header-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .playlist-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .playlist-status {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .playlist-status-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 13px;
+        min-width: 0;
+      }
+
+      .playlist-status-line {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--plex-light);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .playlist-status-message {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .playlist-build-btn {
+        white-space: nowrap;
       }
 
       .input-grid {
@@ -324,6 +458,26 @@
           gap: 16px;
         }
 
+        .playlist-header {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 12px;
+        }
+
+        .playlist-header-actions {
+          width: 100%;
+          align-items: flex-start;
+        }
+
+        .playlist-status {
+          width: 100%;
+        }
+
+        .playlist-status-line,
+        .playlist-status-message {
+          white-space: normal;
+        }
+
         .filter-row {
           grid-template-columns: 1fr;
         }
@@ -345,6 +499,25 @@
       </div>
     </header>
     <main>
+      <section>
+        <h2><span class="section-icon">🛠</span>Build Status</h2>
+        <div class="card status-card">
+          <div class="status-info">
+            <div class="status-headline">
+              <span id="buildStatusIndicator" class="status-indicator idle"></span>
+              <div class="status-text">
+                <div id="buildStatusText">Checking build status…</div>
+                <div id="buildStatusMessage" class="status-message"></div>
+              </div>
+            </div>
+            <div id="buildStatusMeta" class="status-meta"></div>
+          </div>
+          <div class="status-actions">
+            <button id="buildToggleBtn" type="button">▶ Build All</button>
+          </div>
+        </div>
+      </section>
+
       <section>
         <h2><span class="section-icon">⚙</span>Default Plex Filters</h2>
         <div class="card">
@@ -377,6 +550,13 @@
       const messageEl = document.getElementById("message");
       const playlistsContainer = document.getElementById("playlistsContainer");
       const defaultFiltersContainer = document.getElementById("defaultFilters");
+      const buildStatusIndicator = document.getElementById("buildStatusIndicator");
+      const buildStatusText = document.getElementById("buildStatusText");
+      const buildStatusMessage = document.getElementById("buildStatusMessage");
+      const buildStatusMeta = document.getElementById("buildStatusMeta");
+      const buildToggleBtn = document.getElementById("buildToggleBtn");
+      let latestBuildStatus = null;
+      let buildStatusTimer = null;
 
       function showMessage(text, isError = false) {
         if (!text) {
@@ -389,6 +569,359 @@
           : "rgba(229, 160, 13, 0.2)";
         messageEl.classList.add("show");
         setTimeout(() => messageEl.classList.remove("show"), 4000);
+      }
+
+      function formatTimestamp(isoString) {
+        if (!isoString) {
+          return "";
+        }
+        const date = new Date(isoString);
+        if (Number.isNaN(date.getTime())) {
+          return isoString;
+        }
+        return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+      }
+
+      function updatePlaylistBuildUi(playlist) {
+        if (!playlist || !playlist._statusElements) {
+          return;
+        }
+
+        const { indicator, line, message, button } = playlist._statusElements;
+        const playlistName = (playlist.name || "").trim();
+        const status = latestBuildStatus;
+        const activeJob = status?.job || null;
+        const activePlaylistName =
+          activeJob && activeJob.type === "playlist"
+            ? (activeJob.playlist || "")
+            : "";
+
+        const isRunningThisPlaylist = Boolean(
+          status?.running &&
+            activeJob?.type === "playlist" &&
+            playlistName &&
+            activePlaylistName === playlistName
+        );
+        const isAllRunning = Boolean(status?.running && activeJob?.type === "all");
+        const otherJobRunning = Boolean(
+          status?.running &&
+            !isRunningThisPlaylist &&
+            (isAllRunning ||
+              (activeJob?.type === "playlist" && activePlaylistName !== playlistName))
+        );
+
+        const playlistResults = status?.results?.playlists || {};
+        const lastResult = playlistName ? playlistResults[playlistName] : undefined;
+
+        let indicatorState = "idle";
+        if (isRunningThisPlaylist) {
+          indicatorState = "running";
+        } else if (lastResult) {
+          if (lastResult.state === "success") {
+            indicatorState = "success";
+          } else if (lastResult.state === "error") {
+            indicatorState = "error";
+          } else if (lastResult.state === "stopped") {
+            indicatorState = "stopped";
+          }
+        } else {
+          indicatorState = "idle";
+        }
+
+        indicator.classList.remove("running", "idle", "error", "success", "stopped");
+        indicator.classList.add(indicatorState);
+
+        let statusLineText = playlistName ? "Not built yet" : "Name required to build";
+        if (isRunningThisPlaylist) {
+          statusLineText = "Building now…";
+        } else if (isAllRunning) {
+          statusLineText = "All playlists build running";
+        } else if (otherJobRunning) {
+          if (activeJob?.type === "playlist" && activePlaylistName) {
+            statusLineText = `Waiting – '${activePlaylistName}' is building`;
+          } else {
+            statusLineText = "Waiting – build in progress";
+          }
+        } else if (lastResult) {
+          if (lastResult.state === "success") {
+            statusLineText = "Last build succeeded";
+          } else if (lastResult.state === "stopped") {
+            statusLineText = "Last build stopped";
+          } else if (lastResult.state === "error") {
+            statusLineText = "Last build failed";
+          }
+        }
+        line.textContent = statusLineText;
+
+        const detailParts = [];
+        if (isRunningThisPlaylist) {
+          if (status?.message) {
+            detailParts.push(status.message);
+          }
+          if (status?.since) {
+            detailParts.push(`Started ${formatTimestamp(status.since)}`);
+          }
+        } else if (otherJobRunning) {
+          if (isAllRunning) {
+            detailParts.push("Currently building all playlists");
+          } else if (activePlaylistName) {
+            detailParts.push(`Currently building '${activePlaylistName}'`);
+          }
+        } else if (lastResult) {
+          if (lastResult.message) {
+            detailParts.push(lastResult.message);
+          }
+          if (lastResult.finished_at) {
+            detailParts.push(`Finished ${formatTimestamp(lastResult.finished_at)}`);
+          }
+        }
+        message.textContent = detailParts.join(" • ");
+
+        if (isRunningThisPlaylist) {
+          button.textContent = "⏹ Stop Build";
+          button.classList.add("danger");
+        } else {
+          button.textContent = "▶ Build Playlist";
+          button.classList.remove("danger");
+        }
+
+        const disableButton = !playlistName || (status?.running && !isRunningThisPlaylist);
+        button.disabled = Boolean(disableButton);
+        if (!playlistName) {
+          button.title = "Enter a playlist name to build it individually.";
+        } else if (status?.running && !isRunningThisPlaylist) {
+          if (isAllRunning) {
+            button.title = "Building all playlists. Please wait.";
+          } else if (activePlaylistName) {
+            button.title = `Building '${activePlaylistName}'. Please wait.`;
+          } else {
+            button.title = "Another build is currently running.";
+          }
+        } else {
+          button.title = "";
+        }
+      }
+
+      function updateBuildStatusUi(status) {
+        if (!status) {
+          return;
+        }
+
+        latestBuildStatus = status;
+        const isRunning = Boolean(status.running);
+        const activeJob = status.job || null;
+        const isAllRunning = Boolean(isRunning && activeJob?.type === "all");
+        const isPlaylistRunning = Boolean(isRunning && activeJob?.type === "playlist");
+        const indicatorState = isRunning
+          ? "running"
+          : status.status === "error"
+          ? "error"
+          : "idle";
+
+        buildStatusIndicator.classList.remove("running", "idle", "error");
+        buildStatusIndicator.classList.add(indicatorState);
+
+        let statusTextValue = "Builder is idle";
+        if (isRunning) {
+          if (isAllRunning) {
+            statusTextValue = "Building all playlists";
+          } else if (isPlaylistRunning && activeJob?.playlist) {
+            statusTextValue = `Building "${activeJob.playlist}"`;
+          } else {
+            statusTextValue = "Build in progress";
+          }
+        } else if (status.status === "error") {
+          statusTextValue = "Build encountered an issue";
+        }
+        buildStatusText.textContent = statusTextValue;
+        buildStatusMessage.textContent = status.message || "";
+
+        const metaParts = [];
+        if (isRunning && status.pid) {
+          metaParts.push(`PID ${status.pid}`);
+        }
+        if (isRunning && status.since) {
+          metaParts.push(`Started ${formatTimestamp(status.since)}`);
+        }
+        if (isPlaylistRunning && activeJob?.playlist) {
+          metaParts.push(`Playlist '${activeJob.playlist}'`);
+        }
+        if (!isRunning) {
+          const lastAllResult = status.results?.all;
+          const lastFinishedIso = status.last_finished;
+          if (
+            lastAllResult?.finished_at &&
+            (!lastFinishedIso || lastAllResult.finished_at === lastFinishedIso)
+          ) {
+            let label = "Last build finished";
+            if (lastAllResult.state === "success") {
+              label = "Last build completed";
+            } else if (lastAllResult.state === "stopped") {
+              label = "Last build stopped";
+            } else if (lastAllResult.state === "error") {
+              label = "Last build failed";
+            }
+            metaParts.push(`${label} ${formatTimestamp(lastAllResult.finished_at)}`);
+          } else if (status.last_finished) {
+            metaParts.push(`Last finished ${formatTimestamp(status.last_finished)}`);
+          }
+          if (typeof status.exit_code === "number") {
+            metaParts.push(`Last exit code ${status.exit_code}`);
+          }
+        }
+        buildStatusMeta.textContent = metaParts.join(" • ");
+
+        buildToggleBtn.textContent = isAllRunning ? "⏹ Stop All" : "▶ Build All";
+        buildToggleBtn.classList.toggle("danger", isAllRunning);
+        buildToggleBtn.disabled = Boolean(status.transitioning || (isRunning && !isAllRunning));
+        buildToggleBtn.title = isRunning && !isAllRunning ? "A playlist build is currently running." : "";
+
+        if (Array.isArray(state.playlists)) {
+          state.playlists.forEach((playlist) => updatePlaylistBuildUi(playlist));
+        }
+      }
+
+      async function refreshBuildStatus(showErrors = false) {
+        try {
+          const response = await fetch("/api/build/status");
+          if (!response.ok) {
+            throw new Error("Unable to retrieve build status");
+          }
+          const status = await response.json();
+          updateBuildStatusUi(status);
+        } catch (error) {
+          console.error(error);
+          if (showErrors) {
+            showMessage(error.message, true);
+          }
+        }
+      }
+
+      async function toggleBuild() {
+        const isRunningAll = Boolean(
+          latestBuildStatus?.running && latestBuildStatus?.job?.type === "all"
+        );
+        const anotherJobRunning = Boolean(
+          latestBuildStatus?.running && !isRunningAll
+        );
+        if (anotherJobRunning) {
+          showMessage("A playlist build is currently running. Stop it before starting a full build.", true);
+          return;
+        }
+
+        const endpoint = isRunningAll ? "/api/build/stop" : "/api/build/start";
+
+        buildToggleBtn.disabled = true;
+        try {
+          const response = await fetch(endpoint, { method: "POST" });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(
+              result.message ||
+                (isRunningAll ? "Failed to stop build." : "Failed to start build.")
+            );
+          }
+
+          if (result.status) {
+            updateBuildStatusUi(result.status);
+          } else {
+            await refreshBuildStatus();
+          }
+
+          if (result.message) {
+            showMessage(result.message, false);
+          } else {
+            showMessage(isRunningAll ? "Build stopping..." : "Build starting...");
+          }
+
+          setTimeout(() => {
+            refreshBuildStatus();
+          }, 1000);
+        } catch (error) {
+          console.error(error);
+          showMessage(error.message, true);
+        } finally {
+          buildToggleBtn.disabled = false;
+        }
+      }
+
+      async function togglePlaylistBuild(playlist) {
+        const playlistName = (playlist?.name || "").trim();
+        if (!playlistName) {
+          showMessage("Please name the playlist before building it.", true);
+          return;
+        }
+
+        const isRunningThisPlaylist = Boolean(
+          latestBuildStatus?.running &&
+            latestBuildStatus?.job?.type === "playlist" &&
+            latestBuildStatus?.job?.playlist === playlistName
+        );
+
+        if (
+          !isRunningThisPlaylist &&
+          latestBuildStatus?.running &&
+          latestBuildStatus?.job?.type === "all"
+        ) {
+          showMessage(
+            "Can't start an individual build while all playlists are building.",
+            true
+          );
+          return;
+        }
+
+        const elements = playlist._statusElements || {};
+        if (elements.button) {
+          elements.button.disabled = true;
+        }
+
+        const endpoint = isRunningThisPlaylist ? "/api/build/stop" : "/api/build/start";
+        const options = { method: "POST" };
+        if (!isRunningThisPlaylist) {
+          options.headers = { "Content-Type": "application/json" };
+          options.body = JSON.stringify({ playlist: playlistName });
+        }
+
+        try {
+          const response = await fetch(endpoint, options);
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(
+              result.message ||
+                (isRunningThisPlaylist
+                  ? "Failed to stop playlist build."
+                  : "Failed to start playlist build.")
+            );
+          }
+
+          if (result.status) {
+            updateBuildStatusUi(result.status);
+          } else {
+            await refreshBuildStatus();
+          }
+
+          if (result.message) {
+            showMessage(result.message);
+          } else {
+            showMessage(
+              isRunningThisPlaylist
+                ? `Stopping '${playlistName}'...`
+                : `Starting '${playlistName}'...`
+            );
+          }
+
+          setTimeout(() => {
+            refreshBuildStatus();
+          }, 1000);
+        } catch (error) {
+          console.error(error);
+          showMessage(error.message, true);
+        } finally {
+          if (elements.button) {
+            elements.button.disabled = false;
+          }
+          updatePlaylistBuildUi(playlist);
+        }
       }
 
       function ensureExtras(target) {
@@ -608,10 +1141,41 @@
           const header = document.createElement("div");
           header.className = "playlist-header";
 
+          const titleWrapper = document.createElement("div");
+          titleWrapper.className = "playlist-header-title";
           const title = document.createElement("h3");
           title.textContent = playlist.name || "Untitled Playlist";
+          titleWrapper.appendChild(title);
 
-          const extras = ensureExtras(playlist);
+          const headerActions = document.createElement("div");
+          headerActions.className = "playlist-header-actions";
+
+          const statusGroup = document.createElement("div");
+          statusGroup.className = "playlist-status";
+
+          const statusIndicator = document.createElement("span");
+          statusIndicator.className = "status-indicator idle";
+
+          const statusTextWrapper = document.createElement("div");
+          statusTextWrapper.className = "playlist-status-text";
+
+          const statusLine = document.createElement("div");
+          statusLine.className = "playlist-status-line";
+          statusLine.textContent = "Not built yet";
+
+          const statusMessage = document.createElement("div");
+          statusMessage.className = "playlist-status-message";
+
+          statusTextWrapper.appendChild(statusLine);
+          statusTextWrapper.appendChild(statusMessage);
+          statusGroup.appendChild(statusIndicator);
+          statusGroup.appendChild(statusTextWrapper);
+
+          const buildBtn = document.createElement("button");
+          buildBtn.type = "button";
+          buildBtn.className = "playlist-build-btn secondary";
+          buildBtn.textContent = "▶ Build Playlist";
+          buildBtn.addEventListener("click", () => togglePlaylistBuild(playlist));
 
           const removeBtn = document.createElement("button");
           removeBtn.type = "button";
@@ -619,13 +1183,28 @@
           removeBtn.textContent = "✕";
           removeBtn.title = "Delete playlist";
           removeBtn.addEventListener("click", () => {
+            delete playlist._statusElements;
             state.playlists.splice(index, 1);
             renderPlaylists();
           });
 
-          header.appendChild(title);
-          header.appendChild(removeBtn);
+          headerActions.appendChild(statusGroup);
+          headerActions.appendChild(buildBtn);
+          headerActions.appendChild(removeBtn);
+
+          header.appendChild(titleWrapper);
+          header.appendChild(headerActions);
           card.appendChild(header);
+
+          const extras = ensureExtras(playlist);
+
+          playlist._statusElements = {
+            indicator: statusIndicator,
+            line: statusLine,
+            message: statusMessage,
+            button: buildBtn,
+          };
+          updatePlaylistBuildUi(playlist);
 
           const grid = document.createElement("div");
           grid.className = "input-grid";
@@ -638,6 +1217,7 @@
           nameInput.addEventListener("input", (event) => {
             playlist.name = event.target.value;
             title.textContent = event.target.value || "Untitled Playlist";
+            updatePlaylistBuildUi(playlist);
           });
           nameLabel.appendChild(nameInput);
 
@@ -903,6 +1483,12 @@
 
       document.getElementById("saveBtn").addEventListener("click", saveData);
 
+      if (buildToggleBtn) {
+        buildToggleBtn.addEventListener("click", toggleBuild);
+      }
+
+      refreshBuildStatus();
+      buildStatusTimer = setInterval(() => refreshBuildStatus(), 5000);
       loadData();
     </script>
   </body>

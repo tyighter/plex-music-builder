@@ -1,5 +1,7 @@
+import argparse
 import os
 import re
+import sys
 import yaml
 import math
 import logging
@@ -3527,8 +3529,8 @@ def build_metadata_cache():
 # ----------------------------
 # Main Runtime Logic
 # ----------------------------
-def run_all_playlists():
-    if not playlists_data:
+def _run_playlists(playlists_subset, completion_message=""):
+    if not playlists_subset:
         logger.warning("No playlists defined. Nothing to process.")
         return
 
@@ -3541,8 +3543,13 @@ def run_all_playlists():
         )
         configured_workers = 1
 
-    with ThreadPoolExecutor(max_workers=configured_workers) as executor:
-        futures = {executor.submit(process_playlist, name, cfg): name for name, cfg in playlists_data.items()}
+    worker_count = max(1, min(configured_workers, len(playlists_subset)))
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(process_playlist, name, cfg): name
+            for name, cfg in playlists_subset.items()
+        }
         for future in as_completed(futures):
             playlist_name = futures[future]
             try:
@@ -3554,12 +3561,54 @@ def run_all_playlists():
     if errors:
         raise RuntimeError("One or more playlists failed to build.")
 
-    logger.info("✅ All playlists processed successfully.")
+    if completion_message:
+        logger.info(completion_message)
+
+
+def run_all_playlists():
+    _run_playlists(playlists_data, "✅ All playlists processed successfully.")
+
+
+def run_selected_playlists(playlist_names):
+    if not playlist_names:
+        logger.warning("No playlists provided. Nothing to process.")
+        return
+
+    missing = [name for name in playlist_names if name not in playlists_data]
+    if missing:
+        missing_list = ", ".join(missing)
+        raise ValueError(f"Unknown playlist(s): {missing_list}")
+
+    selected = {name: playlists_data[name] for name in playlist_names}
+    logger.info(
+        "Processing %d playlist(s): %s",
+        len(selected),
+        ", ".join(selected.keys()),
+    )
+    _run_playlists(selected, "✅ Selected playlists processed successfully.")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Plex playlist builder")
+    parser.add_argument(
+        "--playlist",
+        dest="playlists",
+        action="append",
+        help="Name of a playlist to build. Can be provided multiple times.",
+    )
+    args = parser.parse_args()
+
     if CACHE_ONLY:
         build_metadata_cache()
         logger.info("Cache-only mode complete. Exiting.")
+    elif args.playlists:
+        try:
+            run_selected_playlists(args.playlists)
+        except ValueError as exc:
+            logger.error(str(exc))
+            sys.exit(1)
+        except Exception as exc:
+            logger.exception(f"Error while processing playlists: {exc}")
+            sys.exit(1)
     elif RUN_FOREVER:
         logger.info("Running in loop mode.")
         while True:
