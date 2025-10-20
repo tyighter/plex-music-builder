@@ -3113,6 +3113,63 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                     artist_limit_raw,
                 )
 
+    album_limit_raw = config.get("album_limit")
+    if album_limit_raw is not None:
+        try:
+            album_limit_value = int(album_limit_raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "Invalid album_limit '%s' for playlist '%s'; expected integer.",
+                album_limit_raw,
+                name,
+            )
+        else:
+            if album_limit_value > 0:
+                album_counts = {}
+                limited_tracks = []
+                removed_for_album_limit = 0
+
+                for track in matched_tracks:
+                    album_name = _normalize_compare_value(getattr(track, "parentTitle", None))
+                    if not album_name:
+                        fallback_album = (
+                            getattr(track, "parentRatingKey", None)
+                            or getattr(track, "parentGuid", None)
+                        )
+                        album_name = _normalize_compare_value(fallback_album) or "__unknown_album__"
+
+                    current_count = album_counts.get(album_name, 0)
+                    if current_count >= album_limit_value:
+                        removed_for_album_limit += 1
+                        if debug_logging:
+                            log.debug(
+                                "Skipping track '%s' from album '%s' due to album limit %s",
+                                getattr(track, "title", "<unknown>"),
+                                getattr(track, "parentTitle", "<unknown>"),
+                                album_limit_value,
+                            )
+                        continue
+
+                    album_counts[album_name] = current_count + 1
+                    limited_tracks.append(track)
+
+                if removed_for_album_limit:
+                    log.info(
+                        "Applied album limit (%s) for playlist '%s' – removed %s track(s)",
+                        album_limit_value,
+                        name,
+                        removed_for_album_limit,
+                    )
+
+                matched_tracks = limited_tracks
+                match_count = len(matched_tracks)
+            else:
+                log.warning(
+                    "Album limit for playlist '%s' must be positive; received %s.",
+                    name,
+                    album_limit_raw,
+                )
+
     if limit:
         matched_tracks = matched_tracks[:limit]
         match_count = len(matched_tracks)

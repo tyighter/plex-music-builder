@@ -8,6 +8,7 @@ playlists:
   Alt Hip Hop:
     limit: 1000
     artist_limit: 5
+    album_limit: 3
     sort_by: popularity
     cover: /images/althiphop.png
     plex_filter:
@@ -18,6 +19,7 @@ playlists:
   Classic Rock:
     limit: 1000
     artist_limit: 5
+    album_limit: 3
     sort_by: popularity
     cover: /images/classic_rock.png
     plex_filter:
@@ -44,6 +46,7 @@ playlists:
   Is it New Wave?:
     limit: 1000
     artist_limit: 5
+    album_limit: 3
     sort_by: popularity
     cover: /images/punkwave9.png
     plex_filter:
@@ -69,6 +72,7 @@ playlists:
     cover: /images/this_is_beatles.png
     limit: 40
     artist_limit: 5
+    album_limit: 3
     sort_by: popularity
     plex_filter:
       - field: artist

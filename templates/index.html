@@ -662,6 +662,17 @@
           });
           artistLimitLabel.appendChild(artistLimitInput);
 
+          const albumLimitLabel = document.createElement("label");
+          albumLimitLabel.textContent = "Album Limit";
+          const albumLimitInput = document.createElement("input");
+          albumLimitInput.type = "number";
+          albumLimitInput.min = "0";
+          albumLimitInput.value = playlist.album_limit ?? 0;
+          albumLimitInput.addEventListener("input", (event) => {
+            playlist.album_limit = event.target.value;
+          });
+          albumLimitLabel.appendChild(albumLimitInput);
+
           const sortLabel = document.createElement("label");
           sortLabel.textContent = "Sort By";
           const sortSelect = document.createElement("select");
@@ -697,6 +708,7 @@
           grid.appendChild(nameLabel);
           grid.appendChild(limitLabel);
           grid.appendChild(artistLimitLabel);
+          grid.appendChild(albumLimitLabel);
           grid.appendChild(sortLabel);
           grid.appendChild(coverLabel);
 
@@ -766,6 +778,7 @@
             name: playlist.name || "",
             limit: playlist.limit ?? 0,
             artist_limit: playlist.artist_limit ?? 0,
+            album_limit: playlist.album_limit ?? 0,
             sort_by: playlist.sort_by || "",
             plex_filter: (playlist.plex_filter || []).map((filter) => ({
               field: filter.field || "",
@@ -802,6 +815,7 @@
             name: playlist.name || "",
             limit: playlist.limit ?? 0,
             artist_limit: playlist.artist_limit ?? 0,
+            album_limit: playlist.album_limit ?? 0,
             sort_by: playlist.sort_by || "",
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
             extras: sanitizeExtras(playlist.extras || {}),
@@ -844,6 +858,7 @@
           name: "New Playlist",
           limit: 0,
           artist_limit: 0,
+          album_limit: 0,
           sort_by: "",
           plex_filter: [],
           extras: {},
