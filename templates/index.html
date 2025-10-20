@@ -427,6 +427,115 @@
         background: rgba(14, 14, 14, 0.55);
       }
 
+      .playlist-log-panel {
+        margin-top: 18px;
+        padding: 16px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, rgba(20, 20, 20, 0.85), rgba(12, 12, 12, 0.9));
+        border: 1px solid rgba(229, 160, 13, 0.18);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+        transition: box-shadow 0.3s ease;
+      }
+
+      .playlist-log-panel.running {
+        box-shadow: inset 0 0 0 1px rgba(229, 160, 13, 0.2), 0 10px 30px rgba(229, 160, 13, 0.12);
+      }
+
+      .playlist-log-header {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.55);
+      }
+
+      .playlist-log-list {
+        margin-top: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .playlist-log-entry {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px 14px;
+        border-radius: 10px;
+        background: rgba(229, 160, 13, 0.08);
+        border: 1px solid rgba(229, 160, 13, 0.18);
+        position: relative;
+        overflow: hidden;
+      }
+
+      .playlist-log-entry::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at top right, rgba(229, 160, 13, 0.18), transparent 55%);
+        pointer-events: none;
+        opacity: 0.6;
+      }
+
+      .playlist-log-panel.running .playlist-log-entry::after {
+        animation: filteringGlow 2.2s ease-in-out infinite;
+      }
+
+      .playlist-log-bar {
+        width: 100%;
+        height: 6px;
+        border-radius: 999px;
+        background: rgba(229, 160, 13, 0.16);
+        overflow: hidden;
+        position: relative;
+      }
+
+      .playlist-log-bar span {
+        display: block;
+        height: 100%;
+        width: var(--progress, 0%);
+        background: linear-gradient(90deg, var(--plex-orange), #ffce4a);
+        box-shadow: 0 0 12px rgba(229, 160, 13, 0.4);
+        transition: width 0.35s ease;
+      }
+
+      .playlist-log-panel.running .playlist-log-bar span {
+        animation: filteringPulse 1.8s ease-in-out infinite;
+      }
+
+      .playlist-log-text {
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.85);
+        position: relative;
+        z-index: 1;
+      }
+
+      .playlist-log-empty {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+
+      @keyframes filteringPulse {
+        0% {
+          filter: brightness(0.95);
+        }
+        50% {
+          filter: brightness(1.2);
+        }
+        100% {
+          filter: brightness(0.95);
+        }
+      }
+
+      @keyframes filteringGlow {
+        0%,
+        100% {
+          opacity: 0.5;
+        }
+        50% {
+          opacity: 0.9;
+        }
+      }
+
       .no-filters {
         font-size: 14px;
         color: rgba(255, 255, 255, 0.6);
@@ -582,12 +691,63 @@
         return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
       }
 
+      function updatePlaylistLogsUi(playlist) {
+        if (!playlist || !playlist._statusElements) {
+          return;
+        }
+
+        const { logsContainer, logPanel } = playlist._statusElements;
+        if (!logsContainer) {
+          return;
+        }
+
+        const playlistName = (playlist.name || "").trim();
+        const logsByPlaylist = latestBuildStatus?.logs?.playlists || {};
+        const entries = playlistName ? logsByPlaylist[playlistName] || [] : [];
+
+        logsContainer.innerHTML = "";
+
+        if (!entries.length) {
+          const empty = document.createElement("div");
+          empty.className = "playlist-log-empty";
+          empty.textContent = playlistName
+            ? "No recent filter activity yet."
+            : "Name this playlist to start tracking activity.";
+          logsContainer.appendChild(empty);
+          return;
+        }
+
+        entries.forEach((entry, index) => {
+          const item = document.createElement("div");
+          item.className = "playlist-log-entry";
+
+          const progressWrapper = document.createElement("div");
+          progressWrapper.className = "playlist-log-bar";
+          const progressFill = document.createElement("span");
+          const progressValue = ((index + 1) / entries.length) * 100;
+          progressFill.style.setProperty("--progress", `${progressValue}%`);
+          progressWrapper.appendChild(progressFill);
+
+          const text = document.createElement("div");
+          text.className = "playlist-log-text";
+          text.textContent = entry;
+
+          item.appendChild(progressWrapper);
+          item.appendChild(text);
+          logsContainer.appendChild(item);
+        });
+
+        if (logPanel) {
+          logPanel.classList.toggle("has-entries", entries.length > 0);
+        }
+      }
+
       function updatePlaylistBuildUi(playlist) {
         if (!playlist || !playlist._statusElements) {
           return;
         }
 
-        const { indicator, line, message, button } = playlist._statusElements;
+        const { indicator, line, message, button, logPanel } = playlist._statusElements;
         const playlistName = (playlist.name || "").trim();
         const status = latestBuildStatus;
         const activeJob = status?.job || null;
@@ -685,6 +845,10 @@
           button.classList.remove("danger");
         }
 
+        if (logPanel) {
+          logPanel.classList.toggle("running", isRunningThisPlaylist);
+        }
+
         const disableButton = !playlistName || (status?.running && !isRunningThisPlaylist);
         button.disabled = Boolean(disableButton);
         if (!playlistName) {
@@ -700,6 +864,8 @@
         } else {
           button.title = "";
         }
+
+        updatePlaylistLogsUi(playlist);
       }
 
       function updateBuildStatusUi(status) {
@@ -1198,11 +1364,24 @@
 
           const extras = ensureExtras(playlist);
 
+          const logPanel = document.createElement("div");
+          logPanel.className = "playlist-log-panel";
+          const logHeader = document.createElement("div");
+          logHeader.className = "playlist-log-header";
+          logHeader.textContent = "Filter Activity";
+          const logList = document.createElement("div");
+          logList.className = "playlist-log-list";
+          logPanel.appendChild(logHeader);
+          logPanel.appendChild(logList);
+          card.appendChild(logPanel);
+
           playlist._statusElements = {
             indicator: statusIndicator,
             line: statusLine,
             message: statusMessage,
             button: buildBtn,
+            logsContainer: logList,
+            logPanel,
           };
           updatePlaylistBuildUi(playlist);
 
