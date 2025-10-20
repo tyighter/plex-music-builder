@@ -8,7 +8,7 @@ import threading
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, IO, List, Optional, Tuple
 
 import yaml
 from flask import Flask, jsonify, render_template, request
@@ -110,6 +110,9 @@ def _format_timestamp(value: Optional[datetime]) -> Optional[str]:
 
 
 class BuildManager:
+    _INFO_LINE_PATTERN = re.compile(r"\[(?P<level>[A-Z]+)\]\s*(?P<message>.*)")
+    _PLAYLIST_QUOTED_PATTERN = re.compile(r"'([^']+)'")
+
     def __init__(
         self,
         command: Optional[List[str]] = None,
@@ -127,6 +130,87 @@ class BuildManager:
         self._last_all_result: Optional[Dict[str, Any]] = None
         self._last_playlist_results: Dict[str, Dict[str, Any]] = {}
         self._stop_requested = False
+        self._log_thread: Optional[threading.Thread] = None
+        self._playlist_logs: Dict[str, List[str]] = {}
+        self._general_logs: List[str] = []
+
+    @staticmethod
+    def _normalize_playlist_key(name: Optional[str]) -> Optional[str]:
+        if name is None:
+            return None
+        key = str(name).strip()
+        return key or None
+
+    @classmethod
+    def _extract_info_message(cls, line: str) -> Optional[str]:
+        raw = line.strip()
+        if not raw:
+            return None
+
+        match = cls._INFO_LINE_PATTERN.search(raw)
+        if match:
+            level = match.group("level")
+            if level != "INFO":
+                return None
+            message = match.group("message").strip()
+            return message
+
+        if raw.startswith("INFO"):
+            parts = raw.split(":", 1)
+            if len(parts) == 2:
+                return parts[1].strip()
+        return None
+
+    @classmethod
+    def _extract_playlist_from_message(cls, message: str) -> Optional[str]:
+        quoted = cls._PLAYLIST_QUOTED_PATTERN.search(message)
+        if quoted:
+            return cls._normalize_playlist_key(quoted.group(1))
+
+        if message.lower().startswith("building playlist:"):
+            _, _, name = message.partition(":")
+            return cls._normalize_playlist_key(name)
+
+        return None
+
+    def _append_playlist_log_locked(self, playlist_name: str, message: str) -> None:
+        logs = self._playlist_logs.setdefault(playlist_name, [])
+        logs.append(message)
+        if len(logs) > 200:
+            del logs[:-200]
+
+    def _append_general_log_locked(self, message: str) -> None:
+        self._general_logs.append(message)
+        if len(self._general_logs) > 400:
+            del self._general_logs[:-400]
+
+    def _handle_log_line(self, line: str) -> None:
+        info_message = self._extract_info_message(line)
+        if info_message is None:
+            return
+
+        playlist_name = self._extract_playlist_from_message(info_message)
+        with self._lock:
+            if playlist_name:
+                if info_message.lower().startswith("building playlist:"):
+                    self._playlist_logs[playlist_name] = []
+                self._append_playlist_log_locked(playlist_name, info_message)
+            else:
+                self._append_general_log_locked(info_message)
+
+    def _consume_process_output(self, stream: IO[str]) -> None:
+        try:
+            for raw_line in stream:
+                if not raw_line:
+                    continue
+                self._handle_log_line(raw_line)
+        finally:
+            try:
+                stream.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
+            with self._lock:
+                self._log_thread = None
 
     def _record_job_result_locked(
         self,
@@ -217,6 +301,10 @@ class BuildManager:
             name: result.copy()
             for name, result in self._last_playlist_results.items()
         }
+        playlist_logs = {
+            name: list(entries)
+            for name, entries in self._playlist_logs.items()
+        }
 
         return {
             "running": running,
@@ -230,6 +318,10 @@ class BuildManager:
             "results": {
                 "all": self._last_all_result.copy() if self._last_all_result else None,
                 "playlists": playlist_results,
+            },
+            "logs": {
+                "playlists": playlist_logs,
+                "general": list(self._general_logs),
             },
         }
 
@@ -261,12 +353,23 @@ class BuildManager:
                 command = command + ["--playlist", playlist_name]
                 job = {"type": "playlist", "playlist": playlist_name}
                 job_message = f"Build started for playlist '{playlist_name}'."
+                self._playlist_logs.pop(playlist_name, None)
             else:
                 job = {"type": "all"}
                 job_message = "Build for all playlists started."
+                self._playlist_logs = {}
+                self._general_logs = []
 
             try:
-                process = subprocess.Popen(command, cwd=self._work_dir)
+                process = subprocess.Popen(
+                    command,
+                    cwd=self._work_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    encoding="utf-8",
+                )
             except Exception as exc:  # pragma: no cover - defensive
                 error_message = f"Unable to start build: {exc}"
                 self._process = None
@@ -285,6 +388,14 @@ class BuildManager:
             self._last_started_at = _utcnow()
             self._last_message = job_message
             self._stop_requested = False
+            if process.stdout is not None:
+                self._log_thread = threading.Thread(
+                    target=self._consume_process_output,
+                    args=(process.stdout,),
+                    name="build-log-consumer",
+                    daemon=True,
+                )
+                self._log_thread.start()
             status = self._status_snapshot_locked()
             return True, status, job_message
 
