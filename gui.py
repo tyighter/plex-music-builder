@@ -112,6 +112,12 @@ def _format_timestamp(value: Optional[datetime]) -> Optional[str]:
 class BuildManager:
     _INFO_LINE_PATTERN = re.compile(r"\[(?P<level>[A-Z]+)\]\s*(?P<message>.*)")
     _PLAYLIST_QUOTED_PATTERN = re.compile(r"'([^']+)'")
+    _FILTERING_PROGRESS_PATTERN = re.compile(
+        r"Filtering '(?P<playlist>[^']+)':?\s+"
+        r"(?P<percent>\d+(?:\.\d+)?)%[^\d]*"
+        r"(?P<current>\d+)\s*/\s*(?P<total>\d+|\?)"
+        r"(?:[^\[]*(?P<details>\[[^\]]*\]))?"
+    )
 
     def __init__(
         self,
@@ -131,7 +137,7 @@ class BuildManager:
         self._last_playlist_results: Dict[str, Dict[str, Any]] = {}
         self._stop_requested = False
         self._log_thread: Optional[threading.Thread] = None
-        self._playlist_logs: Dict[str, List[str]] = {}
+        self._playlist_logs: Dict[str, List[Dict[str, Any]]] = {}
         self._general_logs: List[str] = []
 
     @staticmethod
@@ -175,16 +181,126 @@ class BuildManager:
 
     def _append_playlist_log_locked(self, playlist_name: str, message: str) -> None:
         logs = self._playlist_logs.setdefault(playlist_name, [])
-        logs.append(message)
+        entry = {
+            "type": "message",
+            "text": message,
+            "timestamp": _format_timestamp(_utcnow()),
+        }
+        logs.append(entry)
         if len(logs) > 200:
             del logs[:-200]
+
+    def _record_filtering_progress_locked(
+        self, playlist_name: str, progress: Dict[str, Any]
+    ) -> None:
+        logs = self._playlist_logs.setdefault(playlist_name, [])
+        entry = {
+            "type": "progress",
+            "text": progress.get("message") or "Filtering tracks…",
+            "current": progress.get("current"),
+            "total": progress.get("total"),
+            "percent": progress.get("percent"),
+            "progress": progress.get("progress"),
+            "details": progress.get("details"),
+            "rate": progress.get("rate"),
+            "timestamp": _format_timestamp(_utcnow()),
+        }
+        if logs and isinstance(logs[-1], dict) and logs[-1].get("type") == "progress":
+            logs[-1] = entry
+        else:
+            logs.append(entry)
+        if len(logs) > 200:
+            del logs[:-200]
+
+        if (
+            self._active_job
+            and self._active_job.get("type") == "playlist"
+            and self._active_job.get("playlist") == playlist_name
+        ):
+            progress_snapshot = {
+                key: entry.get(key)
+                for key in ("current", "total", "percent", "progress", "details", "rate")
+            }
+            self._active_job["progress"] = progress_snapshot
 
     def _append_general_log_locked(self, message: str) -> None:
         self._general_logs.append(message)
         if len(self._general_logs) > 400:
             del self._general_logs[:-400]
 
+    @classmethod
+    def _parse_filtering_progress_line(cls, line: str) -> Optional[Dict[str, Any]]:
+        match = cls._FILTERING_PROGRESS_PATTERN.search(line)
+        if not match:
+            return None
+
+        playlist = cls._normalize_playlist_key(match.group("playlist"))
+        if not playlist:
+            return None
+
+        percent_raw = match.group("percent")
+        current_raw = match.group("current")
+        total_raw = match.group("total")
+        details = match.group("details")
+
+        try:
+            percent_value = float(percent_raw)
+        except (TypeError, ValueError):
+            percent_value = 0.0
+
+        try:
+            current_value = int(current_raw)
+        except (TypeError, ValueError):
+            current_value = 0
+
+        total_value: Optional[int]
+        try:
+            total_value = int(total_raw) if total_raw is not None else None
+        except (TypeError, ValueError):
+            total_value = None
+
+        progress_fraction = max(0.0, min(percent_value / 100.0, 1.0))
+
+        rate = None
+        formatted_details = None
+        if details:
+            formatted_details = details.strip()
+            inner = formatted_details.strip("[]")
+            if inner:
+                segments = [segment.strip() for segment in inner.split(",") if segment.strip()]
+                if segments:
+                    rate_candidate = segments[-1]
+                    if rate_candidate and "track/s" in rate_candidate and " track/s" not in rate_candidate:
+                        rate_candidate = rate_candidate.replace("track/s", " track/s")
+                    rate = rate_candidate
+
+        total_text = str(total_value) if total_value is not None else "?"
+        percent_text = f"{percent_value:.0f}%"
+        message = f"Filtering tracks… {current_value}/{total_text} ({percent_text})"
+        if rate:
+            message = f"{message} – {rate}"
+        elif formatted_details:
+            message = f"{message} {formatted_details}"
+
+        return {
+            "playlist": playlist,
+            "percent": percent_value,
+            "progress": progress_fraction,
+            "current": current_value,
+            "total": total_value,
+            "details": formatted_details,
+            "rate": rate,
+            "message": message,
+        }
+
     def _handle_log_line(self, line: str) -> None:
+        progress = self._parse_filtering_progress_line(line)
+        if progress is not None:
+            playlist_name = progress.get("playlist")
+            if playlist_name:
+                with self._lock:
+                    self._record_filtering_progress_locked(playlist_name, progress)
+
         info_message = self._extract_info_message(line)
         if info_message is None:
             return
@@ -199,11 +315,20 @@ class BuildManager:
                 self._append_general_log_locked(info_message)
 
     def _consume_process_output(self, stream: IO[str]) -> None:
+        pending = ""
         try:
             for raw_line in stream:
                 if not raw_line:
                     continue
-                self._handle_log_line(raw_line)
+                pending += raw_line
+                segments = re.split(r"[\r\n]+", pending)
+                if pending and pending[-1] not in {"\r", "\n"}:
+                    pending = segments.pop()
+                else:
+                    pending = ""
+                for segment in segments:
+                    if segment:
+                        self._handle_log_line(segment)
         finally:
             try:
                 stream.close()
@@ -211,6 +336,8 @@ class BuildManager:
                 pass
             with self._lock:
                 self._log_thread = None
+        if pending:
+            self._handle_log_line(pending)
 
     def _record_job_result_locked(
         self,
@@ -297,14 +424,22 @@ class BuildManager:
             status_label = "error"
 
         job = self._active_job.copy() if self._active_job is not None else None
+        if job and isinstance(job.get("progress"), dict):
+            job["progress"] = job["progress"].copy()
+
         playlist_results = {
             name: result.copy()
             for name, result in self._last_playlist_results.items()
         }
-        playlist_logs = {
-            name: list(entries)
-            for name, entries in self._playlist_logs.items()
-        }
+        playlist_logs: Dict[str, List[Any]] = {}
+        for name, entries in self._playlist_logs.items():
+            normalized_entries: List[Any] = []
+            for entry in entries:
+                if isinstance(entry, dict):
+                    normalized_entries.append(entry.copy())
+                else:
+                    normalized_entries.append(entry)
+            playlist_logs[name] = normalized_entries
 
         return {
             "running": running,
