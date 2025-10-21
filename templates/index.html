@@ -790,6 +790,43 @@
         return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
       }
 
+      function normalizeProgressPercent(entry) {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+
+        if (typeof entry.percent === "number" && Number.isFinite(entry.percent)) {
+          return entry.percent;
+        }
+
+        const percentCandidate = Number(entry.percent);
+        if (Number.isFinite(percentCandidate)) {
+          return percentCandidate;
+        }
+
+        const progressCandidate = Number(entry.progress);
+        if (Number.isFinite(progressCandidate)) {
+          if (progressCandidate >= 0 && progressCandidate <= 1) {
+            return progressCandidate * 100;
+          }
+          if (progressCandidate >= 0) {
+            return progressCandidate;
+          }
+        }
+
+        const currentCandidate = Number(entry.current);
+        const totalCandidate = Number(entry.total);
+        if (
+          Number.isFinite(currentCandidate) &&
+          Number.isFinite(totalCandidate) &&
+          totalCandidate > 0
+        ) {
+          return (currentCandidate / totalCandidate) * 100;
+        }
+
+        return null;
+      }
+
       function updatePlaylistBuildUi(playlist) {
         if (!playlist || !playlist._statusElements) {
           return;
@@ -981,8 +1018,9 @@
             const item = document.createElement("div");
             item.className = "playlist-log-entry";
 
+            const percentValue = normalizeProgressPercent(entry);
             const isProgressEntry =
-              entry && entry.type === "progress" && typeof entry.percent === "number";
+              entry && entry.type === "progress" && percentValue !== null;
             const showSpinner =
               isActivePlaylist && !isProgressEntry && entry?.is_final !== true;
 
@@ -990,11 +1028,17 @@
               item.classList.add("progress-entry");
               const progressWrapper = document.createElement("div");
               progressWrapper.className = "playlist-log-bar";
+              progressWrapper.setAttribute("role", "progressbar");
+              progressWrapper.setAttribute("aria-valuemin", "0");
+              progressWrapper.setAttribute("aria-valuemax", "100");
               const progressFill = document.createElement("span");
-              const percentValue = Number.isFinite(entry.percent)
-                ? Math.max(0, Math.min(100, entry.percent))
-                : 0;
-              progressFill.style.setProperty("--progress", `${percentValue}%`);
+              const sanitizedPercent = Math.max(0, Math.min(100, percentValue));
+              progressWrapper.setAttribute(
+                "aria-valuenow",
+                String(Math.round(sanitizedPercent))
+              );
+              progressFill.style.setProperty("--progress", `${sanitizedPercent}%`);
+              progressFill.style.width = `${sanitizedPercent}%`;
               progressWrapper.appendChild(progressFill);
               item.appendChild(progressWrapper);
             }
@@ -1119,19 +1163,24 @@
 
         const jobProgress = activeJob?.progress;
         let statusMessageValue = status.message || "";
+        const normalizedJobPercent = jobProgress
+          ? normalizeProgressPercent(jobProgress)
+          : null;
         if (
           isRunning &&
           jobProgress &&
-          typeof jobProgress.percent === "number" &&
-          Number.isFinite(jobProgress.percent)
+          normalizedJobPercent !== null
         ) {
-          const currentValue = Number.isFinite(jobProgress.current)
-            ? Math.max(0, Math.floor(jobProgress.current))
+          const percentValue = normalizedJobPercent;
+          const currentCandidate = Number(jobProgress.current);
+          const totalCandidate = Number(jobProgress.total);
+          const currentValue = Number.isFinite(currentCandidate)
+            ? Math.max(0, Math.floor(currentCandidate))
             : null;
-          const totalValue = Number.isFinite(jobProgress.total)
-            ? Math.max(0, Math.floor(jobProgress.total))
+          const totalValue = Number.isFinite(totalCandidate)
+            ? Math.max(0, Math.floor(totalCandidate))
             : null;
-          const percentDisplay = Math.round(jobProgress.percent);
+          const percentDisplay = Math.round(Math.max(0, Math.min(100, percentValue)));
           const totalText =
             currentValue !== null && totalValue !== null
               ? `${currentValue}/${totalValue}`
