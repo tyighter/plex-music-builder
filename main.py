@@ -2751,6 +2751,86 @@ def check_condition(value, operator, expected, match_all=True):
 # ----------------------------
 
 
+class FilteringProgressReporter:
+    """Emit structured progress updates for playlist filtering."""
+
+    def __init__(self, log_obj, playlist_name, total_tracks):
+        self._log = log_obj
+        self._playlist = playlist_name
+        try:
+            total_value = int(total_tracks)
+        except (TypeError, ValueError):
+            total_value = 0
+        self._total = total_value if total_value > 0 else None
+        self._start = time.perf_counter()
+        self._last_report_time = self._start
+        self._last_reported_percent = -1.0
+        self._last_reported_count = 0
+
+    @staticmethod
+    def _format_duration(seconds):
+        seconds = max(0, int(seconds))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    def _should_report(self, count, percent, now, force):
+        if force:
+            return True
+        if self._total is None:
+            if count >= self._last_reported_count + 100:
+                return True
+        else:
+            if percent >= self._last_reported_percent + 1.0:
+                return True
+        if now - self._last_report_time >= 5.0:
+            return True
+        return False
+
+    def update(self, count, force=False):
+        if count < 0:
+            return
+        now = time.perf_counter()
+        percent = 0.0
+        if self._total:
+            percent = (float(count) / float(self._total)) * 100.0
+        if not self._should_report(count, percent, now, force):
+            return
+
+        elapsed = max(0.0, now - self._start)
+        rate = (float(count) / elapsed) if elapsed > 0 else 0.0
+        eta_seconds = None
+        if self._total and rate > 0:
+            remaining = max(self._total - count, 0)
+            eta_seconds = remaining / rate
+
+        parts = []
+        if elapsed >= 0.5:
+            parts.append(f"elapsed {self._format_duration(elapsed)}")
+        if eta_seconds is not None:
+            parts.append(f"ETA {self._format_duration(eta_seconds)}")
+        if rate > 0:
+            parts.append(f"{rate:.1f} track/s")
+
+        total_text = str(self._total) if self._total else "?"
+        message = f"Filtering progress for '{self._playlist}': {count}/{total_text}"
+        if self._total:
+            message = f"{message} ({percent:.1f}%)"
+        if parts:
+            message = f"{message} – {' – '.join(parts)}"
+
+        self._log.info(message)
+        self._last_reported_count = count
+        self._last_report_time = now
+        if self._total:
+            self._last_reported_percent = percent
+
+    def finalize(self, count):
+        self.update(count, force=True)
+
+
 def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     if playlist_handler:
         log.debug(
@@ -2841,6 +2921,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     fetch_start = time.perf_counter()
     all_tracks = library.searchTracks()
     total_tracks = len(all_tracks)
+    progress_reporter = FilteringProgressReporter(log, name, total_tracks)
     fetch_duration = time.perf_counter() - fetch_start
     log.info(
         "Fetched %s tracks from %s in %.2fs",
@@ -2886,6 +2967,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             playlist_update_duration += time.perf_counter() - flush_start
 
     filter_start = time.perf_counter()
+    processed_count = 0
     with tqdm(total=total_tracks, desc=f"Filtering '{name}'", unit="track", dynamic_ncols=True) as pbar:
         for track in all_tracks:
             keep = True
@@ -2932,9 +3014,13 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 if debug_logging:
                     log.debug("    ✅ Track matched all conditions")
             pbar.update(1)
+            processed_count += 1
+            progress_reporter.update(processed_count)
 
     filter_duration = time.perf_counter() - filter_start
     filter_rate = (total_tracks / filter_duration) if filter_duration > 0 else 0.0
+
+    progress_reporter.finalize(processed_count)
 
     if stream_enabled:
         flush_stream_buffer()
