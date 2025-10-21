@@ -3296,6 +3296,13 @@ def _run_playlists(playlists_subset, completion_message=""):
         logger.warning("No playlists defined. Nothing to process.")
         return
 
+    playlist_names = list(playlists_subset.keys())
+    logger.info(
+        "Processing %d playlist(s): %s",
+        len(playlist_names),
+        ", ".join(playlist_names),
+    )
+
     errors = False
     configured_workers = MAX_WORKERS
     if not isinstance(configured_workers, int) or configured_workers < 1:
@@ -3342,11 +3349,6 @@ def run_selected_playlists(playlist_names):
         raise ValueError(f"Unknown playlist(s): {missing_list}")
 
     selected = {name: playlists_data[name] for name in playlist_names}
-    logger.info(
-        "Processing %d playlist(s): %s",
-        len(selected),
-        ", ".join(selected.keys()),
-    )
     _run_playlists(selected, "✅ Selected playlists processed successfully.")
 
 if __name__ == "__main__":
