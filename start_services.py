@@ -50,10 +50,41 @@ def _load_runtime_config() -> Dict[str, object]:
     return runtime_cfg if isinstance(runtime_cfg, dict) else {}
 
 
+def _coerce_runtime_flag(value: object, default: bool = False) -> bool:
+    """Return a boolean for runtime configuration values.
+
+    YAML usually parses boolean-like strings into actual ``bool`` objects, but
+    many editors or templating systems will wrap them in quotes. In those
+    cases ``bool("false")`` evaluates to ``True`` which is the opposite of
+    what users expect. This helper normalises the common textual forms so that
+    ``"false"`` and friends are treated as ``False`` and likewise for the
+    typical truthy values.
+    """
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return False
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+        return default
+
+    return default
+
+
 def _should_start_builder() -> bool:
     """Return ``True`` when the builder should auto-run on service startup."""
     runtime_cfg = _load_runtime_config()
-    return bool(runtime_cfg.get("build_all_on_start", False))
+    raw_value = runtime_cfg.get("build_all_on_start", False)
+    return _coerce_runtime_flag(raw_value, default=False)
 
 
 def _build_command_list() -> List[Tuple[str, List[str]]]:
