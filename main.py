@@ -2780,12 +2780,39 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     stream_requested = config.get("stream_while_filtering", False)
     stream_enabled = stream_requested and not sort_by and not limit
     if stream_enabled:
-        if log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                "Disabling stream_while_filtering for '%s' to support deduplication and artist limits.",
+        disable_reasons = []
+        artist_limit_raw = config.get("artist_limit")
+        album_limit_raw = config.get("album_limit")
+
+        if isinstance(artist_limit_raw, str):
+            artist_limit_normalized = artist_limit_raw.strip()
+        else:
+            artist_limit_normalized = artist_limit_raw
+
+        if isinstance(album_limit_raw, str):
+            album_limit_normalized = album_limit_raw.strip()
+        else:
+            album_limit_normalized = album_limit_raw
+
+        if artist_limit_normalized not in (None, ""):
+            disable_reasons.append("artist limits")
+        if album_limit_normalized not in (None, ""):
+            disable_reasons.append("album limits")
+
+        if disable_reasons:
+            reason_text = ", ".join(disable_reasons)
+            if log.isEnabledFor(logging.INFO):
+                log.info(
+                    "stream_while_filtering requested for '%s' but disabled because %s require full post-filter processing.",
+                    name,
+                    reason_text,
+                )
+            stream_enabled = False
+        elif log.isEnabledFor(logging.INFO):
+            log.info(
+                "stream_while_filtering enabled for '%s'; deduplication (and any artist/album limits) will be skipped.",
                 name,
             )
-        stream_enabled = False
 
     fetch_start = time.perf_counter()
     all_tracks = library.searchTracks()
