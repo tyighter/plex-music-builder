@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, IO, List, Optional, Set, Tuple
 
@@ -29,6 +29,9 @@ LEGEND_PATH = BASE_DIR / "legend.txt"
 CONFIG_PATH = BASE_DIR / "config.yml"
 DEFAULT_ALLMUSIC_CACHE = Path("/app/allmusic_popularity.json")
 DEFAULT_LOG_PATH = Path("/app/logs/plex_music_builder.log")
+
+GENERAL_LOG_RETENTION = timedelta(minutes=60)
+GENERAL_LOG_DISPLAY_LIMIT = 3
 
 # Human-friendly overrides for certain Plex field names
 FIELD_LABEL_OVERRIDES: Dict[str, str] = {
@@ -146,7 +149,7 @@ class BuildManager:
         self._stop_requested = False
         self._log_thread: Optional[threading.Thread] = None
         self._playlist_logs: Dict[str, List[Dict[str, Any]]] = {}
-        self._general_logs: List[str] = []
+        self._general_logs: List[Dict[str, Any]] = []
         self._log_file_path: Optional[Path] = resolve_log_file_path()
         self._log_watcher_thread: Optional[threading.Thread] = None
         self._passive_running = False
@@ -253,10 +256,55 @@ class BuildManager:
             }
             self._active_job["progress"] = progress_snapshot
 
+    def _prune_general_logs_locked(
+        self, reference_time: Optional[datetime] = None
+    ) -> None:
+        if reference_time is None:
+            reference_time = _utcnow()
+
+        cutoff = reference_time - GENERAL_LOG_RETENTION
+        normalized_entries: List[Dict[str, Any]] = []
+
+        for entry in self._general_logs:
+            text: Optional[str]
+            timestamp: Optional[datetime]
+
+            if isinstance(entry, dict):
+                text = entry.get("text")
+                timestamp = entry.get("timestamp")
+                if isinstance(timestamp, str):
+                    try:
+                        timestamp = datetime.fromisoformat(timestamp)
+                        if timestamp.tzinfo is None:
+                            timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        timestamp = None
+            elif isinstance(entry, str):
+                text = entry
+                timestamp = None
+            else:
+                continue
+
+            if not text:
+                continue
+
+            if not isinstance(timestamp, datetime):
+                timestamp = reference_time
+
+            if timestamp < cutoff:
+                continue
+
+            normalized_entries.append({"text": text, "timestamp": timestamp})
+
+        if len(normalized_entries) > 400:
+            normalized_entries = normalized_entries[-400:]
+
+        self._general_logs = normalized_entries
+
     def _append_general_log_locked(self, message: str) -> None:
-        self._general_logs.append(message)
-        if len(self._general_logs) > 400:
-            del self._general_logs[:-400]
+        entry = {"text": message, "timestamp": _utcnow()}
+        self._general_logs.append(entry)
+        self._prune_general_logs_locked(entry["timestamp"])
         self._passive_last_message = message
         if self._process is None:
             self._last_message = message
@@ -703,6 +751,14 @@ class BuildManager:
         )
         message_value = self._last_message or self._passive_last_message
 
+        self._prune_general_logs_locked()
+        general_log_entries = self._general_logs[-GENERAL_LOG_DISPLAY_LIMIT:]
+        general_logs_payload = [
+            str(entry.get("text"))
+            for entry in general_log_entries
+            if isinstance(entry, dict) and entry.get("text")
+        ]
+
         return {
             "running": running,
             "status": status_label,
@@ -718,7 +774,7 @@ class BuildManager:
             },
             "logs": {
                 "playlists": playlist_logs,
-                "general": list(self._general_logs),
+                "general": general_logs_payload,
             },
         }
 
