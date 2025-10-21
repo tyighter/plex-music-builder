@@ -10,6 +10,7 @@ import json
 import time
 import threading
 import copy
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key
 from xml.etree import ElementTree as ET
@@ -30,9 +31,75 @@ def load_yaml(path):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-cfg = load_yaml("/app/config.yml")
 
-PLAYLISTS_FILE = "/app/playlists.yml"
+CONFIG_SEARCH_PATHS = []
+
+
+def _resolve_config_path() -> Path:
+    """Return the most appropriate config file path for the current run."""
+
+    candidates = []
+
+    env_override = os.environ.get("PMB_CONFIG_PATH")
+    if env_override:
+        candidates.append(Path(env_override).expanduser())
+
+    candidates.append(Path("/app/config.yml"))
+    candidates.append(Path(__file__).resolve().parent / "config.yml")
+
+    CONFIG_SEARCH_PATHS[:] = candidates
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
+CONFIG_PATH = _resolve_config_path()
+
+if not CONFIG_PATH.exists():
+    searched = ", ".join(str(path) for path in CONFIG_SEARCH_PATHS)
+    raise FileNotFoundError(
+        "Unable to locate configuration file. Checked paths: " + searched
+    )
+
+CONFIG_PATH = CONFIG_PATH.resolve()
+
+
+def _resolve_runtime_dir(config_dir: Path) -> Path:
+    """Determine where runtime artefacts (logs, caches) should live."""
+
+    env_override = os.environ.get("PMB_RUNTIME_DIR")
+    if env_override:
+        return Path(env_override).expanduser()
+
+    app_dir = Path("/app")
+    if app_dir.exists():
+        return app_dir
+
+    return config_dir
+
+
+def _resolve_path_setting(raw_value, default_path: Path, base_dir: Path) -> str:
+    """Resolve a path from config, allowing relative paths."""
+
+    if isinstance(raw_value, str) and raw_value.strip():
+        candidate = Path(raw_value.strip()).expanduser()
+        if not candidate.is_absolute():
+            candidate = (base_dir / candidate).resolve()
+    else:
+        candidate = default_path
+
+    return str(candidate)
+
+
+cfg = load_yaml(CONFIG_PATH)
+
+CONFIG_DIR = CONFIG_PATH.parent
+RUNTIME_DIR = _resolve_runtime_dir(CONFIG_DIR).resolve()
+
+PLAYLISTS_FILE = str((CONFIG_DIR / "playlists.yml").resolve())
 PLAYLISTS_BASE_DIR = os.path.dirname(PLAYLISTS_FILE) or "."
 
 # Backward compatible config loading
@@ -62,7 +129,11 @@ SPOTIFY_SEARCH_LIMIT = spotify_cfg.get("search_limit", 10)
 
 allmusic_cfg = cfg.get("allmusic", {}) or {}
 ALLMUSIC_ENABLED = allmusic_cfg.get("enabled", True)
-ALLMUSIC_CACHE_FILE = allmusic_cfg.get("cache_file", "/app/allmusic_popularity.json")
+ALLMUSIC_CACHE_FILE = _resolve_path_setting(
+    allmusic_cfg.get("cache_file"),
+    RUNTIME_DIR / "allmusic_popularity.json",
+    CONFIG_DIR,
+)
 ALLMUSIC_TIMEOUT = allmusic_cfg.get("timeout", 10)
 ALLMUSIC_USER_AGENT = allmusic_cfg.get(
     "user_agent",
@@ -74,12 +145,16 @@ ALLMUSIC_CACHE_VERSION = 3
 
 logging_cfg = cfg.get("logging", {})
 LOG_LEVEL = logging_cfg.get("level", "DEBUG").upper()
-LOG_FILE = logging_cfg.get("file", "/app/logs/plex_music_builder.log")
+LOG_FILE = _resolve_path_setting(
+    logging_cfg.get("file"),
+    RUNTIME_DIR / "logs/plex_music_builder.log",
+    CONFIG_DIR,
+)
 ACTIVE_LOG_FILE = None
 
 _default_log_dir = os.path.dirname(LOG_FILE) if LOG_FILE else ""
 if not _default_log_dir:
-    _default_log_dir = "/app/logs"
+    _default_log_dir = str((RUNTIME_DIR / "logs").resolve())
 
 PLAYLIST_LOG_DIR = logging_cfg.get("playlist_debug_dir")
 if isinstance(PLAYLIST_LOG_DIR, str) and not PLAYLIST_LOG_DIR.strip():
@@ -312,7 +387,7 @@ playlists_data = _merge_playlist_defaults(raw_playlists)
 # ----------------------------
 # Metadata Cache
 # ----------------------------
-CACHE_FILE = "/app/metadata_cache.json"
+CACHE_FILE = str((RUNTIME_DIR / "metadata_cache.json").resolve())
 METADATA_PROVIDER_URL = "https://metadata.provider.plex.tv"
 
 if os.path.exists(CACHE_FILE):
