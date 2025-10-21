@@ -324,48 +324,9 @@ if os.path.exists(CACHE_FILE):
 else:
     metadata_cache = {}
 
-# Cache canonical/original release metadata fetched from Plex's metadata provider.
-# The cache is keyed by the normalized album GUID (with the ``plex://`` prefix
-# removed) and stores the raw XML payload plus any fields we've already parsed
-# from that payload.
-canonical_metadata_cache = {}
-canonical_guid_lookup_cache = {}
-canonical_cache_lock = threading.Lock()
-
-# Canonical metadata exposes album-level attributes (e.g., original release
-# year, popularity counts). Map the fields we request in Plex filters/sorts to
-# their canonical equivalents so we don't have to special case them scattered
-# throughout the codebase.
-CANONICAL_FIELD_MAP = {
-    "parentGuid": "guid",
-    "guid": "guid",
-    "parentYear": "year",
-    "year": "year",
-    "originallyAvailableAt": "originallyAvailableAt",
-    "ratingCount": "ratingCount",
-    "parentRatingCount": "ratingCount",
-}
-
-CANONICAL_SORT_FIELDS = {"ratingCount", "parentRatingCount", "year", "parentYear", "originallyAvailableAt"}
-CANONICAL_NUMERIC_FIELDS = {"ratingCount", "parentRatingCount", "year", "parentYear"}
-CANONICAL_ONLY_FIELDS = {"ratingCount", "parentRatingCount"}
-
 def save_cache():
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(metadata_cache, f)
-
-
-def _normalize_plex_guid(guid):
-    if not guid:
-        return None
-    guid_str = str(guid).strip()
-    if not guid_str:
-        return None
-    if guid_str.startswith("plex://"):
-        return guid_str[len("plex://") :]
-    return guid_str or None
-
-
 def _strip_parenthetical(value):
     if not value:
         return ""
@@ -398,14 +359,6 @@ def _extract_year_token(value):
         return None
     match = re.search(r"(\d{4})", str(value))
     return match.group(1) if match else None
-
-
-def _build_canonical_identity_key(artist, album, year):
-    artist_key = _normalize_compare_value(artist)
-    album_key = _normalize_compare_value(album)
-    year_key = str(year).strip() if year else ""
-    return (artist_key, album_key, year_key)
-
 
 def _build_track_identity_key(track):
     raw_title = getattr(track, "title", None)
@@ -714,343 +667,6 @@ def _extract_guid_from_search_results(xml_text, album_norms, artist_norms, targe
         return guid
 
     return None
-
-
-def _search_canonical_guid(artist, album, year):
-    log = _get_active_logger()
-    if not album:
-        return None
-
-    if CACHE_ONLY:
-        return None
-
-    stripped_album = _strip_parenthetical(album)
-    search_album = (stripped_album or "").strip()
-
-    if not search_album:
-        if log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                "Canonical search skipping album '%s' by '%s' because sanitized name is empty",
-                album,
-                artist,
-            )
-        return None
-
-    album_query_candidates = []
-    if search_album:
-        album_query_candidates.append(search_album)
-
-    if log.isEnabledFor(logging.DEBUG):
-        log.debug(
-            "Canonical search normalized album '%s' to '%s' for artist='%s' year='%s'",
-            album,
-            search_album,
-            artist,
-            year,
-        )
-
-    query_strings = []
-    for base in album_query_candidates or [search_album]:
-        query_strings.append(base)
-        if artist:
-            query_strings.append(f"{base} {artist}")
-        if year:
-            query_strings.append(f"{base} {year}")
-            if artist:
-                query_strings.append(f"{base} {artist} {year}")
-
-    deduped_queries = []
-    seen = set()
-    for query in query_strings:
-        normalized = query.strip().lower()
-        if not normalized:
-            continue
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        deduped_queries.append(query.strip())
-
-    if not deduped_queries and search_album:
-        deduped_queries = [search_album]
-
-    if log.isEnabledFor(logging.DEBUG):
-        log.debug(
-            "Canonical search queries for '%s' by '%s' (%s): %s",
-            search_album,
-            artist,
-            year,
-            deduped_queries,
-        )
-
-    album_norm_inputs = []
-    if album:
-        album_norm_inputs.append(album)
-    if stripped_album and stripped_album != album:
-        album_norm_inputs.append(stripped_album)
-    if not album_norm_inputs:
-        album_norm_inputs = [search_album]
-
-    album_norms = _collect_normalized_candidates(album_norm_inputs)
-    artist_norms = _collect_normalized_candidates([artist])
-    year_token = _extract_year_token(year)
-
-    def _build_endpoint(base, path):
-        base = (base or "").rstrip("/")
-        return f"{base}{path}" if base else None
-
-    endpoint_variants = []
-
-    def _append_variant(base, path, extra_params):
-        endpoint = _build_endpoint(base, path)
-        if not endpoint:
-            return
-        variant_key = (endpoint, tuple(sorted(extra_params.items())))
-        if variant_key in seen_variants:
-            return
-        seen_variants.add(variant_key)
-        endpoint_variants.append((endpoint, extra_params))
-
-    seen_variants = set()
-
-    search_paths = [
-        "/library/metadata/search",
-        "/library/search",
-        "/search",
-        "/hubs/search",
-    ]
-
-    param_variants = [
-        {"type": 9},
-        {"searchTypes": "albums"},
-        {"searchTypes": "album"},
-        {"includeCollections": 1, "includeExternalMedia": 1, "searchTypes": "album"},
-        {"includeCollections": 1, "includeExternalMedia": 1},
-        {},
-    ]
-
-    # Prefer searching against the user's own Plex server first so that we stop
-    # iterating as soon as we find a result.  The metadata provider endpoints
-    # frequently respond with ``404`` for user specific tokens which produced a
-    # lot of noisy debug logging even though the subsequent local search would
-    # succeed.  By prioritizing ``PLEX_URL`` we usually resolve the GUID before
-    # hitting the remote service while still keeping it available as a
-    # fallback.
-    for base in (PLEX_URL, METADATA_PROVIDER_URL):
-        for path in search_paths:
-            for extra_params in param_variants:
-                # ``type`` is not valid for ``/hubs/search`` endpoints; skip to avoid noisy logs.
-                if path == "/hubs/search" and "type" in extra_params:
-                    continue
-                # ``searchTypes`` is not valid for legacy metadata endpoints; they expect ``type``
-                # or no extra parameters. Keep the combinations flexible but avoid duplicates.
-                if path in {"/library/metadata/search", "/library/search"}:
-                    if extra_params.get("searchTypes") == "album":
-                        continue
-                    if extra_params.get("includeCollections"):
-                        continue
-                _append_variant(base, path, extra_params)
-
-    search_endpoints = endpoint_variants
-
-    for query in deduped_queries:
-        for endpoint, extra_params in search_endpoints:
-            params = {
-                "query": query,
-                "X-Plex-Token": PLEX_TOKEN,
-            }
-            params.update(extra_params)
-            params = {k: v for k, v in params.items() if v is not None}
-            debug_params = {k: v for k, v in params.items() if k != "X-Plex-Token"}
-
-            try:
-                if log.isEnabledFor(logging.DEBUG):
-                    log.debug(
-                        "Canonical search requesting '%s' from %s with params %s",
-                        query,
-                        endpoint,
-                        debug_params,
-                    )
-                response = requests.get(endpoint, params=params, timeout=10)
-                response.raise_for_status()
-            except requests.RequestException as exc:
-                log.debug(
-                    "Canonical metadata search failed for query '%s' via %s with params %s: %s",
-                    query,
-                    endpoint,
-                    debug_params,
-                    exc,
-                )
-                continue
-
-            guid = _extract_guid_from_search_results(
-                response.text,
-                album_norms,
-                artist_norms,
-                year_token,
-            )
-            if guid:
-                log.debug(
-                    "Canonical metadata search resolved '%s' by '%s' (%s) to GUID %s",
-                    album,
-                    artist,
-                    year,
-                    _normalize_plex_guid(guid),
-                )
-                return guid
-
-    log.debug(
-        "Canonical metadata search could not resolve '%s' by '%s' (%s)",
-        album,
-        artist,
-        year,
-    )
-    return None
-
-
-def _lookup_canonical_guid_for_track(track):
-    artist = getattr(track, "grandparentTitle", None)
-    album = getattr(track, "parentTitle", None)
-    year = _resolve_album_year(track)
-
-    identity_key = _build_canonical_identity_key(artist, album, year)
-
-    with canonical_cache_lock:
-        if identity_key in canonical_guid_lookup_cache:
-            cached_guid = canonical_guid_lookup_cache[identity_key]
-            return cached_guid or None
-
-    resolved_guid = _search_canonical_guid(artist, album, year)
-
-    with canonical_cache_lock:
-        canonical_guid_lookup_cache[identity_key] = resolved_guid or ""
-
-    return resolved_guid
-
-
-def fetch_canonical_album_metadata(album_guid):
-    """Fetch the canonical/original release metadata for an album GUID."""
-
-    normalized_guid = _normalize_plex_guid(album_guid)
-    if not normalized_guid:
-        return None
-
-    with canonical_cache_lock:
-        cached = canonical_metadata_cache.get(normalized_guid)
-        if cached:
-            return cached.get("xml")
-
-    url = f"{METADATA_PROVIDER_URL}/library/metadata/{normalized_guid}"
-    params = {"X-Plex-Token": PLEX_TOKEN}
-
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        xml_text = response.text
-    except requests.RequestException as exc:
-        logger.debug(
-            "Failed to fetch canonical metadata for album GUID '%s': %s",
-            normalized_guid,
-            exc,
-        )
-        xml_text = None
-
-    with canonical_cache_lock:
-        canonical_metadata_cache[normalized_guid] = {"xml": xml_text, "fields": {}}
-
-    return xml_text
-
-
-def get_canonical_field_from_guid(album_guid, field):
-    """Return a canonical metadata field for an album GUID, if available."""
-
-    normalized_guid = _normalize_plex_guid(album_guid)
-    if not normalized_guid:
-        return None
-
-    with canonical_cache_lock:
-        cached = canonical_metadata_cache.get(normalized_guid)
-        if cached and field in cached.get("fields", {}):
-            return cached["fields"][field]
-        xml_text = cached.get("xml") if cached else None
-
-    if xml_text is None:
-        xml_text = fetch_canonical_album_metadata(album_guid)
-        if xml_text is None:
-            return None
-
-    value = parse_field_from_xml(xml_text, field)
-
-    with canonical_cache_lock:
-        cached = canonical_metadata_cache.setdefault(
-            normalized_guid, {"xml": xml_text, "fields": {}}
-        )
-        cached["fields"][field] = value
-
-    return value
-
-
-def get_canonical_field_for_track(track, field):
-    """Resolve a canonical/original-release field for the provided track."""
-
-    canonical_field = CANONICAL_FIELD_MAP.get(field)
-    if not canonical_field:
-        return None
-
-    guid = None
-
-    if field == "ratingCount":
-        guid = _get_track_guid(track)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "Attempting canonical %s lookup for track '%s' via track GUID %s",
-                field,
-                getattr(track, "title", "<unknown>"),
-                _normalize_plex_guid(guid),
-            )
-        if guid:
-            value = get_canonical_field_from_guid(guid, canonical_field)
-            if value is not None:
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(
-                        "Resolved canonical %s=%s from track GUID %s",
-                        field,
-                        value,
-                        _normalize_plex_guid(guid),
-                    )
-                return value
-
-    if guid is None:
-        guid = _get_album_guid(track)
-        if not guid:
-            return None
-
-    if logger.isEnabledFor(logging.DEBUG) and field == "ratingCount":
-        logger.debug(
-            "Falling back to album GUID %s for canonical %s lookup on track '%s'",
-            _normalize_plex_guid(guid),
-            field,
-            getattr(track, "title", "<unknown>"),
-        )
-
-    value = get_canonical_field_from_guid(guid, canonical_field)
-    if value is not None:
-        return value
-
-    lookup_guid = _lookup_canonical_guid_for_track(track)
-    if lookup_guid:
-        lookup_normalized = _normalize_plex_guid(lookup_guid)
-        guid_normalized = _normalize_plex_guid(guid)
-        if lookup_normalized != guid_normalized:
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Retrying canonical %s lookup for '%s' via searched GUID %s",
-                    field,
-                    getattr(track, "title", "<unknown>"),
-                    lookup_normalized,
-                )
-            return get_canonical_field_from_guid(lookup_guid, canonical_field)
-
-    return value
 
 
 class SpotifyPopularityProvider:
@@ -1407,7 +1023,11 @@ class AllMusicPopularityProvider:
         self._track_cache = {}
         self._query_cache = {}
         self._album_cache = {}
+        self._album_track_scores = {}
+        self._album_track_details = {}
+        self._album_single_sets = {}
         self._cache_lock = threading.Lock()
+        self._album_scores_lock = threading.Lock()
         self._cache_dirty = False
         self._default_spotify_baseline = 50.0
         self._google_min_interval = max(0.0, ALLMUSIC_GOOGLE_MIN_INTERVAL)
@@ -1562,15 +1182,22 @@ class AllMusicPopularityProvider:
                 if details is None:
                     details = {}
 
-        popularity_value, computed_details = self._compute_composite_popularity(
+        base_score, computed_details = self._compute_composite_popularity(
             track,
             details,
             spotify_provider=spotify_provider,
             playlist_logger=playlist_logger,
         )
 
-        self._remember_track_cache(track_key, popularity_value, computed_details)
-        return popularity_value
+        final_score, finalized_details = self._apply_single_boost(
+            track,
+            track_key,
+            base_score,
+            computed_details,
+        )
+
+        self._remember_track_cache(track_key, final_score, finalized_details)
+        return final_score
 
     def _remember_track_cache(self, track_key, popularity, details):
         if not track_key:
@@ -1669,7 +1296,6 @@ class AllMusicPopularityProvider:
                 playlist_logger=playlist_logger,
             )
 
-            highlighted_tracks = metadata.get("highlighted_tracks") or []
             rating_count = metadata.get("rating_count")
 
             artists = []
@@ -1685,7 +1311,6 @@ class AllMusicPopularityProvider:
                 "album_url": album_url,
                 "rating_count": rating_count,
                 "album_rating_count": rating_count,
-                "album_highlighted_tracks": list(highlighted_tracks),
                 "source": "google_album_search",
             }
 
@@ -1758,8 +1383,6 @@ class AllMusicPopularityProvider:
                 playlist_logger=playlist_logger,
             )
 
-            highlighted_tracks = metadata.get("highlighted_tracks") or []
-
             artists = []
             if artist:
                 artists.append(str(artist).strip())
@@ -1771,7 +1394,6 @@ class AllMusicPopularityProvider:
                 "album_url": album_url,
                 "rating_count": metadata.get("rating_count"),
                 "album_rating_count": metadata.get("rating_count"),
-                "album_highlighted_tracks": list(highlighted_tracks),
                 "source": "google_album_search",
             }
 
@@ -2002,8 +1624,6 @@ class AllMusicPopularityProvider:
                 playlist_logger=playlist_logger,
             )
 
-        highlighted_tracks = album_metadata.get("highlighted_tracks") or []
-
         details = {
             "title": best_candidate.get("title"),
             "artists": list(best_candidate.get("artists", [])),
@@ -2014,7 +1634,6 @@ class AllMusicPopularityProvider:
             "rating_scale": rating_details.get("rating_scale"),
             "album_url": album_url,
             "album_rating_count": album_metadata.get("rating_count"),
-            "album_highlighted_tracks": list(highlighted_tracks),
         }
 
         return details
@@ -2265,13 +1884,10 @@ class AllMusicPopularityProvider:
     @classmethod
     def _parse_album_metadata(cls, html):
         rating_count = cls._parse_album_rating_count(html)
-        highlighted_tracks = cls._parse_album_highlighted_tracks(html)
 
         metadata = {}
         if rating_count is not None:
             metadata["rating_count"] = rating_count
-        if highlighted_tracks:
-            metadata["highlighted_tracks"] = sorted(highlighted_tracks)
 
         return metadata
 
@@ -2296,41 +1912,6 @@ class AllMusicPopularityProvider:
 
         return None
 
-    @classmethod
-    def _parse_album_highlighted_tracks(cls, html):
-        if not html:
-            return set()
-
-        highlighted = set()
-
-        row_pattern = re.compile(
-            r"<tr[^>]*class=\"[^\"]*(?:track|song)[^\"]*\"[^>]*>(.*?)</tr>",
-            re.IGNORECASE | re.DOTALL,
-        )
-
-        for block in row_pattern.findall(html):
-            if "highlight" not in block.lower():
-                continue
-
-            title = cls._extract_text(block, r'class=\"title\"[^>]*>(.*?)</a>')
-            if not title:
-                title = cls._extract_text(block, r'class=\"title\"[^>]*>(.*?)</td>')
-
-            if title:
-                highlighted.add(title)
-
-        cell_pattern = re.compile(
-            r'<td[^>]*class=\"[^\"]*title[^\"]*highlight[^\"]*\"[^>]*>(.*?)</td>',
-            re.IGNORECASE | re.DOTALL,
-        )
-
-        for block in cell_pattern.findall(html):
-            text = re.sub(r"<[^>]+>", " ", block)
-            text = unescape(text).strip()
-            if text:
-                highlighted.add(text)
-
-        return highlighted
 
     def _compute_composite_popularity(self, track, details, spotify_provider=None, playlist_logger=None):
         details = details or {}
@@ -2373,26 +1954,12 @@ class AllMusicPopularityProvider:
         else:
             fallback_reason = "no_data"
 
-        is_single = self._detect_single(
-            track,
-            spotify_profile,
-            allmusic_details=details,
-        )
-        multiplier = 2.0 if is_single else 1.0
-
-        final_score = None
-        if base_score is not None:
-            final_score = base_score * multiplier
-
         components = {
             "album_rating_count": album_rating_count,
             "normalized_album_rating": normalized_rating,
             "spotify_popularity": spotify_popularity,
             "base_score": base_score,
-            "is_single": is_single,
-            "single_multiplier": multiplier,
             "fallback": fallback_reason,
-            "final_score": final_score,
         }
 
         updated_details = dict(details)
@@ -2405,34 +1972,114 @@ class AllMusicPopularityProvider:
                 components,
             )
 
+        return base_score, updated_details
+
+    @staticmethod
+    def _fallback_track_identifier(track):
+        rating_key = getattr(track, "ratingKey", None)
+        if rating_key is not None:
+            return f"ratingKey::{rating_key}"
+        guid = getattr(track, "guid", None)
+        if guid:
+            return f"guid::{guid}"
+        return None
+
+    def _build_album_key(self, artist, album):
+        normalized_artist = _normalize_compare_value(artist)
+        normalized_album = _normalize_compare_value(_strip_parenthetical(album))
+        if not normalized_artist or not normalized_album:
+            return None
+        return f"{normalized_artist}::{normalized_album}"
+
+    @staticmethod
+    def _compute_album_single_set(album_scores):
+        ranked = sorted(
+            ((track_id, score) for track_id, score in album_scores.items() if score is not None),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        return {track_id for track_id, _ in ranked[:5]}
+
+    def _apply_single_boost(self, track, track_key, base_score, details):
+        updated_details = dict(details or {})
+        components = dict(updated_details.get("components") or {})
+        updated_details["components"] = components
+        components["base_score"] = base_score
+
+        album_title = getattr(track, "parentTitle", None)
+        artist = getattr(track, "grandparentTitle", None)
+        album_key = self._build_album_key(artist, album_title)
+        track_identifier = track_key or self._fallback_track_identifier(track)
+
+        is_single = False
+        multiplier = 1.0
+        final_score = base_score
+        singles_changed = False
+
+        if album_key and track_identifier:
+            with self._album_scores_lock:
+                album_scores = self._album_track_scores.setdefault(album_key, {})
+                album_scores[track_identifier] = base_score
+
+                album_details = self._album_track_details.setdefault(album_key, {})
+                album_details[track_identifier] = {
+                    "track_cache_key": track_key,
+                    "details": updated_details,
+                }
+
+                singles = self._compute_album_single_set(album_scores)
+                previous = self._album_single_sets.get(album_key)
+                self._album_single_sets[album_key] = singles
+                singles_changed = singles != previous
+
+                if base_score is not None and track_identifier in singles:
+                    is_single = True
+                    multiplier = 2.0
+                    final_score = base_score * multiplier
+                elif base_score is not None:
+                    final_score = base_score
+                else:
+                    final_score = None
+        else:
+            final_score = base_score if base_score is not None else None
+
+        components["is_single"] = is_single
+        components["single_multiplier"] = multiplier
+        components["final_score"] = final_score
+
+        if album_key and singles_changed:
+            self._refresh_album_cache(album_key)
+
         return final_score, updated_details
 
-    def _detect_single(self, track, spotify_profile, allmusic_details=None):
-        if isinstance(allmusic_details, dict):
-            highlighted_tracks = allmusic_details.get("album_highlighted_tracks")
-            if highlighted_tracks:
-                track_title_norm = _normalize_compare_value(getattr(track, "title", None))
-                highlighted_norms = _collect_normalized_candidates(highlighted_tracks)
-                if track_title_norm and track_title_norm in highlighted_norms:
-                    return True
+    def _refresh_album_cache(self, album_key):
+        with self._album_scores_lock:
+            album_scores = dict(self._album_track_scores.get(album_key, {}))
+            singles = set(self._album_single_sets.get(album_key, set()))
+            album_details = dict(self._album_track_details.get(album_key, {}))
 
-        if isinstance(spotify_profile, dict):
-            album_info = spotify_profile.get("album") or {}
-            album_type = (album_info.get("album_type") or "").lower()
-            album_group = (album_info.get("album_group") or "").lower()
-            if album_type == "single" or album_group == "single":
-                return True
-            if isinstance(spotify_profile.get("is_single"), bool) and spotify_profile.get("is_single"):
-                return True
-            track_number = spotify_profile.get("track_number")
-            if album_type == "ep" and track_number == 1:
-                return True
+        for track_identifier, payload in album_details.items():
+            if not isinstance(payload, dict):
+                continue
+            details = payload.get("details")
+            if not isinstance(details, dict):
+                continue
 
-        release_type = getattr(track, "subtype", None) or getattr(track, "type", None)
-        if isinstance(release_type, str) and release_type.lower() == "single":
-            return True
+            base_score = album_scores.get(track_identifier)
+            components = dict(details.get("components") or {})
+            components["base_score"] = base_score
+            is_single = base_score is not None and track_identifier in singles
+            multiplier = 2.0 if is_single else 1.0
+            final_score = base_score * multiplier if base_score is not None else None
+            components["is_single"] = is_single
+            components["single_multiplier"] = multiplier
+            components["final_score"] = final_score
+            details["components"] = components
 
-        return False
+            track_cache_key = payload.get("track_cache_key")
+            if track_cache_key:
+                self._remember_track_cache(track_cache_key, final_score, details)
+
 
 def chunked(iterable, size):
     """Yield fixed-size chunks from a list."""
@@ -2517,9 +2164,8 @@ def parse_field_from_xml(xml_text, field):
         root = ET.fromstring(xml_text)
         # Plex responses wrap metadata inside a <MediaContainer> root. Different
         # endpoints return different child node names (e.g. ``Directory`` for
-        # library lookups, ``Track`` for individual items, ``Metadata`` for the
-        # canonical/original-release provider). Search a list of known element
-        # names so we can reuse this helper for all of them.
+        # library lookups, ``Track`` for individual items). Search a list of
+        # known element names so we can reuse this helper for all of them.
         node = None
         for candidate in ("Directory", "Track", "Video", "Photo", "Metadata"):
             node = root.find(f"./{candidate}")
@@ -2618,14 +2264,6 @@ def get_field_value(track, field):
             logger.debug(f"Metadata error for key {source_key}: {e}")
         return []
 
-    def extract_canonical_values(field_name):
-        if field_name not in CANONICAL_FIELD_MAP:
-            return []
-        canonical_value = get_canonical_field_for_track(track, field_name)
-        if canonical_value is None:
-            return []
-        return _normalize_to_list(canonical_value)
-
     # Album type needs to collate information explicitly from album objects
     if field == "album.type":
         parent_key = getattr(track, "parentRatingKey", None)
@@ -2656,16 +2294,6 @@ def get_field_value(track, field):
         if not candidate or candidate in seen_fields:
             return False
         seen_fields.add(candidate)
-
-        if candidate in CANONICAL_ONLY_FIELDS:
-            canonical_value = get_canonical_field_for_track(track, candidate)
-            if canonical_value is None:
-                return False
-
-            normalized_values = _normalize_to_list(canonical_value)
-
-            values.update(normalized_values)
-            return bool(normalized_values)
 
         before = len(values)
 
@@ -2705,10 +2333,7 @@ def get_field_value(track, field):
                 values.update(extract_values(parent_key, "styles"))
                 style_sources_collected.add("album")
 
-        # 4️⃣ Try canonical/original album metadata
-        values.update(extract_canonical_values(candidate))
-
-        # 5️⃣ Try artist level
+        # 4️⃣ Try artist level
         artist_key = getattr(track, "grandparentRatingKey", None)
         if artist_key:
             values.update(extract_values(artist_key, candidate))
@@ -3092,6 +2717,21 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 duplicates_removed,
                 name,
             )
+
+        if dedup_popularity_cache and allmusic_provider and allmusic_provider.is_enabled:
+            for track in matched_tracks:
+                cache_key = getattr(track, "ratingKey", None)
+                if cache_key is None:
+                    continue
+                cache_key_str = str(cache_key)
+                if cache_key_str not in dedup_popularity_cache:
+                    continue
+                updated_value = allmusic_provider.get_popularity(
+                    track,
+                    spotify_provider=spotify_provider,
+                    playlist_logger=log,
+                )
+                dedup_popularity_cache[cache_key_str] = updated_value
     match_count = len(matched_tracks)
 
     sort_duration = 0.0
@@ -3200,88 +2840,21 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
 
                 direct_numeric = _coerce_numeric(direct_value)
 
-                canonical_value = get_canonical_field_for_track(track, resolved_sort_by)
-                canonical_numeric = _coerce_numeric(canonical_value)
-
-                track_album_guid = getattr(track, "parentGuid", None) or _get_album_guid(track)
-                canonical_album_guid = None
-
-                if canonical_numeric is not None:
-                    canonical_album_guid = get_canonical_field_for_track(track, "parentGuid")
-
-                normalized_track_guid = _normalize_plex_guid(track_album_guid)
-                normalized_canonical_guid = _normalize_plex_guid(canonical_album_guid)
-
-                is_special = False
-                special_reasons = []
-
-                if (
-                    normalized_track_guid
-                    and normalized_canonical_guid
-                    and normalized_track_guid != normalized_canonical_guid
-                ):
-                    is_special = True
-                    special_reasons.append("album GUID mismatch")
-
-                if canonical_numeric is not None:
-                    if direct_numeric is None:
-                        is_special = True
-                        special_reasons.append("missing direct value")
-                    elif direct_numeric == 0 and canonical_numeric > 0:
-                        is_special = True
-                        special_reasons.append("direct zero but canonical > 0")
-
-                if debug_logging:
-                    log.debug(
-                        "Direct %s=%s (guid=%s); canonical %s=%s (guid=%s)",
-                        resolved_sort_by,
-                        direct_numeric,
-                        normalized_track_guid,
-                        resolved_sort_by,
-                        canonical_numeric,
-                        normalized_canonical_guid,
-                    )
-
-                if is_special:
+                if direct_numeric is not None:
                     if debug_logging:
                         log.debug(
-                            "Identified potential special edition (reasons: %s)",
-                            "; ".join(special_reasons) if special_reasons else "none",
+                            "Chosen %s=%s for track '%s'",
+                            resolved_sort_by,
+                            direct_numeric,
+                            getattr(track, "title", "<unknown>"),
                         )
-                    chosen_value = canonical_numeric if canonical_numeric is not None else direct_numeric
-                else:
-                    chosen_value = direct_numeric if direct_numeric is not None else canonical_numeric
-
-                if debug_logging:
-                    log.debug(
-                        "Chosen %s=%s for track '%s'",
-                        resolved_sort_by,
-                        chosen_value,
-                        getattr(track, "title", "<unknown>"),
-                    )
-
-                if cache_key_str:
-                    sort_value_cache[cache_key_str] = chosen_value
-                return chosen_value
-
-            if resolved_sort_by in CANONICAL_ONLY_FIELDS:
-                canonical_value = get_canonical_field_for_track(track, resolved_sort_by)
-                if canonical_value is None:
                     if cache_key_str:
-                        sort_value_cache[cache_key_str] = None
-                    return None
-                value = canonical_value
-            else:
-                value = getattr(track, resolved_sort_by, None)
-                if resolved_sort_by in CANONICAL_SORT_FIELDS:
-                    canonical_value = get_canonical_field_for_track(track, resolved_sort_by)
-                    if canonical_value is not None:
-                        value = canonical_value
+                        sort_value_cache[cache_key_str] = direct_numeric
+                    return direct_numeric
+
+            value = getattr(track, resolved_sort_by, None)
             if value is not None:
-                if (
-                    resolved_sort_by in CANONICAL_NUMERIC_FIELDS
-                    and isinstance(value, str)
-                ):
+                if isinstance(value, str):
                     stripped_value = value.strip()
                     if stripped_value:
                         try:
