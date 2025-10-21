@@ -77,6 +77,7 @@ CURATED_FIELD_CHOICES: List[str] = [
     "album.year",
     "album.type",
     "album.title",
+    "parentIndex",
     "genres",
     "moods",
 ]
