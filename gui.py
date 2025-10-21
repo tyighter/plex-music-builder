@@ -165,9 +165,11 @@ class BuildManager:
         self._passive_last_started_at: Optional[datetime] = None
         self._passive_last_finished_at: Optional[datetime] = None
         self._passive_last_message: Optional[str] = None
+        self._passive_last_state: Optional[str] = None
         self._observed_active_playlists: Set[str] = set()
         self._queued_playlists: List[str] = []
         self._max_initial_log_read = 65536
+        self._last_run_state: Optional[str] = None
         self._start_log_watcher()
 
     @staticmethod
@@ -402,6 +404,7 @@ class BuildManager:
                     self._passive_last_started_at = now
                 if self._process is None:
                     self._passive_running = True
+                    self._passive_last_state = "running"
                     if not self._passive_job or self._passive_job.get("type") != "all":
                         self._passive_job = {
                             "type": "playlist",
@@ -413,6 +416,7 @@ class BuildManager:
                     self._passive_last_started_at = now
                 if self._process is None:
                     self._passive_running = True
+                    self._passive_last_state = "running"
                     if not self._passive_job or self._passive_job.get("type") != "all":
                         self._passive_job = {
                             "type": "playlist",
@@ -423,6 +427,12 @@ class BuildManager:
                 or "failed" in normalized
                 or "stopped" in normalized
             ):
+                if "failed" in normalized:
+                    self._passive_last_state = "error"
+                elif "stopped" in normalized:
+                    self._passive_last_state = "stopped"
+                else:
+                    self._passive_last_state = "success"
                 self._observed_active_playlists.discard(playlist_name)
                 if (
                     self._process is None
@@ -438,12 +448,14 @@ class BuildManager:
                     self._passive_last_started_at = now
                 if self._process is None:
                     self._passive_running = True
+                    self._passive_last_state = "running"
                     self._passive_job = {"type": "all"}
             elif normalized.startswith("build for all playlists started"):
                 if self._process is None and not self._passive_running:
                     self._passive_last_started_at = now
                 if self._process is None:
                     self._passive_running = True
+                    self._passive_last_state = "running"
                     self._passive_job = {"type": "all"}
             elif normalized.startswith("✅ all playlists processed") or normalized.startswith(
                 "✅ selected playlists processed"
@@ -452,9 +464,29 @@ class BuildManager:
                     self._passive_running = False
                     self._passive_last_finished_at = now
                     self._passive_job = None
+                    self._passive_last_state = "success"
                     self._queued_playlists = []
             elif normalized.startswith("sleeping for") or "completed successfully" in normalized:
                 if self._process is None:
+                    self._passive_running = False
+                    self._passive_last_finished_at = now
+                    self._passive_job = None
+                    if "completed successfully" in normalized:
+                        self._passive_last_state = "success"
+                    elif "stopped" in normalized:
+                        self._passive_last_state = "stopped"
+                    else:
+                        self._passive_last_state = "success"
+            elif "failed" in normalized:
+                if self._process is None:
+                    self._passive_last_state = "error"
+                    self._passive_running = False
+                    self._passive_last_finished_at = now
+                    self._passive_job = None
+                    self._queued_playlists = []
+            elif "stopped" in normalized:
+                if self._process is None:
+                    self._passive_last_state = "stopped"
                     self._passive_running = False
                     self._passive_last_finished_at = now
                     self._passive_job = None
@@ -814,25 +846,18 @@ class BuildManager:
 
         if self._stop_requested:
             if job and job.get("type") == "playlist" and job.get("playlist"):
-                self._last_message = (
-                    self._last_message
-                    or f"Build for playlist '{job['playlist']}' stopped."
-                )
+                self._last_message = f"Build for playlist '{job['playlist']}' stopped."
             elif job and job.get("type") == "all":
-                self._last_message = (
-                    self._last_message or "Build for all playlists stopped."
-                )
+                self._last_message = "Build for all playlists stopped."
             else:
-                self._last_message = self._last_message or "Build process stopped."
+                self._last_message = "Build process stopped."
             state = "stopped"
         else:
             if return_code == 0:
-                self._last_message = self._last_message or "Build completed successfully."
+                self._last_message = "Build completed successfully."
                 state = "success"
             else:
-                self._last_message = (
-                    self._last_message or f"Build exited with code {return_code}."
-                )
+                self._last_message = f"Build exited with code {return_code}."
                 state = "error"
 
         self._record_job_result_locked(
@@ -843,6 +868,7 @@ class BuildManager:
             state,
             self._last_message,
         )
+        self._last_run_state = state
         self._active_job = None
         self._stop_requested = False
         self._queued_playlists = []
@@ -855,8 +881,13 @@ class BuildManager:
         running = running_process or passive_active
 
         status_label = "running" if running else "idle"
-        if not running and self._last_exit_code not in (None, 0):
-            status_label = "error"
+        if not running:
+            if self._last_run_state in {"success", "error", "stopped"}:
+                status_label = self._last_run_state
+            elif self._passive_last_state in {"success", "error", "stopped"}:
+                status_label = self._passive_last_state
+            elif self._last_exit_code not in (None, 0):
+                status_label = "error"
 
         observed_active_names: Set[str] = set()
         for name in self._observed_active_playlists:
@@ -992,7 +1023,9 @@ class BuildManager:
             self._passive_last_started_at = None
             self._passive_last_finished_at = None
             self._passive_last_message = None
+            self._passive_last_state = None
             self._queued_playlists = []
+            self._last_run_state = None
 
             command = list(self._command)
             job: Dict[str, Any]
@@ -1024,6 +1057,7 @@ class BuildManager:
                 self._last_started_at = None
                 self._last_finished_at = _utcnow()
                 self._last_exit_code = None
+                self._last_run_state = "error"
                 status = self._status_snapshot_locked()
                 status["status"] = "error"
                 return False, status, error_message

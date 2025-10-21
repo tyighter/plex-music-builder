@@ -1433,16 +1433,36 @@
         const isRunning = Boolean(status.running);
         const activeJob = status.job || null;
         const isAllRunning = Boolean(isRunning && activeJob?.type === "all");
-        const indicatorState = isRunning
-          ? "running"
-          : status.status === "error"
-          ? "error"
-          : "idle";
+        let indicatorState = "idle";
+        if (isRunning) {
+          indicatorState = "running";
+        } else if (status.status === "error") {
+          indicatorState = "error";
+        } else if (status.status === "success") {
+          indicatorState = "success";
+        } else if (status.status === "stopped") {
+          indicatorState = "stopped";
+        }
 
-        buildStatusIndicator.classList.remove("running", "idle", "error");
+        buildStatusIndicator.classList.remove(
+          "running",
+          "idle",
+          "error",
+          "success",
+          "stopped"
+        );
         buildStatusIndicator.classList.add(indicatorState);
 
-        const statusTextValue = isRunning ? "Building" : "Idle";
+        let statusTextValue = "Idle";
+        if (indicatorState === "running") {
+          statusTextValue = "Building";
+        } else if (indicatorState === "success") {
+          statusTextValue = "Completed";
+        } else if (indicatorState === "stopped") {
+          statusTextValue = "Stopped";
+        } else if (indicatorState === "error") {
+          statusTextValue = "Error";
+        }
         buildStatusText.textContent = statusTextValue;
 
         const jobProgress = activeJob?.progress;
