@@ -447,11 +447,52 @@
         box-shadow: inset 0 0 0 1px rgba(229, 160, 13, 0.2), 0 10px 30px rgba(229, 160, 13, 0.12);
       }
 
-      .playlist-log-header {
+      .playlist-log-toggle {
+        cursor: pointer;
+        background: none;
+        border: none;
+        border-radius: 0;
+        padding: 0;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
         font-size: 12px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.55);
+        color: rgba(255, 255, 255, 0.6);
+        transition: color 0.2s ease;
+        box-shadow: none;
+      }
+
+      .playlist-log-toggle:hover,
+      .playlist-log-toggle:focus-visible {
+        color: rgba(255, 255, 255, 0.85);
+        outline: none;
+      }
+
+      .playlist-log-toggle:focus-visible {
+        outline: 2px solid rgba(229, 160, 13, 0.6);
+        outline-offset: 2px;
+      }
+
+      .playlist-log-toggle-label {
+        pointer-events: none;
+      }
+
+      .playlist-log-toggle-icon {
+        font-size: 14px;
+        transition: transform 0.2s ease;
+        pointer-events: none;
+      }
+
+      .build-status-logs.collapsed .playlist-log-toggle-icon {
+        transform: rotate(-90deg);
+      }
+
+      .build-status-logs.collapsed .build-log-list {
+        display: none;
       }
 
       .playlist-log-list {
@@ -730,8 +771,18 @@
               <button id="buildToggleBtn" type="button">▶ Build All</button>
             </div>
           </div>
-          <div class="build-status-logs">
-            <div class="playlist-log-header">Playlist Activity</div>
+          <div id="buildStatusLogs" class="build-status-logs">
+            <button
+              id="playlistActivityToggle"
+              class="playlist-log-toggle"
+              type="button"
+              aria-expanded="true"
+            >
+              <span class="playlist-log-toggle-label"
+                >Activity (Playlists &amp; General)</span
+              >
+              <span class="playlist-log-toggle-icon" aria-hidden="true">▾</span>
+            </button>
             <div id="buildLogContainer" class="build-log-list"></div>
           </div>
         </div>
@@ -775,9 +826,46 @@
       const buildStatusMeta = document.getElementById("buildStatusMeta");
       const buildToggleBtn = document.getElementById("buildToggleBtn");
       const buildStatusPanel = document.getElementById("buildStatusPanel");
+      const buildStatusLogs = document.getElementById("buildStatusLogs");
+      const playlistActivityToggle = document.getElementById(
+        "playlistActivityToggle"
+      );
       const buildLogContainer = document.getElementById("buildLogContainer");
       let latestBuildStatus = null;
       let buildStatusTimer = null;
+      let isActivityCollapsed = false;
+
+      function setActivityCollapsed(collapsed) {
+        isActivityCollapsed = Boolean(collapsed);
+        if (playlistActivityToggle) {
+          playlistActivityToggle.setAttribute(
+            "aria-expanded",
+            String(!isActivityCollapsed)
+          );
+        }
+        if (buildStatusLogs) {
+          buildStatusLogs.classList.toggle("collapsed", isActivityCollapsed);
+        }
+        if (buildLogContainer) {
+          if (isActivityCollapsed) {
+            buildLogContainer.setAttribute("hidden", "");
+          } else {
+            buildLogContainer.removeAttribute("hidden");
+          }
+          buildLogContainer.setAttribute(
+            "aria-hidden",
+            isActivityCollapsed ? "true" : "false"
+          );
+        }
+      }
+
+      if (playlistActivityToggle) {
+        playlistActivityToggle.addEventListener("click", () => {
+          setActivityCollapsed(!isActivityCollapsed);
+        });
+      }
+
+      setActivityCollapsed(false);
 
       function showMessage(text, isError = false) {
         if (!text) {
@@ -1103,13 +1191,21 @@
         const activePlaylists = getActivePlaylistNames(status);
         const activePlaylistsSet = new Set(activePlaylists);
 
-        const waitingPlaylists = Array.isArray(status?.waiting_playlists)
-          ? status.waiting_playlists
-              .map((name) =>
-                name === null || name === undefined ? "" : String(name).trim()
-              )
-              .filter((name) => name.length > 0)
-          : [];
+        const normalizeWaitingNames = (names) =>
+          Array.isArray(names)
+            ? names
+                .map((name) =>
+                  name === null || name === undefined ? "" : String(name).trim()
+                )
+                .filter((name) => name.length > 0)
+            : [];
+
+        const waitingPlaylists = Array.from(
+          new Set([
+            ...normalizeWaitingNames(status?.waiting_playlists),
+            ...normalizeWaitingNames(status?.job?.waiting_playlists),
+          ])
+        );
         const waitingSet = new Set(waitingPlaylists);
         const waitingOrder = new Map();
         waitingPlaylists.forEach((name, index) => {
