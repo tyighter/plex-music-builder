@@ -5,6 +5,7 @@ import sys
 import yaml
 import math
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import requests
 import json
 import time
@@ -223,7 +224,16 @@ def setup_logging():
             os.makedirs(log_dir, exist_ok=True)
 
         try:
-            file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+            file_handler = TimedRotatingFileHandler(
+                LOG_FILE,
+                when="midnight",
+                backupCount=7,
+                encoding="utf-8",
+                utc=False,
+                delay=False,
+                interval=1,
+                mode="w",
+            )
         except OSError as exc:
             logger_obj.error(f"Unable to open log file '{LOG_FILE}': {exc}")
         else:
