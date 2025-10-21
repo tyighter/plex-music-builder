@@ -485,6 +485,30 @@ class BuildManager:
         if self._passive_last_started_at and "started_at" not in job:
             job["started_at"] = _format_timestamp(self._passive_last_started_at)
 
+        active_names: Set[str] = set()
+        existing_active = job.get("active_playlists")
+        if isinstance(existing_active, list):
+            for name in existing_active:
+                if isinstance(name, str):
+                    normalized = name.strip()
+                    if normalized:
+                        active_names.add(normalized)
+
+        if isinstance(playlist_name, str):
+            normalized_playlist = playlist_name.strip()
+            if normalized_playlist:
+                active_names.add(normalized_playlist)
+
+        for observed in self._observed_active_playlists:
+            normalized_observed = str(observed).strip()
+            if normalized_observed:
+                active_names.add(normalized_observed)
+
+        if active_names:
+            job["active_playlists"] = sorted(active_names)
+        elif "active_playlists" in job:
+            job.pop("active_playlists", None)
+
         return job
 
     @classmethod
@@ -736,11 +760,40 @@ class BuildManager:
         if not running and self._last_exit_code not in (None, 0):
             status_label = "error"
 
+        observed_active_names: Set[str] = set()
+        for name in self._observed_active_playlists:
+            normalized = str(name).strip()
+            if normalized:
+                observed_active_names.add(normalized)
+
         job = self._active_job.copy() if self._active_job is not None else None
-        if job and isinstance(job.get("progress"), dict):
-            job["progress"] = job["progress"].copy()
         if job is None and passive_active:
             job = self._build_passive_job_snapshot_locked()
+
+        job_active_names: Set[str] = set(observed_active_names)
+        if job:
+            if isinstance(job.get("progress"), dict):
+                job["progress"] = job["progress"].copy()
+
+            existing_active = job.get("active_playlists")
+            if isinstance(existing_active, list):
+                for name in existing_active:
+                    if isinstance(name, str):
+                        normalized = name.strip()
+                        if normalized:
+                            job_active_names.add(normalized)
+
+            if job.get("type") == "playlist":
+                playlist_name = job.get("playlist")
+                if isinstance(playlist_name, str):
+                    normalized_playlist = playlist_name.strip()
+                    if normalized_playlist:
+                        job_active_names.add(normalized_playlist)
+
+            if job_active_names:
+                job["active_playlists"] = sorted(job_active_names)
+            elif "active_playlists" in job:
+                job.pop("active_playlists", None)
 
         playlist_results = {
             name: result.copy()
@@ -770,6 +823,8 @@ class BuildManager:
             if isinstance(entry, dict) and entry.get("text")
         ]
 
+        active_playlists_payload = sorted(job_active_names)
+
         return {
             "running": running,
             "status": status_label,
@@ -779,6 +834,7 @@ class BuildManager:
             "exit_code": self._last_exit_code,
             "message": message_value,
             "job": job,
+            "active_playlists": active_playlists_payload,
             "results": {
                 "all": self._last_all_result.copy() if self._last_all_result else None,
                 "playlists": playlist_results,
