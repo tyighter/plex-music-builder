@@ -223,23 +223,33 @@ def setup_logging():
         if log_dir and not os.path.exists(log_dir):
             os.makedirs(log_dir, exist_ok=True)
 
+        truncate_error = False
         try:
-            file_handler = TimedRotatingFileHandler(
-                LOG_FILE,
-                when="midnight",
-                backupCount=7,
-                encoding="utf-8",
-                utc=False,
-                delay=False,
-                interval=1,
-                mode="w",
-            )
+            with open(LOG_FILE, "w", encoding="utf-8"):
+                pass
         except OSError as exc:
-            logger_obj.error(f"Unable to open log file '{LOG_FILE}': {exc}")
-        else:
-            file_handler.setFormatter(formatter)
-            logger_obj.addHandler(file_handler)
-            ACTIVE_LOG_FILE = LOG_FILE
+            truncate_error = True
+            logger_obj.error(
+                f"Unable to initialise log file '{LOG_FILE}' for writing: {exc}"
+            )
+
+        if not truncate_error:
+            try:
+                file_handler = TimedRotatingFileHandler(
+                    LOG_FILE,
+                    when="midnight",
+                    backupCount=7,
+                    encoding="utf-8",
+                    utc=False,
+                    delay=False,
+                    interval=1,
+                )
+            except OSError as exc:
+                logger_obj.error(f"Unable to open log file '{LOG_FILE}': {exc}")
+            else:
+                file_handler.setFormatter(formatter)
+                logger_obj.addHandler(file_handler)
+                ACTIVE_LOG_FILE = LOG_FILE
 
     return logger_obj
 
