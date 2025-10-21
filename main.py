@@ -11,6 +11,7 @@ import time
 import threading
 import copy
 from pathlib import Path
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key
 from xml.etree import ElementTree as ET
@@ -459,29 +460,118 @@ def _build_track_identity_key(track):
     return ("__object_id__", str(id(track)))
 
 
-def _resolve_track_popularity_value(track, allmusic_provider=None, spotify_provider=None, playlist_logger=None):
-    popularity_value = None
-
-    if allmusic_provider and getattr(allmusic_provider, "is_enabled", False):
-        popularity_value = allmusic_provider.get_popularity(
-            track,
-            spotify_provider=spotify_provider,
-            playlist_logger=playlist_logger,
-        )
-
-    if popularity_value is None and spotify_provider and getattr(spotify_provider, "is_enabled", False):
-        popularity_value = spotify_provider.get_popularity(track)
-
-    if popularity_value is None:
-        return None
-
+def _coerce_non_negative_float(value):
     try:
-        return float(popularity_value)
+        numeric = float(value)
     except (TypeError, ValueError):
         return None
 
+    if not math.isfinite(numeric) or numeric < 0:
+        return None
 
-def _deduplicate_tracks(tracks, log, allmusic_provider=None, spotify_provider=None):
+    return numeric
+
+
+def _extract_numeric_from_candidates(container, field_names):
+    if not isinstance(container, dict):
+        return None
+
+    for field in field_names:
+        if field not in container:
+            continue
+        numeric = _coerce_non_negative_float(container.get(field))
+        if numeric is not None:
+            return numeric
+
+    return None
+
+
+def _build_album_identity_key(track):
+    for attr_name in ("parentRatingKey", "parentGuid", "parentKey"):
+        value = getattr(track, attr_name, None)
+        if value:
+            return ("id", str(value))
+
+    artist = getattr(track, "grandparentTitle", None) or getattr(track, "originalTitle", None)
+    album = getattr(track, "parentTitle", None)
+    year = getattr(track, "parentYear", None) or getattr(track, "year", None)
+    release_date = getattr(track, "originallyAvailableAt", None)
+
+    return (
+        "meta",
+        str(artist or ""),
+        str(album or ""),
+        str(year or ""),
+        str(release_date or ""),
+    )
+
+
+def _compute_spotify_popularity_score(track, spotify_provider=None, playlist_logger=None):
+    if not (spotify_provider and getattr(spotify_provider, "is_enabled", False)):
+        return None
+
+    profile = spotify_provider.get_track_profile(track)
+    if profile is None:
+        return None
+
+    if isinstance(profile, dict):
+        popularity = _coerce_non_negative_float(profile.get("popularity"))
+    else:
+        popularity = _coerce_non_negative_float(profile)
+
+    if popularity is None:
+        return None
+
+    score = popularity
+
+    metrics_container = profile if isinstance(profile, dict) else {}
+
+    play_count = None
+    like_count = None
+
+    candidates = []
+    if isinstance(metrics_container, dict):
+        candidates.append(metrics_container)
+        for nested_key in ("metrics", "statistics", "insights"):
+            nested = metrics_container.get(nested_key)
+            if isinstance(nested, dict):
+                candidates.append(nested)
+        album_metrics = metrics_container.get("album") if isinstance(metrics_container.get("album"), dict) else None
+        if isinstance(album_metrics, dict):
+            candidates.append(album_metrics)
+
+    for container in candidates:
+        if play_count is None:
+            play_count = _extract_numeric_from_candidates(
+                container,
+                ("play_count", "plays", "playcount", "streams"),
+            )
+        if like_count is None:
+            like_count = _extract_numeric_from_candidates(
+                container,
+                ("like_count", "likes", "favourites", "favorites", "hearts"),
+            )
+
+    if play_count is not None:
+        play_bonus = min(10.0, math.log1p(play_count))
+        score += play_bonus
+
+    if like_count is not None:
+        like_bonus = min(10.0, math.log1p(like_count))
+        score += like_bonus
+
+    return round(score, 3)
+
+
+def _resolve_track_popularity_value(track, spotify_provider=None, playlist_logger=None):
+    return _compute_spotify_popularity_score(
+        track,
+        spotify_provider=spotify_provider,
+        playlist_logger=playlist_logger,
+    )
+
+
+def _deduplicate_tracks(tracks, log, spotify_provider=None):
     if not tracks:
         return tracks, {}, 0
 
@@ -497,7 +587,6 @@ def _deduplicate_tracks(tracks, log, allmusic_provider=None, spotify_provider=No
 
         popularity = _resolve_track_popularity_value(
             track,
-            allmusic_provider=allmusic_provider,
             spotify_provider=spotify_provider,
             playlist_logger=log,
         )
@@ -554,6 +643,53 @@ def _deduplicate_tracks(tracks, log, allmusic_provider=None, spotify_provider=No
 
     deduped_tracks = [dedup_map[key]["track"] for key in sorted(order, key=lambda item: dedup_map[item]["index"])]
     return deduped_tracks, popularity_cache, duplicates_removed
+
+
+def _compute_album_popularity_boosts(
+    tracks,
+    popularity_cache,
+    spotify_provider=None,
+    playlist_logger=None,
+):
+    if not tracks:
+        return {}, {}
+
+    album_map = defaultdict(list)
+    adjusted_by_rating_key = {}
+    adjusted_by_object = {}
+
+    for track in tracks:
+        cache_key = getattr(track, "ratingKey", None)
+        cache_key_str = str(cache_key) if cache_key is not None else None
+        popularity = None
+
+        if cache_key_str and cache_key_str in popularity_cache:
+            popularity = popularity_cache[cache_key_str]
+        else:
+            popularity = _resolve_track_popularity_value(
+                track,
+                spotify_provider=spotify_provider,
+                playlist_logger=playlist_logger,
+            )
+            if cache_key_str:
+                popularity_cache[cache_key_str] = popularity
+
+        if popularity is None:
+            continue
+
+        album_key = _build_album_identity_key(track)
+        album_map[album_key].append((track, popularity, cache_key_str))
+
+    for album_tracks in album_map.values():
+        album_tracks.sort(key=lambda entry: entry[1], reverse=True)
+        for index, (track, base_score, cache_key_str) in enumerate(album_tracks):
+            adjusted_score = base_score * 1.5 if index < 5 else base_score
+            if cache_key_str:
+                adjusted_by_rating_key[cache_key_str] = adjusted_score
+            else:
+                adjusted_by_object[id(track)] = adjusted_score
+
+    return adjusted_by_rating_key, adjusted_by_object
 
 
 def _resolve_album_year(track):
@@ -811,10 +947,7 @@ class SpotifyPopularityProvider:
         return self._error
 
     def get_popularity(self, track):
-        profile = self.get_track_profile(track)
-        if isinstance(profile, dict):
-            return profile.get("popularity")
-        return profile
+        return _compute_spotify_popularity_score(track, spotify_provider=self)
 
     def get_track_profile(self, track):
         if not self.is_enabled:
@@ -1066,6 +1199,36 @@ class SpotifyPopularityProvider:
         elif isinstance(data.get("single"), bool):
             is_single = data.get("single")
 
+        metrics_candidates = [data]
+        statistics_info = data.get("statistics")
+        if isinstance(statistics_info, dict):
+            metrics_candidates.append(statistics_info)
+        insights_info = data.get("insights")
+        if isinstance(insights_info, dict):
+            metrics_candidates.append(insights_info)
+        if isinstance(album_info, dict):
+            metrics_candidates.append(album_info)
+
+        play_count = None
+        like_count = None
+        for candidate in metrics_candidates:
+            if play_count is None:
+                play_count = _extract_numeric_from_candidates(
+                    candidate,
+                    ("play_count", "plays", "playcount", "streams"),
+                )
+            if like_count is None:
+                like_count = _extract_numeric_from_candidates(
+                    candidate,
+                    ("like_count", "likes", "favourites", "favorites", "hearts"),
+                )
+
+        metrics = {}
+        if play_count is not None:
+            metrics["play_count"] = play_count
+        if like_count is not None:
+            metrics["like_count"] = like_count
+
         return {
             "id": track_id,
             "uri": uri,
@@ -1080,6 +1243,9 @@ class SpotifyPopularityProvider:
             },
             "is_single": bool(is_single),
             "track_number": track_number,
+            "play_count": play_count,
+            "like_count": like_count,
+            "metrics": metrics,
         }
 
 
@@ -2578,43 +2744,18 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     sort_desc_in_config = "sort_desc" in config
     sort_desc = config.get("sort_desc", True)
     spotify_provider = SpotifyPopularityProvider.get_shared()
-    allmusic_provider = AllMusicPopularityProvider.get_shared()
     if sort_by == "popularity":
-        spotify_provider = SpotifyPopularityProvider.get_shared()
-        allmusic_provider = AllMusicPopularityProvider.get_shared()
-
-        def _log_popularity_source(message, *args):
+        if spotify_provider and spotify_provider.is_enabled:
+            resolved_sort_by = "spotifyPopularity"
             if log.isEnabledFor(logging.DEBUG):
-                log.debug(message, *args)
-
-        if allmusic_provider and allmusic_provider.is_enabled:
-            resolved_sort_by = "spotifyPopularity"
-            _log_popularity_source(
-                "Sort field '%s' will use AllMusic × Spotify composite popularity",
-                sort_by,
-            )
-            if spotify_provider and spotify_provider.is_enabled:
-                _log_popularity_source(
-                    "Spotify popularity fallback is enabled for playlist '%s'",
-                    name,
+                log.debug(
+                    "Sort field '%s' will use Spotify popularity metrics",
+                    sort_by,
                 )
-            elif spotify_provider:
-                error_detail = spotify_provider.describe_error()
-                if error_detail:
-                    _log_popularity_source(
-                        "Spotify popularity fallback unavailable (%s)",
-                        error_detail,
-                    )
-        elif spotify_provider and spotify_provider.is_enabled:
-            resolved_sort_by = "spotifyPopularity"
-            _log_popularity_source(
-                "AllMusic popularity disabled; using Spotify track popularity",
-                sort_by,
-            )
         else:
             error_detail = spotify_provider.describe_error() if spotify_provider else None
             log.warning(
-                "Popularity sorting requested but no providers are available%s",
+                "Popularity sorting requested but Spotify is unavailable%s",
                 f" ({error_detail})" if error_detail else "",
             )
             resolved_sort_by = None
@@ -2782,7 +2923,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         matched_tracks, dedup_popularity_cache, duplicates_removed = _deduplicate_tracks(
             matched_tracks,
             log,
-            allmusic_provider=allmusic_provider,
             spotify_provider=spotify_provider,
         )
         dedup_duration = time.perf_counter() - dedup_start
@@ -2793,31 +2933,34 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 name,
             )
 
-        if dedup_popularity_cache and allmusic_provider and allmusic_provider.is_enabled:
-            for track in matched_tracks:
-                cache_key = getattr(track, "ratingKey", None)
-                if cache_key is None:
-                    continue
-                cache_key_str = str(cache_key)
-                if cache_key_str not in dedup_popularity_cache:
-                    continue
-                updated_value = allmusic_provider.get_popularity(
-                    track,
-                    spotify_provider=spotify_provider,
-                    playlist_logger=log,
-                )
-                dedup_popularity_cache[cache_key_str] = updated_value
+    album_popularity_cache = {}
+    album_popularity_cache_by_object = {}
+    if resolved_sort_by == "spotifyPopularity":
+        (
+            album_popularity_cache,
+            album_popularity_cache_by_object,
+        ) = _compute_album_popularity_boosts(
+            matched_tracks,
+            dedup_popularity_cache,
+            spotify_provider=spotify_provider,
+            playlist_logger=log,
+        )
     match_count = len(matched_tracks)
 
     sort_duration = 0.0
     if resolved_sort_by:
         sort_value_cache = {}
+        sort_value_cache_by_object = {}
 
         def _get_sort_value(track):
             cache_key = getattr(track, "ratingKey", None)
             cache_key_str = str(cache_key) if cache_key is not None else None
+            object_cache_key = id(track)
             if cache_key_str and cache_key_str in sort_value_cache:
                 return sort_value_cache[cache_key_str]
+
+            if cache_key_str is None and object_cache_key in sort_value_cache_by_object:
+                return sort_value_cache_by_object[object_cache_key]
 
             if cache_key_str and cache_key_str in dedup_popularity_cache:
                 value = dedup_popularity_cache[cache_key_str]
@@ -2825,50 +2968,31 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 return value
 
             if resolved_sort_by == "spotifyPopularity":
-                popularity_source = None
                 popularity_value = None
 
-                if allmusic_provider and allmusic_provider.is_enabled:
-                    popularity_value = allmusic_provider.get_popularity(
+                if cache_key_str and cache_key_str in album_popularity_cache:
+                    popularity_value = album_popularity_cache[cache_key_str]
+                elif cache_key_str is None and object_cache_key in album_popularity_cache_by_object:
+                    popularity_value = album_popularity_cache_by_object[object_cache_key]
+                else:
+                    popularity_value = _resolve_track_popularity_value(
                         track,
                         spotify_provider=spotify_provider,
                         playlist_logger=log,
-                    )
-                    if popularity_value is not None:
-                        popularity_source = "allmusic"
-
-                if (popularity_value is None) and spotify_provider and spotify_provider.is_enabled:
-                    if debug_logging:
-                        log.debug(
-                            "Falling back to Spotify popularity for track '%s'",
-                            getattr(track, "title", "<unknown>"),
-                        )
-                    popularity_value = spotify_provider.get_popularity(track)
-                    if popularity_value is not None:
-                        popularity_source = "spotify"
-
-                if popularity_value is not None:
-                    try:
-                        popularity_value = float(popularity_value)
-                    except (TypeError, ValueError):
-                        popularity_value = None
-
-                if debug_logging:
-                    log.debug(
-                        "Popularity source for track '%s': %s (value=%s)",
-                        getattr(track, "title", "<unknown>"),
-                        popularity_source or "none",
-                        popularity_value,
                     )
 
                 if popularity_value is None:
                     sentinel = float("-inf") if sort_desc else float("inf")
                     if cache_key_str:
                         sort_value_cache[cache_key_str] = sentinel
+                    else:
+                        sort_value_cache_by_object[object_cache_key] = sentinel
                     return sentinel
 
                 if cache_key_str:
                     sort_value_cache[cache_key_str] = popularity_value
+                else:
+                    sort_value_cache_by_object[object_cache_key] = popularity_value
                 return popularity_value
 
             if resolved_sort_by == "__alphabetical__":
@@ -2879,6 +3003,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 sort_value = (normalized_title, normalized_artist, str(raw_title))
                 if cache_key_str:
                     sort_value_cache[cache_key_str] = sort_value
+                else:
+                    sort_value_cache_by_object[object_cache_key] = sort_value
                 return sort_value
 
             if resolved_sort_by in {"ratingCount", "parentRatingCount"}:
