@@ -977,46 +977,45 @@
             : [];
 
           if (normalizedEntries.length) {
-            normalizedEntries.forEach((entry, index) => {
-              const item = document.createElement("div");
-              item.className = "playlist-log-entry";
+            const entry = normalizedEntries[normalizedEntries.length - 1];
+            const item = document.createElement("div");
+            item.className = "playlist-log-entry";
 
-              const isProgressEntry =
-                entry && entry.type === "progress" && typeof entry.percent === "number";
-              const isLastEntry = index === normalizedEntries.length - 1;
-              const showSpinner = isActivePlaylist && !isProgressEntry && isLastEntry;
+            const isProgressEntry =
+              entry && entry.type === "progress" && typeof entry.percent === "number";
+            const showSpinner =
+              isActivePlaylist && !isProgressEntry && entry?.is_final !== true;
 
-              if (isProgressEntry) {
-                item.classList.add("progress-entry");
-                const progressWrapper = document.createElement("div");
-                progressWrapper.className = "playlist-log-bar";
-                const progressFill = document.createElement("span");
-                const percentValue = Number.isFinite(entry.percent)
-                  ? Math.max(0, Math.min(100, entry.percent))
-                  : 0;
-                progressFill.style.setProperty("--progress", `${percentValue}%`);
-                progressWrapper.appendChild(progressFill);
-                item.appendChild(progressWrapper);
-              }
+            if (isProgressEntry) {
+              item.classList.add("progress-entry");
+              const progressWrapper = document.createElement("div");
+              progressWrapper.className = "playlist-log-bar";
+              const progressFill = document.createElement("span");
+              const percentValue = Number.isFinite(entry.percent)
+                ? Math.max(0, Math.min(100, entry.percent))
+                : 0;
+              progressFill.style.setProperty("--progress", `${percentValue}%`);
+              progressWrapper.appendChild(progressFill);
+              item.appendChild(progressWrapper);
+            }
 
-              const messageRow = document.createElement("div");
-              messageRow.className = "playlist-log-message";
+            const messageRow = document.createElement("div");
+            messageRow.className = "playlist-log-message";
 
-              if (showSpinner) {
-                item.classList.add("is-active-step");
-                const spinner = document.createElement("div");
-                spinner.className = "playlist-log-spinner";
-                messageRow.appendChild(spinner);
-              }
+            if (showSpinner) {
+              item.classList.add("is-active-step");
+              const spinner = document.createElement("div");
+              spinner.className = "playlist-log-spinner";
+              messageRow.appendChild(spinner);
+            }
 
-              const text = document.createElement("div");
-              text.className = "playlist-log-text";
-              text.textContent = entry?.text || "";
-              messageRow.appendChild(text);
+            const text = document.createElement("div");
+            text.className = "playlist-log-text";
+            text.textContent = entry?.text || "";
+            messageRow.appendChild(text);
 
-              item.appendChild(messageRow);
-              listEl.appendChild(item);
-            });
+            item.appendChild(messageRow);
+            listEl.appendChild(item);
           } else {
             const placeholder = document.createElement("div");
             placeholder.className = "playlist-log-entry";

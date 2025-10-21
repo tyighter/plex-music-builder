@@ -5,10 +5,11 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, IO, List, Optional, Tuple
+from typing import Any, Dict, IO, List, Optional, Set, Tuple
 
 import yaml
 from flask import Flask, jsonify, render_template, request
@@ -27,6 +28,7 @@ PLAYLISTS_PATH = BASE_DIR / "playlists.yml"
 LEGEND_PATH = BASE_DIR / "legend.txt"
 CONFIG_PATH = BASE_DIR / "config.yml"
 DEFAULT_ALLMUSIC_CACHE = Path("/app/allmusic_popularity.json")
+DEFAULT_LOG_PATH = Path("/app/logs/plex_music_builder.log")
 
 # Human-friendly overrides for certain Plex field names
 FIELD_LABEL_OVERRIDES: Dict[str, str] = {
@@ -112,11 +114,17 @@ def _format_timestamp(value: Optional[datetime]) -> Optional[str]:
 class BuildManager:
     _INFO_LINE_PATTERN = re.compile(r"\[(?P<level>[A-Z]+)\]\s*(?P<message>.*)")
     _PLAYLIST_QUOTED_PATTERN = re.compile(r"'([^']+)'")
-    _FILTERING_PROGRESS_PATTERN = re.compile(
+    _FILTERING_PROGRESS_LEGACY_PATTERN = re.compile(
         r"Filtering '(?P<playlist>[^']+)':?\s+"
         r"(?P<percent>\d+(?:\.\d+)?)%[^\d]*"
         r"(?P<current>\d+)\s*/\s*(?P<total>\d+|\?)"
         r"(?:[^\[]*(?P<details>\[[^\]]*\]))?"
+    )
+    _FILTERING_PROGRESS_CLEAN_PATTERN = re.compile(
+        r"Filtering progress for '(?P<playlist>[^']+)':\s*"
+        r"(?P<current>\d+)\s*/\s*(?P<total>\d+|\?)"
+        r"(?:\s*\((?P<percent>\d+(?:\.\d+)?)%\))?"
+        r"(?P<extras>.*)"
     )
 
     def __init__(
@@ -139,6 +147,16 @@ class BuildManager:
         self._log_thread: Optional[threading.Thread] = None
         self._playlist_logs: Dict[str, List[Dict[str, Any]]] = {}
         self._general_logs: List[str] = []
+        self._log_file_path: Optional[Path] = resolve_log_file_path()
+        self._log_watcher_thread: Optional[threading.Thread] = None
+        self._passive_running = False
+        self._passive_job: Optional[Dict[str, Any]] = None
+        self._passive_last_started_at: Optional[datetime] = None
+        self._passive_last_finished_at: Optional[datetime] = None
+        self._passive_last_message: Optional[str] = None
+        self._observed_active_playlists: Set[str] = set()
+        self._max_initial_log_read = 65536
+        self._start_log_watcher()
 
     @staticmethod
     def _normalize_playlist_key(name: Optional[str]) -> Optional[str]:
@@ -181,14 +199,17 @@ class BuildManager:
 
     def _append_playlist_log_locked(self, playlist_name: str, message: str) -> None:
         logs = self._playlist_logs.setdefault(playlist_name, [])
+        is_final = message.strip().startswith("✅")
         entry = {
             "type": "message",
             "text": message,
             "timestamp": _format_timestamp(_utcnow()),
+            "is_final": is_final,
         }
-        logs.append(entry)
-        if len(logs) > 200:
-            del logs[:-200]
+        self._playlist_logs[playlist_name] = [entry]
+        self._passive_last_message = message
+        if self._process is None:
+            self._last_message = message
 
     def _record_filtering_progress_locked(
         self, playlist_name: str, progress: Dict[str, Any]
@@ -203,14 +224,14 @@ class BuildManager:
             "progress": progress.get("progress"),
             "details": progress.get("details"),
             "rate": progress.get("rate"),
+            "elapsed": progress.get("elapsed"),
+            "eta": progress.get("eta"),
             "timestamp": _format_timestamp(_utcnow()),
         }
-        if logs and isinstance(logs[-1], dict) and logs[-1].get("type") == "progress":
-            logs[-1] = entry
-        else:
-            logs.append(entry)
-        if len(logs) > 200:
-            del logs[:-200]
+        self._playlist_logs[playlist_name] = [entry]
+        self._passive_last_message = entry["text"]
+        if self._process is None:
+            self._last_message = entry["text"]
 
         if (
             self._active_job
@@ -219,7 +240,16 @@ class BuildManager:
         ):
             progress_snapshot = {
                 key: entry.get(key)
-                for key in ("current", "total", "percent", "progress", "details", "rate")
+                for key in (
+                    "current",
+                    "total",
+                    "percent",
+                    "progress",
+                    "details",
+                    "rate",
+                    "elapsed",
+                    "eta",
+                )
             }
             self._active_job["progress"] = progress_snapshot
 
@@ -227,26 +257,215 @@ class BuildManager:
         self._general_logs.append(message)
         if len(self._general_logs) > 400:
             del self._general_logs[:-400]
+        self._passive_last_message = message
+        if self._process is None:
+            self._last_message = message
+
+    def _start_log_watcher(self) -> None:
+        if self._log_file_path is None:
+            return
+        if self._log_watcher_thread and self._log_watcher_thread.is_alive():
+            return
+
+        thread = threading.Thread(
+            target=self._watch_log_file,
+            name="BuildLogWatcher",
+            daemon=True,
+        )
+        self._log_watcher_thread = thread
+        thread.start()
+
+    def _watch_log_file(self) -> None:
+        if self._log_file_path is None:
+            return
+
+        log_path = Path(self._log_file_path)
+        last_inode = None
+        offset = 0
+        read_from_start = True
+
+        while True:
+            try:
+                stat_info = log_path.stat()
+                inode = getattr(stat_info, "st_ino", None)
+                if inode != last_inode:
+                    last_inode = inode
+                    offset = 0
+                    read_from_start = True
+
+                with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                    if read_from_start:
+                        size = stat_info.st_size
+                        if size > self._max_initial_log_read:
+                            handle.seek(size - self._max_initial_log_read)
+                            handle.readline()
+                        offset = handle.tell()
+                        read_from_start = False
+                    else:
+                        handle.seek(offset)
+
+                    while True:
+                        line = handle.readline()
+                        if not line:
+                            offset = handle.tell()
+                            time.sleep(0.5)
+                            try:
+                                current_stat = log_path.stat()
+                            except OSError:
+                                read_from_start = True
+                                offset = 0
+                                break
+                            if current_stat.st_size < offset:
+                                read_from_start = True
+                                offset = 0
+                                break
+                            continue
+
+                        sanitized = line.strip("\r\n")
+                        if sanitized:
+                            self._handle_log_line(sanitized)
+            except FileNotFoundError:
+                offset = 0
+                read_from_start = True
+                last_inode = None
+                time.sleep(1.0)
+            except Exception:
+                time.sleep(1.0)
+
+    def _update_passive_state_from_message_locked(
+        self, playlist_name: Optional[str], message: str
+    ) -> None:
+        normalized = message.strip().lower()
+        now = _utcnow()
+
+        if playlist_name:
+            if normalized.startswith("building playlist:"):
+                self._observed_active_playlists.add(playlist_name)
+                if self._process is None and not self._passive_running:
+                    self._passive_last_started_at = now
+                if self._process is None:
+                    self._passive_running = True
+                    if not self._passive_job or self._passive_job.get("type") != "all":
+                        self._passive_job = {
+                            "type": "playlist",
+                            "playlist": playlist_name,
+                        }
+            elif normalized.startswith("build started for playlist"):
+                self._observed_active_playlists.add(playlist_name)
+                if self._process is None and not self._passive_running:
+                    self._passive_last_started_at = now
+                if self._process is None:
+                    self._passive_running = True
+                    if not self._passive_job or self._passive_job.get("type") != "all":
+                        self._passive_job = {
+                            "type": "playlist",
+                            "playlist": playlist_name,
+                        }
+            elif (
+                normalized.startswith("✅ finished building")
+                or "failed" in normalized
+                or "stopped" in normalized
+            ):
+                self._observed_active_playlists.discard(playlist_name)
+                if (
+                    self._process is None
+                    and not self._observed_active_playlists
+                    and (not self._passive_job or self._passive_job.get("type") != "all")
+                ):
+                    self._passive_running = False
+                    self._passive_last_finished_at = now
+                    self._passive_job = None
+        else:
+            if normalized.startswith("processing") and "playlist" in normalized:
+                if self._process is None and not self._passive_running:
+                    self._passive_last_started_at = now
+                if self._process is None:
+                    self._passive_running = True
+                    self._passive_job = {"type": "all"}
+            elif normalized.startswith("build for all playlists started"):
+                if self._process is None and not self._passive_running:
+                    self._passive_last_started_at = now
+                if self._process is None:
+                    self._passive_running = True
+                    self._passive_job = {"type": "all"}
+            elif normalized.startswith("✅ all playlists processed") or normalized.startswith(
+                "✅ selected playlists processed"
+            ):
+                if self._process is None:
+                    self._passive_running = False
+                    self._passive_last_finished_at = now
+                    self._passive_job = None
+            elif normalized.startswith("sleeping for") or "completed successfully" in normalized:
+                if self._process is None:
+                    self._passive_running = False
+                    self._passive_last_finished_at = now
+                    self._passive_job = None
+
+    def _build_passive_job_snapshot_locked(self) -> Optional[Dict[str, Any]]:
+        if self._passive_job:
+            job = self._passive_job.copy()
+        elif self._observed_active_playlists:
+            playlist_name = sorted(self._observed_active_playlists)[0]
+            job = {"type": "playlist", "playlist": playlist_name}
+        else:
+            return None
+
+        playlist_name = job.get("playlist")
+        if playlist_name:
+            entries = self._playlist_logs.get(playlist_name) or []
+            for entry in reversed(entries):
+                if isinstance(entry, dict) and entry.get("type") == "progress":
+                    job["progress"] = {
+                        key: entry.get(key)
+                        for key in (
+                            "current",
+                            "total",
+                            "percent",
+                            "progress",
+                            "details",
+                            "rate",
+                            "elapsed",
+                            "eta",
+                        )
+                    }
+                    break
+
+        if self._passive_last_started_at and "started_at" not in job:
+            job["started_at"] = _format_timestamp(self._passive_last_started_at)
+
+        return job
 
     @classmethod
     def _parse_filtering_progress_line(cls, line: str) -> Optional[Dict[str, Any]]:
-        match = cls._FILTERING_PROGRESS_PATTERN.search(line)
-        if not match:
+        clean_match = cls._FILTERING_PROGRESS_CLEAN_PATTERN.search(line)
+        legacy_match = None if clean_match else cls._FILTERING_PROGRESS_LEGACY_PATTERN.search(line)
+        if not clean_match and not legacy_match:
             return None
 
-        playlist = cls._normalize_playlist_key(match.group("playlist"))
-        if not playlist:
-            return None
+        if clean_match:
+            playlist = cls._normalize_playlist_key(clean_match.group("playlist"))
+            if not playlist:
+                return None
 
-        percent_raw = match.group("percent")
-        current_raw = match.group("current")
-        total_raw = match.group("total")
-        details = match.group("details")
+            current_raw = clean_match.group("current")
+            total_raw = clean_match.group("total")
+            percent_raw = clean_match.group("percent")
+            extras_raw = clean_match.group("extras") or ""
+        else:
+            playlist = cls._normalize_playlist_key(legacy_match.group("playlist"))
+            if not playlist:
+                return None
 
-        try:
-            percent_value = float(percent_raw)
-        except (TypeError, ValueError):
-            percent_value = 0.0
+            current_raw = legacy_match.group("current")
+            total_raw = legacy_match.group("total")
+            percent_raw = legacy_match.group("percent")
+            details_raw = legacy_match.group("details") or ""
+            inner = details_raw.strip().strip("[]")
+            extras_raw = ""
+            if inner:
+                segments = [segment.strip() for segment in inner.split(",") if segment.strip()]
+                if segments:
+                    extras_raw = " – ".join(segments)
 
         try:
             current_value = int(current_raw)
@@ -255,32 +474,66 @@ class BuildManager:
 
         total_value: Optional[int]
         try:
-            total_value = int(total_raw) if total_raw is not None else None
+            total_value = int(total_raw) if total_raw not in {None, "?"} else None
         except (TypeError, ValueError):
             total_value = None
 
-        progress_fraction = max(0.0, min(percent_value / 100.0, 1.0))
+        percent_value: Optional[float]
+        try:
+            percent_value = float(percent_raw) if percent_raw is not None else None
+        except (TypeError, ValueError):
+            percent_value = None
 
-        rate = None
-        formatted_details = None
-        if details:
-            formatted_details = details.strip()
-            inner = formatted_details.strip("[]")
-            if inner:
-                segments = [segment.strip() for segment in inner.split(",") if segment.strip()]
-                if segments:
-                    rate_candidate = segments[-1]
-                    if rate_candidate and "track/s" in rate_candidate and " track/s" not in rate_candidate:
-                        rate_candidate = rate_candidate.replace("track/s", " track/s")
-                    rate = rate_candidate
+        if percent_value is None and total_value:
+            percent_value = (float(current_value) / float(total_value)) * 100.0
+
+        progress_fraction: Optional[float] = None
+        if percent_value is not None:
+            progress_fraction = max(0.0, min(percent_value / 100.0, 1.0))
+
+        elapsed_text: Optional[str] = None
+        eta_text: Optional[str] = None
+        rate_text: Optional[str] = None
+        extra_segments: List[str] = []
+
+        normalized_extras = extras_raw.replace("—", "–")
+        segments = [
+            segment.strip()
+            for segment in re.split(r"\s+[–-]\s+", normalized_extras)
+            if segment.strip()
+        ]
+        for segment in segments:
+            lower = segment.lower()
+            if lower.startswith("elapsed"):
+                _, _, value = segment.partition(" ")
+                elapsed_text = value.strip() or segment.strip()
+            elif lower.startswith("eta"):
+                _, _, value = segment.partition(" ")
+                eta_text = value.strip() or segment.strip()
+            elif "track/s" in lower:
+                cleaned = segment.replace("track/s", " track/s").replace("  ", " ")
+                rate_text = cleaned.strip()
+            else:
+                extra_segments.append(segment)
 
         total_text = str(total_value) if total_value is not None else "?"
-        percent_text = f"{percent_value:.0f}%"
-        message = f"Filtering tracks… {current_value}/{total_text} ({percent_text})"
-        if rate:
-            message = f"{message} – {rate}"
-        elif formatted_details:
-            message = f"{message} {formatted_details}"
+        percent_text = f"{percent_value:.0f}%" if percent_value is not None else None
+
+        details_parts: List[str] = []
+        if elapsed_text:
+            details_parts.append(f"{elapsed_text} elapsed")
+        if eta_text:
+            details_parts.append(f"ETA {eta_text}")
+        if rate_text:
+            details_parts.append(rate_text)
+        details_parts.extend(extra_segments)
+
+        details_text = " · ".join(details_parts)
+        message = f"Filtering tracks… {current_value}/{total_text}"
+        if percent_text:
+            message = f"{message} ({percent_text})"
+        if details_text:
+            message = f"{message} — {details_text}"
 
         return {
             "playlist": playlist,
@@ -288,8 +541,10 @@ class BuildManager:
             "progress": progress_fraction,
             "current": current_value,
             "total": total_value,
-            "details": formatted_details,
-            "rate": rate,
+            "details": details_text or None,
+            "rate": rate_text,
+            "elapsed": elapsed_text,
+            "eta": eta_text,
             "message": message,
         }
 
@@ -307,6 +562,7 @@ class BuildManager:
 
         playlist_name = self._extract_playlist_from_message(info_message)
         with self._lock:
+            self._update_passive_state_from_message_locked(playlist_name, info_message)
             if playlist_name:
                 if info_message.lower().startswith("building playlist:"):
                     self._playlist_logs[playlist_name] = []
@@ -326,9 +582,6 @@ class BuildManager:
                     pending = segments.pop()
                 else:
                     pending = ""
-                for segment in segments:
-                    if segment:
-                        self._handle_log_line(segment)
         finally:
             try:
                 stream.close()
@@ -336,8 +589,6 @@ class BuildManager:
                 pass
             with self._lock:
                 self._log_thread = None
-        if pending:
-            self._handle_log_line(pending)
 
     def _record_job_result_locked(
         self,
@@ -418,7 +669,10 @@ class BuildManager:
     def _status_snapshot_locked(self) -> Dict[str, Any]:
         self._normalize_process_state_locked()
 
-        running = self._process is not None
+        running_process = self._process is not None
+        passive_active = self._passive_running or bool(self._observed_active_playlists)
+        running = running_process or passive_active
+
         status_label = "running" if running else "idle"
         if not running and self._last_exit_code not in (None, 0):
             status_label = "error"
@@ -426,6 +680,8 @@ class BuildManager:
         job = self._active_job.copy() if self._active_job is not None else None
         if job and isinstance(job.get("progress"), dict):
             job["progress"] = job["progress"].copy()
+        if job is None and passive_active:
+            job = self._build_passive_job_snapshot_locked()
 
         playlist_results = {
             name: result.copy()
@@ -441,14 +697,20 @@ class BuildManager:
                     normalized_entries.append(entry)
             playlist_logs[name] = normalized_entries
 
+        since_timestamp = self._last_started_at if running_process else self._passive_last_started_at
+        finished_timestamp = (
+            self._last_finished_at if running_process else self._passive_last_finished_at
+        )
+        message_value = self._last_message or self._passive_last_message
+
         return {
             "running": running,
             "status": status_label,
-            "pid": self._process.pid if running and self._process is not None else None,
-            "since": _format_timestamp(self._last_started_at),
-            "last_finished": _format_timestamp(self._last_finished_at),
+            "pid": self._process.pid if running_process and self._process is not None else None,
+            "since": _format_timestamp(since_timestamp),
+            "last_finished": _format_timestamp(finished_timestamp),
             "exit_code": self._last_exit_code,
-            "message": self._last_message,
+            "message": message_value,
             "job": job,
             "results": {
                 "all": self._last_all_result.copy() if self._last_all_result else None,
@@ -481,6 +743,13 @@ class BuildManager:
                     message = "Playlist name is required to start a build."
                     self._last_message = message
                     return False, self._status_snapshot_locked(), message
+
+            self._observed_active_playlists.clear()
+            self._passive_running = False
+            self._passive_job = None
+            self._passive_last_started_at = None
+            self._passive_last_finished_at = None
+            self._passive_last_message = None
 
             command = list(self._command)
             job: Dict[str, Any]
@@ -616,6 +885,30 @@ def resolve_allmusic_cache_path() -> Path:
                 cache_path = candidate
 
     return cache_path
+
+
+def resolve_log_file_path() -> Optional[Path]:
+    """Resolve the configured log file path for the playlist builder."""
+
+    log_path: Optional[Path] = DEFAULT_LOG_PATH
+
+    if CONFIG_PATH.exists():
+        try:
+            with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+                config_data = yaml.safe_load(config_file) or {}
+        except Exception:
+            config_data = {}
+
+        logging_cfg = config_data.get("logging") or {}
+        if isinstance(logging_cfg, dict):
+            log_file_raw = logging_cfg.get("file")
+            if isinstance(log_file_raw, str) and log_file_raw.strip():
+                candidate = Path(log_file_raw.strip())
+                if not candidate.is_absolute():
+                    candidate = (CONFIG_PATH.parent / candidate).resolve()
+                log_path = candidate
+
+    return log_path
 
 
 def load_yaml_data() -> Dict[str, Any]:
