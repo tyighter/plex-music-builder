@@ -872,6 +872,13 @@ class BuildManager:
         self._active_job = None
         self._stop_requested = False
         self._queued_playlists = []
+        self._observed_active_playlists.clear()
+        self._passive_running = False
+        self._passive_job = None
+        self._passive_last_state = state
+        self._passive_last_started_at = started_at
+        self._passive_last_finished_at = finished_at
+        self._passive_last_message = self._last_message
 
     def _status_snapshot_locked(self) -> Dict[str, Any]:
         self._normalize_process_state_locked()
