@@ -193,10 +193,22 @@ LOG_FILE = _resolve_path_setting(
     CONFIG_DIR,
 )
 ACTIVE_LOG_FILE = None
+ACTIVE_SPOTIFY_LOG_FILE = None
 
 _default_log_dir = os.path.dirname(LOG_FILE) if LOG_FILE else ""
 if not _default_log_dir:
     _default_log_dir = str((RUNTIME_DIR / "logs").resolve())
+
+_spotify_activity_setting = logging_cfg.get("spotify_activity_file")
+if isinstance(_spotify_activity_setting, bool) and not _spotify_activity_setting:
+    SPOTIFY_ACTIVITY_LOG_FILE = None
+else:
+    default_spotify_log_path = (Path(_default_log_dir) / "spotify_activity.log").resolve()
+    SPOTIFY_ACTIVITY_LOG_FILE = _resolve_path_setting(
+        _spotify_activity_setting,
+        default_spotify_log_path,
+        CONFIG_DIR,
+    )
 
 PLAYLIST_LOG_DIR = logging_cfg.get("playlist_debug_dir")
 if isinstance(PLAYLIST_LOG_DIR, str) and not PLAYLIST_LOG_DIR.strip():
@@ -208,6 +220,13 @@ if not PLEX_URL or not PLEX_TOKEN:
     raise EnvironmentError("PLEX_URL and PLEX_TOKEN must be set in config.yml")
 
 
+class SpotifyActivityFilter(logging.Filter):
+    """Filter log records so only Spotify-tagged entries are captured."""
+
+    def filter(self, record):
+        return bool(getattr(record, "spotify_activity", False))
+
+
 def setup_logging():
     """Configure logging to stream to stdout and a persistent log file."""
     logger_name = "plex_music_builder"
@@ -217,7 +236,7 @@ def setup_logging():
     if logger_obj.handlers:
         return logger_obj
 
-    global ACTIVE_LOG_FILE
+    global ACTIVE_LOG_FILE, ACTIVE_SPOTIFY_LOG_FILE
 
     log_level = getattr(logging, LOG_LEVEL, logging.INFO)
     logger_obj.setLevel(log_level)
@@ -227,6 +246,7 @@ def setup_logging():
 
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
+    stream_handler.setLevel(log_level)
     logger_obj.addHandler(stream_handler)
 
     if LOG_FILE:
@@ -259,15 +279,64 @@ def setup_logging():
                 logger_obj.error(f"Unable to open log file '{LOG_FILE}': {exc}")
             else:
                 file_handler.setFormatter(formatter)
+                file_handler.setLevel(log_level)
                 logger_obj.addHandler(file_handler)
                 ACTIVE_LOG_FILE = LOG_FILE
+
+    spotify_logger_obj = logging.getLogger(f"{logger_name}.spotify")
+    spotify_logger_obj.setLevel(logging.DEBUG)
+    spotify_logger_obj.propagate = True
+
+    if SPOTIFY_ACTIVITY_LOG_FILE:
+        spotify_log_dir = os.path.dirname(SPOTIFY_ACTIVITY_LOG_FILE)
+        if spotify_log_dir and not os.path.exists(spotify_log_dir):
+            os.makedirs(spotify_log_dir, exist_ok=True)
+
+        truncate_error = False
+        try:
+            with open(SPOTIFY_ACTIVITY_LOG_FILE, "w", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            truncate_error = True
+            logger_obj.error(
+                f"Unable to initialise Spotify log file '{SPOTIFY_ACTIVITY_LOG_FILE}' for writing: {exc}"
+            )
+
+        if not truncate_error:
+            try:
+                spotify_handler = TimedRotatingFileHandler(
+                    SPOTIFY_ACTIVITY_LOG_FILE,
+                    when="midnight",
+                    backupCount=7,
+                    encoding="utf-8",
+                    utc=False,
+                    delay=False,
+                    interval=1,
+                )
+            except OSError as exc:
+                logger_obj.error(
+                    f"Unable to open Spotify log file '{SPOTIFY_ACTIVITY_LOG_FILE}': {exc}"
+                )
+            else:
+                spotify_handler.setFormatter(formatter)
+                spotify_handler.setLevel(logging.DEBUG)
+                spotify_handler.addFilter(SpotifyActivityFilter())
+                spotify_logger_obj.addHandler(spotify_handler)
+                ACTIVE_SPOTIFY_LOG_FILE = SPOTIFY_ACTIVITY_LOG_FILE
 
     return logger_obj
 
 
 logger = setup_logging()
+spotify_logger = logging.LoggerAdapter(
+    logging.getLogger(f"{logger.name}.spotify"), {"spotify_activity": True}
+)
 if ACTIVE_LOG_FILE:
     logger.info(f"Detailed logs will be written to: {ACTIVE_LOG_FILE}")
+if ACTIVE_SPOTIFY_LOG_FILE:
+    spotify_logger.info(
+        f"Spotify activity logs will be written to: {ACTIVE_SPOTIFY_LOG_FILE}"
+    )
 
 
 _thread_local_logger = threading.local()
@@ -947,6 +1016,7 @@ class SpotifyPopularityProvider:
     _instance_lock = threading.Lock()
 
     def __init__(self):
+        self._log = spotify_logger
         self._client = None
         self._client_lock = threading.Lock()
         self._track_cache = {}
@@ -985,7 +1055,7 @@ class SpotifyPopularityProvider:
             )
             self._enabled = True
         except Exception as exc:
-            logger.warning("Failed to initialize Spotify client: %s", exc)
+            self._log.warning("Failed to initialize Spotify client: %s", exc)
             self._error = str(exc)
             self._client = None
 
@@ -1014,7 +1084,7 @@ class SpotifyPopularityProvider:
             with open(self._cache_file, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)
         except Exception as exc:
-            logger.warning(
+            self._log.warning(
                 "Unable to load Spotify cache from '%s': %s",
                 self._cache_file,
                 exc,
@@ -1025,7 +1095,7 @@ class SpotifyPopularityProvider:
             return
 
         if payload.get("version") != SPOTIFY_CACHE_VERSION:
-            logger.debug(
+            self._log.debug(
                 "Ignoring Spotify cache with mismatched version (%s)",
                 payload.get("version"),
             )
@@ -1068,7 +1138,7 @@ class SpotifyPopularityProvider:
             with open(self._state_file, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)
         except Exception as exc:
-            logger.debug(
+            self._log.debug(
                 "Unable to load Spotify popularity state file '%s': %s",
                 self._state_file,
                 exc,
@@ -1149,7 +1219,7 @@ class SpotifyPopularityProvider:
             with self._client_lock:
                 data = self._client.track(spotify_id)
         except SpotifyException as exc:
-            logger.debug(
+            self._log.debug(
                 "Spotify track lookup failed for %s: %s",
                 spotify_id,
                 exc,
@@ -1162,7 +1232,7 @@ class SpotifyPopularityProvider:
                 return fallback_profile
             return None
         except Exception as exc:
-            logger.debug(
+            self._log.debug(
                 "Unexpected Spotify error during track lookup for %s: %s",
                 spotify_id,
                 exc,
@@ -1243,7 +1313,7 @@ class SpotifyPopularityProvider:
                 with open(self._cache_file, "w", encoding="utf-8") as fh:
                     json.dump(payload, fh, ensure_ascii=False, indent=2)
             except Exception as exc:
-                logger.warning(
+                self._log.warning(
                     "Unable to persist Spotify cache to '%s': %s",
                     self._cache_file,
                     exc,
@@ -1274,7 +1344,7 @@ class SpotifyPopularityProvider:
             with open(self._state_file, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, ensure_ascii=False, indent=2)
         except Exception as exc:
-            logger.debug(
+            self._log.debug(
                 "Unable to persist Spotify popularity state to '%s': %s",
                 self._state_file,
                 exc,
@@ -1436,11 +1506,11 @@ class SpotifyPopularityProvider:
                         limit=self.search_limit,
                     )
             except SpotifyException as exc:
-                logger.debug("Spotify search failed for '%s': %s", query, exc)
+                self._log.debug("Spotify search failed for '%s': %s", query, exc)
                 self._query_cache[cache_key] = []
                 return None
             except Exception as exc:
-                logger.debug("Unexpected Spotify error during search for '%s': %s", query, exc)
+                self._log.debug("Unexpected Spotify error during search for '%s': %s", query, exc)
                 self._query_cache[cache_key] = []
                 return None
 
@@ -3778,7 +3848,7 @@ def build_spotify_popularity_cache():
     provider = SpotifyPopularityProvider.get_shared()
 
     if not SPOTIFY_CACHE_FILE:
-        logger.warning(
+        spotify_logger.warning(
             "Spotify popularity cache file is disabled via configuration; skipping population run.",
         )
         return {
@@ -3788,7 +3858,7 @@ def build_spotify_popularity_cache():
 
     if not provider.is_enabled:
         reason = provider.describe_error() or "Spotify integration is not configured."
-        logger.warning("Spotify popularity cache build skipped: %s", reason)
+        spotify_logger.warning("Spotify popularity cache build skipped: %s", reason)
         return {
             "status": "skipped",
             "reason": reason,
@@ -3798,14 +3868,14 @@ def build_spotify_popularity_cache():
         library = plex.library.section(LIBRARY_NAME)
         all_tracks = library.searchTracks()
     except Exception as exc:
-        logger.exception("Unable to enumerate library tracks for Spotify cache build: %s", exc)
+        spotify_logger.exception("Unable to enumerate library tracks for Spotify cache build: %s", exc)
         return {
             "status": "error",
             "reason": str(exc),
         }
 
     total_tracks = len(all_tracks)
-    logger.info("Starting Spotify popularity cache build for %d track(s)", total_tracks)
+    spotify_logger.info("Starting Spotify popularity cache build for %d track(s)", total_tracks)
 
     processed = 0
     new_profiles = 0
@@ -3842,7 +3912,7 @@ def build_spotify_popularity_cache():
                 errors += 1
                 track_title = getattr(track, "title", "<unknown>")
                 track_artist = getattr(track, "grandparentTitle", "<unknown>")
-                logger.debug(
+                spotify_logger.debug(
                     "Failed to populate Spotify popularity for '%s' by '%s': %s",
                     track_title,
                     track_artist,
@@ -3875,7 +3945,7 @@ def build_spotify_popularity_cache():
     timestamp = provider.record_population_run(summary)
     provider.save_cache()
 
-    logger.info(
+    spotify_logger.info(
         "Spotify popularity cache build complete: new=%d refreshed=%d cached=%d missing=%d errors=%d (%.2fs)",
         new_profiles,
         refreshed_profiles,
@@ -3884,7 +3954,7 @@ def build_spotify_popularity_cache():
         errors,
         duration,
     )
-    logger.info("Spotify popularity cache metadata updated at %s", timestamp)
+    spotify_logger.info("Spotify popularity cache metadata updated at %s", timestamp)
 
     return summary
 
@@ -4009,26 +4079,28 @@ if __name__ == "__main__":
         try:
             summary = build_spotify_popularity_cache()
         except Exception as exc:
-            logger.exception("Spotify popularity cache build failed: %s", exc)
+            spotify_logger.exception("Spotify popularity cache build failed: %s", exc)
             sys.exit(1)
 
         status = (summary or {}).get("status")
         reason = (summary or {}).get("reason")
 
         if status == "completed":
-            logger.info("Spotify popularity cache build finished successfully.")
+            spotify_logger.info("Spotify popularity cache build finished successfully.")
             sys.exit(0)
         elif status in {"disabled", "skipped"}:
             if reason:
-                logger.info("Spotify popularity cache build %s: %s", status, reason)
+                spotify_logger.info("Spotify popularity cache build %s: %s", status, reason)
             else:
-                logger.info("Spotify popularity cache build %s.", status)
+                spotify_logger.info("Spotify popularity cache build %s.", status)
             sys.exit(0)
         else:
             if reason:
-                logger.error("Spotify popularity cache build %s: %s", status or "failed", reason)
+                spotify_logger.error(
+                    "Spotify popularity cache build %s: %s", status or "failed", reason
+                )
             else:
-                logger.error("Spotify popularity cache build failed.")
+                spotify_logger.error("Spotify popularity cache build failed.")
             sys.exit(1)
 
     if CACHE_ONLY:
