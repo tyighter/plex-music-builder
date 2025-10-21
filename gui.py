@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 import os
 import subprocess
 import sys
@@ -24,11 +25,89 @@ def _represent_ordered_dict(dumper: yaml.Dumper, data: OrderedDict) -> Any:
 yaml.SafeDumper.add_representer(OrderedDict, _represent_ordered_dict)
 
 BASE_DIR = Path(__file__).resolve().parent
-PLAYLISTS_PATH = BASE_DIR / "playlists.yml"
-LEGEND_PATH = BASE_DIR / "legend.txt"
-CONFIG_PATH = BASE_DIR / "config.yml"
-DEFAULT_ALLMUSIC_CACHE = Path("/app/allmusic_popularity.json")
-DEFAULT_LOG_PATH = Path("/app/logs/plex_music_builder.log")
+CONFIG_SEARCH_PATHS: List[Path] = []
+
+
+def _resolve_config_path() -> Path:
+    candidates: List[Path] = []
+
+    env_override = os.environ.get("PMB_CONFIG_PATH")
+    if env_override:
+        candidates.append(Path(env_override).expanduser())
+
+    candidates.append(Path("/app/config.yml"))
+    candidates.append(BASE_DIR / "config.yml")
+
+    CONFIG_SEARCH_PATHS[:] = candidates
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
+def _resolve_runtime_dir(config_dir: Path) -> Path:
+    env_override = os.environ.get("PMB_RUNTIME_DIR")
+    if env_override:
+        return Path(env_override).expanduser()
+
+    app_dir = Path("/app")
+    if app_dir.exists():
+        return app_dir
+
+    return config_dir
+
+
+CONFIG_PATH = _resolve_config_path()
+CONFIG_DIR = CONFIG_PATH.parent
+RUNTIME_DIR = _resolve_runtime_dir(CONFIG_DIR).resolve()
+
+PLAYLISTS_PATH = CONFIG_DIR / "playlists.yml"
+LEGEND_PATH = CONFIG_DIR / "legend.txt"
+if not LEGEND_PATH.exists():
+    LEGEND_PATH = BASE_DIR / "legend.txt"
+
+DEFAULT_ALLMUSIC_CACHE = (RUNTIME_DIR / "allmusic_popularity.json").resolve()
+DEFAULT_SPOTIFY_CACHE = (RUNTIME_DIR / "spotify_popularity.json").resolve()
+DEFAULT_SPOTIFY_STATE = (RUNTIME_DIR / "spotify_popularity_state.json").resolve()
+DEFAULT_LOG_PATH = (RUNTIME_DIR / "logs/plex_music_builder.log").resolve()
+
+_CONFIG_CACHE: Dict[str, Any] = {"mtime": None, "data": {}}
+
+
+def _resolve_path_setting(raw_value: Any, default_path: Path) -> Path:
+    if isinstance(raw_value, str) and raw_value.strip():
+        candidate = Path(raw_value.strip()).expanduser()
+        if not candidate.is_absolute():
+            candidate = (CONFIG_DIR / candidate).resolve()
+        return candidate
+    return default_path
+
+
+def _load_config_data() -> Dict[str, Any]:
+    if not CONFIG_PATH.exists():
+        return {}
+
+    try:
+        stat_result = CONFIG_PATH.stat()
+    except OSError:
+        return {}
+
+    cached_mtime = _CONFIG_CACHE.get("mtime")
+    if cached_mtime == getattr(stat_result, "st_mtime", None):
+        cached_data = _CONFIG_CACHE.get("data")
+        return cached_data if isinstance(cached_data, dict) else {}
+
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+            config_data = yaml.safe_load(config_file) or {}
+    except Exception:
+        config_data = {}
+
+    _CONFIG_CACHE["mtime"] = getattr(stat_result, "st_mtime", None)
+    _CONFIG_CACHE["data"] = config_data
+    return config_data if isinstance(config_data, dict) else {}
 
 GENERAL_LOG_RETENTION = timedelta(minutes=60)
 GENERAL_LOG_DISPLAY_LIMIT = 3
@@ -1129,6 +1208,202 @@ class BuildManager:
             return True, status, message
 
 
+class PopularityCacheRunner:
+    def __init__(self, command: Optional[List[str]] = None, work_dir: Optional[Path] = None) -> None:
+        self._command = command or [sys.executable, "main.py", "--build-popularity-cache"]
+        self._work_dir = str(work_dir) if work_dir is not None else None
+        self._lock = threading.Lock()
+        self._process: Optional[subprocess.Popen] = None
+        self._log_thread: Optional[threading.Thread] = None
+        self._last_started_at: Optional[datetime] = None
+        self._last_finished_at: Optional[datetime] = None
+        self._last_exit_code: Optional[int] = None
+        self._last_message: Optional[str] = None
+        self._last_state: str = "idle"
+        self._recent_logs: List[str] = []
+
+    def is_running(self) -> bool:
+        with self._lock:
+            if self._process is None:
+                return False
+            return self._process.poll() is None
+
+    def _consume_process_output(self, stream: IO[str]) -> None:
+        try:
+            for raw_line in stream:
+                if not raw_line:
+                    continue
+                sanitized = raw_line.strip()
+                if not sanitized:
+                    continue
+                with self._lock:
+                    self._last_message = sanitized
+                    self._recent_logs.append(sanitized)
+                    if len(self._recent_logs) > 100:
+                        self._recent_logs = self._recent_logs[-100:]
+        finally:
+            try:
+                stream.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
+            with self._lock:
+                self._log_thread = None
+
+    def _normalize_state_locked(self) -> None:
+        if self._process is None:
+            return
+
+        return_code = self._process.poll()
+        if return_code is None:
+            return
+
+        self._process = None
+        self._last_exit_code = return_code
+        self._last_finished_at = _utcnow()
+
+        if return_code == 0:
+            self._last_state = "success"
+            if not self._last_message:
+                self._last_message = "Spotify popularity cache build completed."
+        else:
+            self._last_state = "error"
+            if not self._last_message:
+                self._last_message = f"Spotify popularity cache build exited with code {return_code}."
+
+    def start(self) -> Tuple[bool, str]:
+        with self._lock:
+            self._normalize_state_locked()
+
+            if self._process is not None:
+                return False, "Spotify popularity cache build is already running."
+
+            cache_path = resolve_popularity_cache_path()
+            if cache_path is None:
+                message = "Spotify popularity cache is disabled in configuration."
+                self._last_state = "error"
+                self._last_message = message
+                self._last_finished_at = _utcnow()
+                return False, message
+
+            command = list(self._command)
+
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=self._work_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    encoding="utf-8",
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                message = f"Unable to start popularity cache build: {exc}"
+                self._process = None
+                self._last_message = message
+                self._last_finished_at = _utcnow()
+                self._last_exit_code = None
+                self._last_state = "error"
+                return False, message
+
+            self._process = process
+            self._last_started_at = _utcnow()
+            self._last_finished_at = None
+            self._last_exit_code = None
+            self._last_state = "running"
+            self._last_message = "Spotify popularity cache build started."
+            self._recent_logs = []
+
+            if process.stdout is not None:
+                thread = threading.Thread(
+                    target=self._consume_process_output,
+                    args=(process.stdout,),
+                    name="popularity-cache-consumer",
+                    daemon=True,
+                )
+                self._log_thread = thread
+                thread.start()
+
+            return True, self._last_message
+
+    def get_status(self) -> Dict[str, Any]:
+        with self._lock:
+            self._normalize_state_locked()
+            running = self._process is not None
+            status = "running" if running else self._last_state
+            message = self._last_message
+            started_at = _format_timestamp(self._last_started_at)
+            finished_at = _format_timestamp(self._last_finished_at)
+            exit_code = self._last_exit_code
+            logs = list(self._recent_logs[-50:])
+
+        cache_state = load_popularity_cache_state()
+
+        payload: Dict[str, Any] = {
+            "running": running,
+            "status": status,
+            "message": message,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "exit_code": exit_code,
+            "logs": logs,
+        }
+
+        payload.update(cache_state)
+        return payload
+
+
+class PopularityCacheScheduler:
+    def __init__(
+        self,
+        runner: PopularityCacheRunner,
+        interval: timedelta = timedelta(days=7),
+        poll_interval: float = 3600.0,
+    ) -> None:
+        self._runner = runner
+        self._interval = interval
+        self._poll_interval = max(300.0, float(poll_interval))
+        self._next_attempt_at = _utcnow()
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="SpotifyPopularityScheduler",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        self._evaluate()
+        while not self._stop_event.wait(self._poll_interval):
+            self._evaluate()
+
+    def _evaluate(self) -> None:
+        if self._runner.is_running():
+            return
+
+        now = _utcnow()
+        if now < self._next_attempt_at:
+            return
+
+        cache_state = load_popularity_cache_state()
+        if not cache_state.get("cache_enabled", False):
+            self._next_attempt_at = now + timedelta(hours=6)
+            return
+
+        last_populated = _parse_iso_timestamp(cache_state.get("last_populated_at"))
+        if last_populated and now - last_populated < self._interval:
+            return
+
+        started, _ = self._runner.start()
+        if started:
+            self._next_attempt_at = now + self._interval
+        else:
+            self._next_attempt_at = now + timedelta(hours=6)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+
 def humanize_field_name(field: str) -> str:
     if field in FIELD_LABEL_OVERRIDES:
         return FIELD_LABEL_OVERRIDES[field]
@@ -1152,21 +1427,10 @@ def resolve_allmusic_cache_path() -> Path:
 
     cache_path = DEFAULT_ALLMUSIC_CACHE
 
-    if CONFIG_PATH.exists():
-        try:
-            with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
-                config_data = yaml.safe_load(config_file) or {}
-        except Exception:
-            config_data = {}
-
-        allmusic_cfg = config_data.get("allmusic") or {}
-        if isinstance(allmusic_cfg, dict):
-            cache_file_raw = allmusic_cfg.get("cache_file")
-            if isinstance(cache_file_raw, str) and cache_file_raw.strip():
-                candidate = Path(cache_file_raw.strip())
-                if not candidate.is_absolute():
-                    candidate = (CONFIG_PATH.parent / candidate).resolve()
-                cache_path = candidate
+    config_data = _load_config_data()
+    allmusic_cfg = config_data.get("allmusic") or {}
+    if isinstance(allmusic_cfg, dict):
+        cache_path = _resolve_path_setting(allmusic_cfg.get("cache_file"), cache_path)
 
     return cache_path
 
@@ -1176,23 +1440,108 @@ def resolve_log_file_path() -> Optional[Path]:
 
     log_path: Optional[Path] = DEFAULT_LOG_PATH
 
-    if CONFIG_PATH.exists():
-        try:
-            with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
-                config_data = yaml.safe_load(config_file) or {}
-        except Exception:
-            config_data = {}
-
-        logging_cfg = config_data.get("logging") or {}
-        if isinstance(logging_cfg, dict):
-            log_file_raw = logging_cfg.get("file")
-            if isinstance(log_file_raw, str) and log_file_raw.strip():
-                candidate = Path(log_file_raw.strip())
-                if not candidate.is_absolute():
-                    candidate = (CONFIG_PATH.parent / candidate).resolve()
-                log_path = candidate
+    config_data = _load_config_data()
+    logging_cfg = config_data.get("logging") or {}
+    if isinstance(logging_cfg, dict):
+        log_path = _resolve_path_setting(logging_cfg.get("file"), log_path)
 
     return log_path
+
+
+def resolve_popularity_cache_path() -> Optional[Path]:
+    """Return the configured path for the Spotify popularity cache file."""
+
+    config_data = _load_config_data()
+    spotify_cfg = config_data.get("spotify") or {}
+
+    if isinstance(spotify_cfg, dict):
+        cache_setting = spotify_cfg.get("cache_file")
+        if isinstance(cache_setting, bool) and not cache_setting:
+            return None
+        return _resolve_path_setting(cache_setting, DEFAULT_SPOTIFY_CACHE)
+
+    return DEFAULT_SPOTIFY_CACHE
+
+
+def resolve_popularity_state_path() -> Optional[Path]:
+    """Return the metadata file path for Spotify popularity cache state."""
+
+    config_data = _load_config_data()
+    spotify_cfg = config_data.get("spotify") or {}
+
+    default_path = DEFAULT_SPOTIFY_STATE
+
+    if isinstance(spotify_cfg, dict):
+        state_setting = spotify_cfg.get("popularity_state_file")
+        if isinstance(state_setting, bool) and not state_setting:
+            return None
+        return _resolve_path_setting(state_setting, default_path)
+
+    return default_path
+
+
+_POPULARITY_STATE_CACHE: Dict[str, Any] = {"mtime": None, "data": None}
+
+
+def load_popularity_cache_state() -> Dict[str, Any]:
+    """Load cached metadata describing the Spotify popularity cache."""
+
+    cache_path = resolve_popularity_cache_path()
+    state_path = resolve_popularity_state_path()
+
+    info: Dict[str, Any] = {
+        "cache_enabled": cache_path is not None,
+        "cache_path": str(cache_path) if cache_path else None,
+        "cache_exists": bool(cache_path and cache_path.exists()),
+        "state_path": str(state_path) if state_path else None,
+        "state_exists": bool(state_path and state_path.exists()),
+        "last_populated_at": None,
+        "summary": None,
+    }
+
+    if state_path and state_path.exists():
+        try:
+            stat_result = state_path.stat()
+        except OSError:
+            stat_result = None
+        else:
+            cached_mtime = _POPULARITY_STATE_CACHE.get("mtime")
+            current_mtime = getattr(stat_result, "st_mtime", None)
+            if cached_mtime != current_mtime:
+                try:
+                    with state_path.open("r", encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                except Exception:
+                    payload = {}
+                if isinstance(payload, dict):
+                    _POPULARITY_STATE_CACHE["data"] = payload
+                else:
+                    _POPULARITY_STATE_CACHE["data"] = {}
+                _POPULARITY_STATE_CACHE["mtime"] = current_mtime
+
+        payload = _POPULARITY_STATE_CACHE.get("data")
+        if isinstance(payload, dict):
+            info["last_populated_at"] = payload.get("last_populated_at")
+            summary = payload.get("summary")
+            if isinstance(summary, dict):
+                info["summary"] = summary
+
+    return info
+
+
+def _parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed
 
 
 def load_yaml_data() -> Dict[str, Any]:
@@ -1534,6 +1883,12 @@ def create_app() -> Flask:
     ]
 
     build_manager = BuildManager([sys.executable, "main.py"], BASE_DIR)
+    popularity_runner = PopularityCacheRunner(
+        [sys.executable, "main.py", "--build-popularity-cache"],
+        BASE_DIR,
+    )
+    app.config["popularity_runner"] = popularity_runner
+    app.config["popularity_scheduler"] = PopularityCacheScheduler(popularity_runner)
 
     @app.route("/")
     def index() -> str:
@@ -1683,24 +2038,51 @@ def create_app() -> Flask:
 
         return jsonify({"status": "saved"})
 
-    @app.route("/api/cache/allmusic", methods=["POST"])
-    def clear_allmusic_cache() -> Any:
-        cache_path = resolve_allmusic_cache_path()
+    @app.route("/api/cache/popularity/status", methods=["GET"])
+    def popularity_cache_status() -> Any:
+        return jsonify(popularity_runner.get_status())
+
+    @app.route("/api/cache/popularity/build", methods=["POST"])
+    def start_popularity_cache_build() -> Any:
+        started, message = popularity_runner.start()
+        status_payload = popularity_runner.get_status()
+        response: Dict[str, Any] = {"status": status_payload, "message": message}
+
+        if started:
+            http_status = 200
+        else:
+            if message == "Spotify popularity cache build is already running.":
+                http_status = 409
+            elif message == "Spotify popularity cache is disabled in configuration.":
+                http_status = 400
+            else:
+                http_status = 500
+        return jsonify(response), http_status
+
+    @app.route("/api/cache/popularity/clear", methods=["POST"])
+    def clear_popularity_cache() -> Any:
+        cache_path = resolve_popularity_cache_path()
+        state_path = resolve_popularity_state_path()
+        cleared = False
 
         try:
-            if cache_path.exists():
-                cache_path.unlink()
-                return jsonify({
-                    "status": "cleared",
-                    "path": str(cache_path),
-                })
+            for path in (cache_path, state_path):
+                if path and path.exists():
+                    path.unlink()
+                    cleared = True
         except Exception as exc:
-            return jsonify({"error": f"Unable to clear AllMusic cache: {exc}"}), 500
+            return jsonify({"error": f"Unable to clear popularity cache: {exc}"}), 500
 
-        return jsonify({
-            "status": "missing",
-            "path": str(cache_path),
-        })
+        _POPULARITY_STATE_CACHE["mtime"] = None
+        _POPULARITY_STATE_CACHE["data"] = None
+
+        return jsonify(
+            {
+                "status": "cleared" if cleared else "missing",
+                "cache_path": str(cache_path) if cache_path else None,
+                "state_path": str(state_path) if state_path else None,
+            }
+        )
 
     return app
 

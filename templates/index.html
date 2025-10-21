@@ -123,6 +123,24 @@
         gap: 20px;
       }
 
+      .popularity-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+      }
+
+      .popularity-card .status-info {
+        flex: 1;
+      }
+
+      .popularity-card .status-actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
       .build-status-header {
         display: flex;
         align-items: center;
@@ -723,6 +741,17 @@
           align-items: flex-start;
         }
 
+        .popularity-card {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 16px;
+        }
+
+        .popularity-card .status-actions {
+          width: 100%;
+          justify-content: flex-start;
+        }
+
         .playlist-status {
           width: 100%;
         }
@@ -747,7 +776,6 @@
       <h1><span class="icon">▶</span>Plex Playlist Builder</h1>
       <div class="action-bar">
         <button id="reloadBtn" class="secondary" type="button">⟳ Refresh from File</button>
-        <button id="clearAllmusicCacheBtn" class="secondary" type="button">🧹 Clear AllMusic Cache</button>
         <button id="saveBtn" type="button">💾 Save to playlists.yml</button>
         <span id="message" class="message"></span>
       </div>
@@ -782,6 +810,25 @@
               <span class="playlist-log-toggle-icon" aria-hidden="true">▾</span>
             </button>
             <div id="buildLogContainer" class="build-log-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2><span class="section-icon">🎧</span>Spotify Popularity Cache</h2>
+        <div class="card popularity-card">
+          <div class="status-info">
+            <div class="status-headline">
+              <div class="status-text">
+                <div id="popularityStatusText">Checking popularity cache…</div>
+                <div id="popularityStatusMessage" class="status-message"></div>
+              </div>
+            </div>
+            <div id="popularityStatusMeta" class="status-meta"></div>
+          </div>
+          <div class="status-actions">
+            <button id="buildPopularityBtn" type="button">⬇️ Populate Popularity</button>
+            <button id="clearPopularityCacheBtn" class="secondary" type="button">🧹 Clear Popularity Cache</button>
           </div>
         </div>
       </section>
@@ -829,8 +876,14 @@
         "playlistActivityToggle"
       );
       const buildLogContainer = document.getElementById("buildLogContainer");
+      const popularityStatusText = document.getElementById("popularityStatusText");
+      const popularityStatusMessage = document.getElementById("popularityStatusMessage");
+      const popularityStatusMeta = document.getElementById("popularityStatusMeta");
+      const buildPopularityBtn = document.getElementById("buildPopularityBtn");
+      const clearPopularityCacheBtn = document.getElementById("clearPopularityCacheBtn");
       let latestBuildStatus = null;
       let buildStatusTimer = null;
+      let popularityStatusTimer = null;
       let isActivityCollapsed = false;
 
       function setActivityCollapsed(collapsed) {
@@ -887,6 +940,111 @@
           return isoString;
         }
         return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+      }
+
+      function summarizePopularityRun(summary) {
+        if (!summary || typeof summary !== "object") {
+          return [];
+        }
+
+        const parts = [];
+        const fields = [
+          ["processed_tracks", "Processed"],
+          ["new_profiles", "New"],
+          ["refreshed_profiles", "Refreshed"],
+          ["cached_profiles", "Cached"],
+          ["missing_profiles", "Missing"],
+          ["errors", "Errors"],
+        ];
+
+        for (const [key, label] of fields) {
+          const value = summary[key];
+          if (typeof value === "number" && value > 0) {
+            parts.push(`${label}: ${value}`);
+          }
+        }
+
+        if (typeof summary.duration_seconds === "number" && summary.duration_seconds > 0) {
+          parts.push(`Duration: ${Math.round(summary.duration_seconds)}s`);
+        }
+
+        return parts;
+      }
+
+      function updatePopularityStatus(status) {
+        if (!popularityStatusText) {
+          return;
+        }
+
+        const running = Boolean(status?.running);
+        const statusLabel = (status?.status || "").toLowerCase();
+        let headline = "Popularity cache idle";
+
+        if (status?.cache_enabled === false) {
+          headline = "Popularity cache disabled";
+        } else if (running) {
+          headline = "Populating Spotify popularity…";
+        } else if (statusLabel === "success") {
+          headline = "Popularity cache up to date";
+        } else if (statusLabel === "error") {
+          headline = "Popularity cache encountered an error";
+        } else if (statusLabel === "stopped") {
+          headline = "Popularity cache stopped";
+        }
+
+        popularityStatusText.textContent = headline;
+
+        if (popularityStatusMessage) {
+          popularityStatusMessage.textContent = status?.message || "";
+        }
+
+        if (buildPopularityBtn) {
+          buildPopularityBtn.disabled = !status?.cache_enabled || running;
+        }
+
+        if (clearPopularityCacheBtn) {
+          clearPopularityCacheBtn.disabled = status?.cache_enabled === false;
+        }
+
+        if (popularityStatusMeta) {
+          const metaParts = [];
+          if (status?.last_populated_at) {
+            metaParts.push(`Last populated ${formatTimestamp(status.last_populated_at)}`);
+          } else if (status?.cache_enabled === false) {
+            metaParts.push("Popularity cache disabled");
+          } else {
+            metaParts.push("Popularity cache has not been populated yet");
+          }
+
+          const summaryParts = summarizePopularityRun(status?.summary);
+          metaParts.push(...summaryParts);
+
+          if (status?.status && status?.status !== "running") {
+            metaParts.push(`Status: ${status.status}`);
+          }
+
+          popularityStatusMeta.textContent = metaParts.filter(Boolean).join(" • ");
+        }
+      }
+
+      async function refreshPopularityStatus() {
+        if (!popularityStatusText) {
+          return;
+        }
+
+        try {
+          const response = await fetch("/api/cache/popularity/status");
+          if (!response.ok) {
+            throw new Error("Failed to retrieve popularity cache status.");
+          }
+          const status = await response.json().catch(() => ({}));
+          updatePopularityStatus(status);
+        } catch (error) {
+          console.error(error);
+          if (popularityStatusMessage) {
+            popularityStatusMessage.textContent = error.message;
+          }
+        }
       }
 
       function normalizeProgressPercent(entry) {
@@ -2335,27 +2493,62 @@
         loadData().then(() => showMessage("Reloaded from playlists.yml"));
       });
 
-      document
-        .getElementById("clearAllmusicCacheBtn")
-        .addEventListener("click", async () => {
+      if (buildPopularityBtn) {
+        buildPopularityBtn.addEventListener("click", async () => {
+          buildPopularityBtn.disabled = true;
           try {
-            const response = await fetch("/api/cache/allmusic", { method: "POST" });
+            const response = await fetch("/api/cache/popularity/build", {
+              method: "POST",
+            });
             const result = await response.json().catch(() => ({}));
 
             if (!response.ok) {
-              throw new Error(result.error || "Failed to clear AllMusic cache.");
+              throw new Error(
+                result.message || result.error || "Failed to start popularity cache build."
+              );
             }
 
-            if (result.status === "missing") {
-              showMessage("AllMusic cache already clear.");
+            if (result.message) {
+              showMessage(result.message);
             } else {
-              showMessage("AllMusic cache cleared.");
+              showMessage("Started Spotify popularity cache build.");
             }
           } catch (error) {
             console.error(error);
             showMessage(error.message, true);
+          } finally {
+            setTimeout(() => refreshPopularityStatus(), 500);
           }
         });
+      }
+
+      if (clearPopularityCacheBtn) {
+        clearPopularityCacheBtn.addEventListener("click", async () => {
+          try {
+            const response = await fetch("/api/cache/popularity/clear", {
+              method: "POST",
+            });
+            const result = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+              throw new Error(
+                result.error || "Failed to clear popularity cache."
+              );
+            }
+
+            if (result.status === "cleared") {
+              showMessage("Popularity cache cleared.");
+            } else {
+              showMessage("Popularity cache already clear.");
+            }
+          } catch (error) {
+            console.error(error);
+            showMessage(error.message, true);
+          } finally {
+            refreshPopularityStatus();
+          }
+        });
+      }
 
       document.getElementById("saveBtn").addEventListener("click", saveData);
 
@@ -2364,7 +2557,9 @@
       }
 
       refreshBuildStatus();
+      refreshPopularityStatus();
       buildStatusTimer = setInterval(() => refreshBuildStatus(), 5000);
+      popularityStatusTimer = setInterval(() => refreshPopularityStatus(), 30000);
       loadData();
     </script>
   </body>

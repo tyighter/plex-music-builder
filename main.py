@@ -11,6 +11,7 @@ import json
 import time
 import threading
 import copy
+from datetime import datetime, timezone
 from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -147,6 +148,16 @@ else:
     SPOTIFY_CACHE_FILE = _resolve_path_setting(
         _spotify_cache_file_setting,
         RUNTIME_DIR / "spotify_popularity.json",
+        CONFIG_DIR,
+    )
+
+_spotify_state_file_setting = spotify_cfg.get("popularity_state_file")
+if isinstance(_spotify_state_file_setting, bool) and not _spotify_state_file_setting:
+    SPOTIFY_POPULARITY_STATE_FILE = None
+else:
+    SPOTIFY_POPULARITY_STATE_FILE = _resolve_path_setting(
+        _spotify_state_file_setting,
+        RUNTIME_DIR / "spotify_popularity_state.json",
         CONFIG_DIR,
     )
 
@@ -949,10 +960,14 @@ class SpotifyPopularityProvider:
         self._cache_lock = threading.Lock()
         self._cache_dirty = False
         self._save_counter = 0
+        self._state_file = SPOTIFY_POPULARITY_STATE_FILE
+        self._last_populated_at = None
+        self._last_populated_summary = None
         self.market = self._normalize_market(SPOTIFY_MARKET)
         self.search_limit = self._coerce_search_limit(SPOTIFY_SEARCH_LIMIT)
 
         self._load_cache()
+        self._load_state()
 
         if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET):
             self._error = "Missing Spotify client credentials."
@@ -1034,6 +1049,42 @@ class SpotifyPopularityProvider:
                 "profile": profile,
                 "fetched_at": fetched_at,
             }
+
+        last_populated = payload.get("last_populated_at")
+        if last_populated:
+            self._last_populated_at = last_populated
+
+        summary = payload.get("last_populated_summary")
+        if isinstance(summary, dict):
+            self._last_populated_summary = summary
+
+    def _load_state(self):
+        if not self._state_file:
+            return
+        if not os.path.exists(self._state_file):
+            return
+
+        try:
+            with open(self._state_file, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            logger.debug(
+                "Unable to load Spotify popularity state file '%s': %s",
+                self._state_file,
+                exc,
+            )
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        last_populated = payload.get("last_populated_at")
+        summary = payload.get("summary")
+
+        if last_populated:
+            self._last_populated_at = last_populated
+        if isinstance(summary, dict):
+            self._last_populated_summary = summary
 
     def _remember_profile(self, spotify_id, profile):
         if not spotify_id:
@@ -1153,44 +1204,115 @@ class SpotifyPopularityProvider:
         return None, "miss"
 
     def save_cache(self):
-        if not self._cache_file or not self._cache_dirty:
+        should_persist_cache = bool(self._cache_file and self._cache_dirty)
+        should_write_state = bool(self._state_file and self._last_populated_at)
+
+        if not should_persist_cache and not should_write_state:
             return
 
-        cache_dir = os.path.dirname(self._cache_file)
-        if cache_dir and not os.path.exists(cache_dir):
-            os.makedirs(cache_dir, exist_ok=True)
+        payload = None
+        if should_persist_cache:
+            cache_dir = os.path.dirname(self._cache_file)
+            if cache_dir and not os.path.exists(cache_dir):
+                os.makedirs(cache_dir, exist_ok=True)
 
-        with self._cache_lock:
-            tracks_payload = {}
-            for spotify_id, entry in self._persistent_cache.items():
-                if isinstance(entry, dict):
-                    tracks_payload[spotify_id] = {
-                        "profile": entry.get("profile"),
-                        "fetched_at": entry.get("fetched_at"),
-                    }
-                else:
-                    tracks_payload[spotify_id] = {
-                        "profile": entry,
-                        "fetched_at": None,
-                    }
+            with self._cache_lock:
+                tracks_payload = {}
+                for spotify_id, entry in self._persistent_cache.items():
+                    if isinstance(entry, dict):
+                        tracks_payload[spotify_id] = {
+                            "profile": entry.get("profile"),
+                            "fetched_at": entry.get("fetched_at"),
+                        }
+                    else:
+                        tracks_payload[spotify_id] = {
+                            "profile": entry,
+                            "fetched_at": None,
+                        }
 
-            payload = {
-                "version": SPOTIFY_CACHE_VERSION,
-                "tracks": tracks_payload,
-            }
+                payload = {
+                    "version": SPOTIFY_CACHE_VERSION,
+                    "tracks": tracks_payload,
+                }
+                if self._last_populated_at:
+                    payload["last_populated_at"] = self._last_populated_at
+                if isinstance(self._last_populated_summary, dict):
+                    payload["last_populated_summary"] = self._last_populated_summary
+
+            try:
+                with open(self._cache_file, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, ensure_ascii=False, indent=2)
+            except Exception as exc:
+                logger.warning(
+                    "Unable to persist Spotify cache to '%s': %s",
+                    self._cache_file,
+                    exc,
+                )
+            else:
+                self._cache_dirty = False
+                self._save_counter = 0
+
+        if should_write_state:
+            self._write_state_file(self._last_populated_summary or {})
+
+    def _write_state_file(self, summary):
+        if not self._state_file:
+            return
+
+        payload = {
+            "version": SPOTIFY_CACHE_VERSION,
+            "cache_file": self._cache_file,
+            "last_populated_at": self._last_populated_at,
+            "summary": summary or {},
+        }
+
+        state_dir = os.path.dirname(self._state_file)
+        if state_dir and not os.path.exists(state_dir):
+            os.makedirs(state_dir, exist_ok=True)
 
         try:
-            with open(self._cache_file, "w", encoding="utf-8") as fh:
+            with open(self._state_file, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, ensure_ascii=False, indent=2)
         except Exception as exc:
-            logger.warning(
-                "Unable to persist Spotify cache to '%s': %s",
-                self._cache_file,
+            logger.debug(
+                "Unable to persist Spotify popularity state to '%s': %s",
+                self._state_file,
                 exc,
             )
-        else:
-            self._cache_dirty = False
-            self._save_counter = 0
+
+    def record_population_run(self, summary=None):
+        timestamp = datetime.now(timezone.utc).isoformat()
+        summary_payload = summary or {}
+
+        with self._cache_lock:
+            self._last_populated_at = timestamp
+            self._last_populated_summary = summary_payload
+            if self._cache_file:
+                self._cache_dirty = True
+
+        self._write_state_file(summary_payload)
+        return timestamp
+
+    def get_population_state(self):
+        with self._cache_lock:
+            summary_copy = copy.deepcopy(self._last_populated_summary)
+            return self._last_populated_at, summary_copy if isinstance(summary_copy, dict) else None
+
+    def inspect_track_cache(self, track):
+        track_key = getattr(track, "ratingKey", None)
+        if track_key is not None and track_key in self._track_cache:
+            cached_profile = self._track_cache[track_key]
+            return cached_profile, True, False
+
+        for spotify_id in self._iter_spotify_track_ids(track):
+            profile, found, is_stale = self._get_profile_from_cache(
+                spotify_id,
+                allow_stale=True,
+            )
+            if found:
+                return profile, True, is_stale
+
+        return None, False, False
 
     @classmethod
     def save_shared_cache(cls):
@@ -3650,6 +3772,124 @@ def process_playlist(name, config):
             playlist_handler.close()
 
 # ----------------------------
+# Spotify Popularity Cache Builder
+# ----------------------------
+def build_spotify_popularity_cache():
+    provider = SpotifyPopularityProvider.get_shared()
+
+    if not SPOTIFY_CACHE_FILE:
+        logger.warning(
+            "Spotify popularity cache file is disabled via configuration; skipping population run.",
+        )
+        return {
+            "status": "disabled",
+            "reason": "cache_disabled",
+        }
+
+    if not provider.is_enabled:
+        reason = provider.describe_error() or "Spotify integration is not configured."
+        logger.warning("Spotify popularity cache build skipped: %s", reason)
+        return {
+            "status": "skipped",
+            "reason": reason,
+        }
+
+    try:
+        library = plex.library.section(LIBRARY_NAME)
+        all_tracks = library.searchTracks()
+    except Exception as exc:
+        logger.exception("Unable to enumerate library tracks for Spotify cache build: %s", exc)
+        return {
+            "status": "error",
+            "reason": str(exc),
+        }
+
+    total_tracks = len(all_tracks)
+    logger.info("Starting Spotify popularity cache build for %d track(s)", total_tracks)
+
+    processed = 0
+    new_profiles = 0
+    refreshed_profiles = 0
+    cached_profiles = 0
+    missing_profiles = 0
+    errors = 0
+
+    start_time = time.perf_counter()
+
+    progress_bar = tqdm(
+        total=total_tracks,
+        desc="Caching Spotify popularity",
+        unit="track",
+        dynamic_ncols=True,
+    )
+
+    try:
+        for track in all_tracks:
+            processed += 1
+            try:
+                _, had_cache, was_stale = provider.inspect_track_cache(track)
+                profile = provider.get_track_profile(track)
+                if profile is None:
+                    missing_profiles += 1
+                else:
+                    if not had_cache:
+                        new_profiles += 1
+                    elif was_stale:
+                        refreshed_profiles += 1
+                    else:
+                        cached_profiles += 1
+            except Exception as exc:
+                errors += 1
+                track_title = getattr(track, "title", "<unknown>")
+                track_artist = getattr(track, "grandparentTitle", "<unknown>")
+                logger.debug(
+                    "Failed to populate Spotify popularity for '%s' by '%s': %s",
+                    track_title,
+                    track_artist,
+                    exc,
+                )
+
+            if SAVE_INTERVAL and processed % SAVE_INTERVAL == 0:
+                provider.save_cache()
+
+            progress_bar.update(1)
+    finally:
+        progress_bar.close()
+
+    provider.save_cache()
+
+    duration = time.perf_counter() - start_time
+
+    summary = {
+        "status": "completed",
+        "total_tracks": total_tracks,
+        "processed_tracks": processed,
+        "new_profiles": new_profiles,
+        "refreshed_profiles": refreshed_profiles,
+        "cached_profiles": cached_profiles,
+        "missing_profiles": missing_profiles,
+        "errors": errors,
+        "duration_seconds": round(duration, 2),
+    }
+
+    timestamp = provider.record_population_run(summary)
+    provider.save_cache()
+
+    logger.info(
+        "Spotify popularity cache build complete: new=%d refreshed=%d cached=%d missing=%d errors=%d (%.2fs)",
+        new_profiles,
+        refreshed_profiles,
+        cached_profiles,
+        missing_profiles,
+        errors,
+        duration,
+    )
+    logger.info("Spotify popularity cache metadata updated at %s", timestamp)
+
+    return summary
+
+
+# ----------------------------
 # Cache-only Mode with Resume
 # ----------------------------
 def build_metadata_cache():
@@ -3753,12 +3993,43 @@ def run_selected_playlists(playlist_names):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plex playlist builder")
     parser.add_argument(
+        "--build-popularity-cache",
+        action="store_true",
+        help="Populate the Spotify popularity cache and exit.",
+    )
+    parser.add_argument(
         "--playlist",
         dest="playlists",
         action="append",
         help="Name of a playlist to build. Can be provided multiple times.",
     )
     args = parser.parse_args()
+
+    if args.build_popularity_cache:
+        try:
+            summary = build_spotify_popularity_cache()
+        except Exception as exc:
+            logger.exception("Spotify popularity cache build failed: %s", exc)
+            sys.exit(1)
+
+        status = (summary or {}).get("status")
+        reason = (summary or {}).get("reason")
+
+        if status == "completed":
+            logger.info("Spotify popularity cache build finished successfully.")
+            sys.exit(0)
+        elif status in {"disabled", "skipped"}:
+            if reason:
+                logger.info("Spotify popularity cache build %s: %s", status, reason)
+            else:
+                logger.info("Spotify popularity cache build %s.", status)
+            sys.exit(0)
+        else:
+            if reason:
+                logger.error("Spotify popularity cache build %s: %s", status or "failed", reason)
+            else:
+                logger.error("Spotify popularity cache build failed.")
+            sys.exit(1)
 
     if CACHE_ONLY:
         build_metadata_cache()

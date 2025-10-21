@@ -12,6 +12,7 @@ runtime:
   refresh_interval_minutes: 60
   save_interval: 500
   max_workers: 3             # number of playlists to process in parallel
+  build_all_on_start: false   # true = build playlists automatically when services start
 
 spotify:
   client_id: "97bfb7998acd470ea0f00886921fc927"
