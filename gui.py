@@ -602,24 +602,31 @@ class BuildManager:
 
     def _handle_log_line(self, line: str) -> None:
         progress = self._parse_filtering_progress_line(line)
+        progress_playlist: Optional[str] = None
+        handled_progress = False
         if progress is not None:
-            playlist_name = progress.get("playlist")
-            if playlist_name:
+            progress_playlist = progress.get("playlist")
+            if progress_playlist:
                 with self._lock:
-                    self._record_filtering_progress_locked(playlist_name, progress)
+                    self._record_filtering_progress_locked(progress_playlist, progress)
+                    self._observed_active_playlists.add(progress_playlist)
+                handled_progress = True
 
         info_message = self._extract_info_message(line)
         if info_message is None:
             return
 
         playlist_name = self._extract_playlist_from_message(info_message)
+        lowercase_message = info_message.lower()
         with self._lock:
             self._update_passive_state_from_message_locked(playlist_name, info_message)
             if playlist_name:
-                if info_message.lower().startswith("building playlist:"):
+                if handled_progress and playlist_name == progress_playlist:
+                    return
+                if lowercase_message.startswith("building playlist:"):
                     self._playlist_logs[playlist_name] = []
                 self._append_playlist_log_locked(playlist_name, info_message)
-            else:
+            elif not handled_progress:
                 self._append_general_log_locked(info_message)
 
     def _consume_process_output(self, stream: IO[str]) -> None:
