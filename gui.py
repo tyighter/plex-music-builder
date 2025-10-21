@@ -79,7 +79,6 @@ CURATED_FIELD_CHOICES: List[str] = [
     "album.title",
     "genres",
     "moods",
-    "styles",
 ]
 
 OPERATOR_OPTIONS = OrderedDict(

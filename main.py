@@ -2568,6 +2568,12 @@ def get_field_value(track, field):
     else:
         field_candidates = [field]
 
+    merge_styles_for_genres = False
+    for candidate in (field, resolved_field):
+        if isinstance(candidate, str) and candidate.lower() in {"genre", "genres"}:
+            merge_styles_for_genres = True
+            break
+
     def _normalize_to_list(raw_value):
         """Normalize Plex metadata values into a flat list of strings."""
         normalized = []
@@ -2644,6 +2650,7 @@ def get_field_value(track, field):
         return sorted(values)
 
     seen_fields = set()
+    style_sources_collected = set()
 
     def collect_from_candidate(candidate):
         if not candidate or candidate in seen_fields:
@@ -2672,13 +2679,31 @@ def get_field_value(track, field):
                     val = None
             values.update(_normalize_to_list(val))
 
+        if merge_styles_for_genres:
+            track_styles = getattr(track, "styles", None)
+            if track_styles is not None:
+                if callable(track_styles):
+                    try:
+                        track_styles = track_styles()
+                    except TypeError:
+                        track_styles = None
+                values.update(_normalize_to_list(track_styles))
+
         # 2️⃣ Try cached XML for the track
-        values.update(extract_values(track.ratingKey, candidate))
+        track_key = getattr(track, "ratingKey", None)
+        if track_key:
+            values.update(extract_values(track_key, candidate))
+            if merge_styles_for_genres and "track" not in style_sources_collected:
+                values.update(extract_values(track_key, "styles"))
+                style_sources_collected.add("track")
 
         # 3️⃣ Try album level
         parent_key = getattr(track, "parentRatingKey", None)
         if parent_key:
             values.update(extract_values(parent_key, candidate))
+            if merge_styles_for_genres and "album" not in style_sources_collected:
+                values.update(extract_values(parent_key, "styles"))
+                style_sources_collected.add("album")
 
         # 4️⃣ Try canonical/original album metadata
         values.update(extract_canonical_values(candidate))
@@ -2687,6 +2712,9 @@ def get_field_value(track, field):
         artist_key = getattr(track, "grandparentRatingKey", None)
         if artist_key:
             values.update(extract_values(artist_key, candidate))
+            if merge_styles_for_genres and "artist" not in style_sources_collected:
+                values.update(extract_values(artist_key, "styles"))
+                style_sources_collected.add("artist")
 
         return len(values) > before
 
