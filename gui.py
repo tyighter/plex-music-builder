@@ -133,6 +133,10 @@ class BuildManager:
         r"(?:\s*\((?P<percent>\d+(?:\.\d+)?)%\))?"
         r"(?P<extras>.*)"
     )
+    _PROCESSING_PLAYLISTS_PATTERN = re.compile(
+        r"Processing\s+(?P<count>\d+)\s+playlist\(s\):\s*(?P<names>.+)",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -162,6 +166,7 @@ class BuildManager:
         self._passive_last_finished_at: Optional[datetime] = None
         self._passive_last_message: Optional[str] = None
         self._observed_active_playlists: Set[str] = set()
+        self._queued_playlists: List[str] = []
         self._max_initial_log_read = 65536
         self._start_log_watcher()
 
@@ -447,11 +452,102 @@ class BuildManager:
                     self._passive_running = False
                     self._passive_last_finished_at = now
                     self._passive_job = None
+                    self._queued_playlists = []
             elif normalized.startswith("sleeping for") or "completed successfully" in normalized:
                 if self._process is None:
                     self._passive_running = False
                     self._passive_last_finished_at = now
                     self._passive_job = None
+                    self._queued_playlists = []
+
+    @classmethod
+    def _split_processing_playlist_names(
+        cls, names_segment: str, expected_count: Optional[int]
+    ) -> List[str]:
+        segment = (names_segment or "").strip()
+        if not segment:
+            return []
+
+        if not expected_count or expected_count <= 1:
+            normalized = cls._normalize_playlist_key(segment)
+            return [normalized] if normalized else []
+
+        parts = segment.split(",")
+        names: List[str] = []
+        current_parts: List[str] = []
+        total_parts = len(parts)
+
+        for index, part in enumerate(parts):
+            current_parts.append(part)
+            remaining_parts = total_parts - index - 1
+            remaining_slots = expected_count - len(names) - 1
+            if remaining_slots < 0:
+                continue
+            if remaining_parts == remaining_slots:
+                candidate = ",".join(current_parts).strip()
+                normalized = cls._normalize_playlist_key(candidate)
+                if normalized:
+                    names.append(normalized)
+                current_parts = []
+
+        if current_parts:
+            candidate = ",".join(current_parts).strip()
+            normalized = cls._normalize_playlist_key(candidate)
+            if normalized:
+                names.append(normalized)
+
+        seen: Set[str] = set()
+        ordered_names: List[str] = []
+        for name in names:
+            if name not in seen:
+                seen.add(name)
+                ordered_names.append(name)
+
+        return ordered_names
+
+    @classmethod
+    def _parse_processing_playlist_message(cls, message: str) -> Optional[List[str]]:
+        match = cls._PROCESSING_PLAYLISTS_PATTERN.search(message)
+        if not match:
+            return None
+
+        names_segment = match.group("names") or ""
+        count_text = match.group("count")
+        expected_count: Optional[int]
+        try:
+            expected_count = int(count_text)
+        except (TypeError, ValueError):
+            expected_count = None
+
+        names = cls._split_processing_playlist_names(names_segment, expected_count)
+        return names
+
+    def _update_waiting_playlists_locked(
+        self, message: str, playlist_name: Optional[str]
+    ) -> None:
+        queue_names = self._parse_processing_playlist_message(message)
+        if queue_names is not None:
+            self._queued_playlists = queue_names
+            return
+
+        normalized_message = message.strip().lower()
+        normalized_name = self._normalize_playlist_key(playlist_name)
+
+        if normalized_name and self._queued_playlists:
+            if normalized_message.startswith("building playlist:") or normalized_message.startswith(
+                "build started for playlist"
+            ):
+                self._queued_playlists = [
+                    name for name in self._queued_playlists if name != normalized_name
+                ]
+            elif normalized_message.startswith("✅") or "failed" in normalized_message or "stopped" in normalized_message:
+                self._queued_playlists = [
+                    name for name in self._queued_playlists if name != normalized_name
+                ]
+        elif normalized_message.startswith("✅ all playlists processed") or normalized_message.startswith(
+            "✅ selected playlists processed"
+        ) or normalized_message.startswith("sleeping for"):
+            self._queued_playlists = []
 
     def _build_passive_job_snapshot_locked(self) -> Optional[Dict[str, Any]]:
         if self._passive_job:
@@ -644,6 +740,7 @@ class BuildManager:
         lowercase_message = info_message.lower()
         with self._lock:
             self._update_passive_state_from_message_locked(playlist_name, info_message)
+            self._update_waiting_playlists_locked(info_message, playlist_name)
             if playlist_name:
                 if handled_progress and playlist_name == progress_playlist:
                     return
@@ -748,6 +845,7 @@ class BuildManager:
         )
         self._active_job = None
         self._stop_requested = False
+        self._queued_playlists = []
 
     def _status_snapshot_locked(self) -> Dict[str, Any]:
         self._normalize_process_state_locked()
@@ -795,6 +893,26 @@ class BuildManager:
             elif "active_playlists" in job:
                 job.pop("active_playlists", None)
 
+        waiting_names: List[str] = []
+        if self._queued_playlists:
+            seen_waiting: Set[str] = set()
+            for name in self._queued_playlists:
+                normalized_waiting = self._normalize_playlist_key(name)
+                if (
+                    not normalized_waiting
+                    or normalized_waiting in job_active_names
+                    or normalized_waiting in seen_waiting
+                ):
+                    continue
+                waiting_names.append(normalized_waiting)
+                seen_waiting.add(normalized_waiting)
+
+        if job is not None:
+            if waiting_names:
+                job["waiting_playlists"] = list(waiting_names)
+            elif "waiting_playlists" in job:
+                job.pop("waiting_playlists", None)
+
         playlist_results = {
             name: result.copy()
             for name, result in self._last_playlist_results.items()
@@ -835,6 +953,7 @@ class BuildManager:
             "message": message_value,
             "job": job,
             "active_playlists": active_playlists_payload,
+            "waiting_playlists": waiting_names,
             "results": {
                 "all": self._last_all_result.copy() if self._last_all_result else None,
                 "playlists": playlist_results,
@@ -873,6 +992,7 @@ class BuildManager:
             self._passive_last_started_at = None
             self._passive_last_finished_at = None
             self._passive_last_message = None
+            self._queued_playlists = []
 
             command = list(self._command)
             job: Dict[str, Any]

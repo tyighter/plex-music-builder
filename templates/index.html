@@ -594,9 +594,22 @@
         box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.12);
       }
 
+      .build-log-playlist.is-waiting .build-log-playlist-title::before {
+        background: rgba(229, 160, 13, 0.4);
+        box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.08);
+      }
+
       .build-log-playlist.is-active .build-log-playlist-title::before {
         background: #4caf50;
         box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
+      }
+
+      .build-log-playlist.is-waiting .playlist-log-text {
+        color: rgba(229, 160, 13, 0.82);
+      }
+
+      .build-log-playlist.is-waiting .playlist-log-spinner {
+        border-top-color: rgba(229, 160, 13, 0.6);
       }
 
       .build-log-playlist-entries {
@@ -1090,30 +1103,75 @@
         const activePlaylists = getActivePlaylistNames(status);
         const activePlaylistsSet = new Set(activePlaylists);
 
-        buildStatusPanel.classList.toggle("running", running);
-
-        const logsByPlaylist = status?.logs?.playlists || {};
-        const generalLogs = status?.logs?.general || [];
-
-        const playlistNames = Object.keys(logsByPlaylist).filter(
-          (name) => name && name.trim()
-        );
-        activePlaylists.forEach((name) => {
-          if (name && !playlistNames.includes(name)) {
-            playlistNames.push(name);
+        const waitingPlaylists = Array.isArray(status?.waiting_playlists)
+          ? status.waiting_playlists
+              .map((name) =>
+                name === null || name === undefined ? "" : String(name).trim()
+              )
+              .filter((name) => name.length > 0)
+          : [];
+        const waitingSet = new Set(waitingPlaylists);
+        const waitingOrder = new Map();
+        waitingPlaylists.forEach((name, index) => {
+          if (!waitingOrder.has(name)) {
+            waitingOrder.set(name, index);
           }
         });
 
-        playlistNames.sort((a, b) => a.localeCompare(b));
+        buildStatusPanel.classList.toggle("running", running);
+
+        const rawLogsByPlaylist = status?.logs?.playlists || {};
+        const logsByPlaylist = {};
+        Object.entries(rawLogsByPlaylist).forEach(([rawName, rawEntries]) => {
+          const trimmedName =
+            typeof rawName === "string" ? rawName.trim() : "";
+          if (!trimmedName) {
+            return;
+          }
+          logsByPlaylist[trimmedName] = rawEntries;
+        });
+        const generalLogs = status?.logs?.general || [];
+
+        const combinedNames = Object.keys(logsByPlaylist);
+        activePlaylists.forEach((name) => {
+          if (!combinedNames.includes(name)) {
+            combinedNames.push(name);
+          }
+        });
+        waitingPlaylists.forEach((name) => {
+          if (!combinedNames.includes(name)) {
+            combinedNames.push(name);
+          }
+        });
+
+        const playlistNames = [];
+        const seenNames = new Set();
+        combinedNames.forEach((name) => {
+          const trimmedName = (name || "").trim();
+          if (!trimmedName || seenNames.has(trimmedName)) {
+            return;
+          }
+          seenNames.add(trimmedName);
+          playlistNames.push(trimmedName);
+        });
+
+        playlistNames.sort((a, b) => {
+          const aIndex = waitingOrder.has(a) ? waitingOrder.get(a) : Infinity;
+          const bIndex = waitingOrder.has(b) ? waitingOrder.get(b) : Infinity;
+          if (aIndex !== bIndex) {
+            return aIndex - bIndex;
+          }
+          return a.localeCompare(b);
+        });
 
         buildLogContainer.innerHTML = "";
 
         let renderedGroups = 0;
 
-        playlistNames.forEach((name) => {
-          const trimmedName = name.trim();
-          const entries = logsByPlaylist[name] || [];
-          if (!entries.length && !running) {
+        playlistNames.forEach((trimmedName) => {
+          const entries = logsByPlaylist[trimmedName] || [];
+          const isWaiting = waitingSet.has(trimmedName);
+          if (!entries.length && !running && !isWaiting) {
             return;
           }
 
@@ -1123,6 +1181,9 @@
           const isActivePlaylist = running && activePlaylistsSet.has(trimmedName);
           if (isActivePlaylist) {
             block.classList.add("is-active");
+          }
+          if (isWaiting) {
+            block.classList.add("is-waiting");
           }
 
           const title = document.createElement("div");
@@ -1154,7 +1215,9 @@
             const isProgressEntry =
               entry && entry.type === "progress" && percentValue !== null;
             const showSpinner =
-              isActivePlaylist && !isProgressEntry && entry?.is_final !== true;
+              (isActivePlaylist || (isWaiting && running)) &&
+              !isProgressEntry &&
+              entry?.is_final !== true;
 
             if (isProgressEntry) {
               item.classList.add("progress-entry");
@@ -1195,14 +1258,15 @@
           } else {
             const placeholder = document.createElement("div");
             placeholder.className = "playlist-log-entry";
-            if (isActivePlaylist) {
+            const showPlaceholderSpinner = isActivePlaylist || (isWaiting && running);
+            if (showPlaceholderSpinner) {
               placeholder.classList.add("is-active-step");
             }
 
             const messageRow = document.createElement("div");
             messageRow.className = "playlist-log-message";
 
-            if (isActivePlaylist) {
+            if (showPlaceholderSpinner) {
               const spinner = document.createElement("div");
               spinner.className = "playlist-log-spinner";
               messageRow.appendChild(spinner);
@@ -1210,9 +1274,15 @@
 
             const text = document.createElement("div");
             text.className = "playlist-log-text";
-            text.textContent = running
-              ? "Waiting for playlist activity…"
-              : "No recent activity.";
+            if (isWaiting) {
+              text.textContent = running
+                ? "Queued – waiting to start…"
+                : "Queued – waiting to start";
+            } else {
+              text.textContent = running
+                ? "Waiting for playlist activity…"
+                : "No recent activity.";
+            }
 
             messageRow.appendChild(text);
             placeholder.appendChild(messageRow);
