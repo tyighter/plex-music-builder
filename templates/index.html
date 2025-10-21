@@ -827,6 +827,125 @@
         return null;
       }
 
+      function addPlaylistName(targetSet, value) {
+        if (!targetSet || value === null || value === undefined) {
+          return;
+        }
+
+        const normalized = String(value).trim();
+        if (normalized) {
+          targetSet.add(normalized);
+        }
+      }
+
+      function collectActivePlaylistSet(status) {
+        const names = new Set();
+        if (!status || typeof status !== "object") {
+          return names;
+        }
+
+        if (Array.isArray(status.active_playlists)) {
+          status.active_playlists.forEach((name) => addPlaylistName(names, name));
+        }
+
+        const job = status.job;
+        if (job && typeof job === "object") {
+          addPlaylistName(names, job.playlist);
+          if (Array.isArray(job.active_playlists)) {
+            job.active_playlists.forEach((name) => addPlaylistName(names, name));
+          }
+        }
+
+        return names;
+      }
+
+      function getActivePlaylistNames(status) {
+        return Array.from(collectActivePlaylistSet(status)).sort((a, b) =>
+          a.localeCompare(b)
+        );
+      }
+
+      function parseDurationToMs(value) {
+        if (value === null || value === undefined) {
+          return null;
+        }
+
+        if (typeof value === "number" && Number.isFinite(value)) {
+          return value * 1000;
+        }
+
+        if (typeof value !== "string") {
+          value = String(value);
+        }
+
+        const trimmed = value.trim();
+        if (!trimmed) {
+          return null;
+        }
+
+        if (/^\d+(?::\d+){1,2}$/.test(trimmed)) {
+          const parts = trimmed.split(":").map((part) => Number(part));
+          if (parts.some((part) => Number.isNaN(part))) {
+            return null;
+          }
+          while (parts.length < 3) {
+            parts.unshift(0);
+          }
+          const [hours, minutes, seconds] = parts;
+          return ((hours * 60 + minutes) * 60 + seconds) * 1000;
+        }
+
+        if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+          const numeric = Number(trimmed);
+          return Number.isFinite(numeric) ? numeric * 1000 : null;
+        }
+
+        let totalSeconds = 0;
+        let matched = false;
+        const regex =
+          /(\d+(?:\.\d+)?)\s*(h(?:ours?)?|hr|hrs|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)/gi;
+        let match;
+        while ((match = regex.exec(trimmed)) !== null) {
+          matched = true;
+          const quantity = parseFloat(match[1]);
+          if (Number.isNaN(quantity)) {
+            continue;
+          }
+          const unit = match[2].toLowerCase();
+          if (unit.startsWith("h")) {
+            totalSeconds += quantity * 3600;
+          } else if (unit.startsWith("m")) {
+            totalSeconds += quantity * 60;
+          } else if (unit.startsWith("s")) {
+            totalSeconds += quantity;
+          }
+        }
+
+        if (matched && totalSeconds > 0) {
+          return totalSeconds * 1000;
+        }
+
+        return null;
+      }
+
+      function computeProjectedFinishDate(jobProgress) {
+        if (!jobProgress || typeof jobProgress !== "object") {
+          return null;
+        }
+
+        const etaValue =
+          jobProgress.eta !== undefined && jobProgress.eta !== null
+            ? jobProgress.eta
+            : jobProgress.ETA;
+        const etaMs = parseDurationToMs(etaValue);
+        if (etaMs === null) {
+          return null;
+        }
+
+        const projected = new Date(Date.now() + etaMs);
+        return Number.isNaN(projected.getTime()) ? null : projected;
+      }
+
       function updatePlaylistBuildUi(playlist) {
         if (!playlist || !playlist._statusElements) {
           return;
@@ -838,21 +957,21 @@
         const activeJob = status?.job || null;
         const activePlaylistName =
           activeJob && activeJob.type === "playlist"
-            ? (activeJob.playlist || "")
+            ? (activeJob.playlist || "").trim()
             : "";
-
+        const activePlaylistsSet = collectActivePlaylistSet(status);
+        const activePlaylistNames = Array.from(activePlaylistsSet);
         const isRunningThisPlaylist = Boolean(
-          status?.running &&
-            activeJob?.type === "playlist" &&
-            playlistName &&
-            activePlaylistName === playlistName
+          status?.running && playlistName && activePlaylistsSet.has(playlistName)
         );
         const isAllRunning = Boolean(status?.running && activeJob?.type === "all");
+        const otherActiveNames = activePlaylistNames.filter(
+          (name) => name !== playlistName
+        );
         const otherJobRunning = Boolean(
           status?.running &&
             !isRunningThisPlaylist &&
-            (isAllRunning ||
-              (activeJob?.type === "playlist" && activePlaylistName !== playlistName))
+            (isAllRunning || otherActiveNames.length > 0)
         );
 
         const playlistResults = status?.results?.playlists || {};
@@ -879,14 +998,20 @@
         let statusLineText = playlistName ? "Not built yet" : "Name required to build";
         if (isRunningThisPlaylist) {
           statusLineText = "Building now…";
-        } else if (isAllRunning) {
-          statusLineText = "All playlists build running";
         } else if (otherJobRunning) {
-          if (activeJob?.type === "playlist" && activePlaylistName) {
+          if (otherActiveNames.length === 1) {
+            statusLineText = `Waiting – '${otherActiveNames[0]}' is building`;
+          } else if (otherActiveNames.length > 1) {
+            statusLineText = `Waiting – ${otherActiveNames.length} playlists building`;
+          } else if (isAllRunning) {
+            statusLineText = "Waiting – build in progress";
+          } else if (activePlaylistName) {
             statusLineText = `Waiting – '${activePlaylistName}' is building`;
           } else {
             statusLineText = "Waiting – build in progress";
           }
+        } else if (isAllRunning) {
+          statusLineText = "All playlists build running";
         } else if (lastResult) {
           if (lastResult.state === "success") {
             statusLineText = "Last build succeeded";
@@ -907,7 +1032,11 @@
             detailParts.push(`Started ${formatTimestamp(status.since)}`);
           }
         } else if (otherJobRunning) {
-          if (isAllRunning) {
+          if (otherActiveNames.length > 1) {
+            detailParts.push(`Currently building: ${otherActiveNames.join(", ")}`);
+          } else if (otherActiveNames.length === 1) {
+            detailParts.push(`Currently building '${otherActiveNames[0]}'`);
+          } else if (isAllRunning) {
             detailParts.push("Currently building all playlists");
           } else if (activePlaylistName) {
             detailParts.push(`Currently building '${activePlaylistName}'`);
@@ -935,7 +1064,11 @@
         if (!playlistName) {
           button.title = "Enter a playlist name to build it individually.";
         } else if (status?.running && !isRunningThisPlaylist) {
-          if (isAllRunning) {
+          if (otherActiveNames.length === 1) {
+            button.title = `Building '${otherActiveNames[0]}'. Please wait.`;
+          } else if (otherActiveNames.length > 1) {
+            button.title = `Building ${otherActiveNames.length} playlists. Please wait.`;
+          } else if (isAllRunning) {
             button.title = "Building all playlists. Please wait.";
           } else if (activePlaylistName) {
             button.title = `Building '${activePlaylistName}'. Please wait.`;
@@ -954,11 +1087,8 @@
         }
 
         const running = Boolean(status?.running);
-        const activeJob = status?.job || null;
-        const activePlaylistName =
-          running && activeJob?.type === "playlist"
-            ? (activeJob.playlist || "").trim()
-            : "";
+        const activePlaylists = getActivePlaylistNames(status);
+        const activePlaylistsSet = new Set(activePlaylists);
 
         buildStatusPanel.classList.toggle("running", running);
 
@@ -968,9 +1098,11 @@
         const playlistNames = Object.keys(logsByPlaylist).filter(
           (name) => name && name.trim()
         );
-        if (activePlaylistName && !playlistNames.includes(activePlaylistName)) {
-          playlistNames.push(activePlaylistName);
-        }
+        activePlaylists.forEach((name) => {
+          if (name && !playlistNames.includes(name)) {
+            playlistNames.push(name);
+          }
+        });
 
         playlistNames.sort((a, b) => a.localeCompare(b));
 
@@ -988,7 +1120,7 @@
           renderedGroups += 1;
           const block = document.createElement("div");
           block.className = "build-log-playlist";
-          const isActivePlaylist = running && trimmedName === activePlaylistName;
+          const isActivePlaylist = running && activePlaylistsSet.has(trimmedName);
           if (isActivePlaylist) {
             block.classList.add("is-active");
           }
@@ -1137,7 +1269,6 @@
         const isRunning = Boolean(status.running);
         const activeJob = status.job || null;
         const isAllRunning = Boolean(isRunning && activeJob?.type === "all");
-        const isPlaylistRunning = Boolean(isRunning && activeJob?.type === "playlist");
         const indicatorState = isRunning
           ? "running"
           : status.status === "error"
@@ -1147,18 +1278,7 @@
         buildStatusIndicator.classList.remove("running", "idle", "error");
         buildStatusIndicator.classList.add(indicatorState);
 
-        let statusTextValue = "Builder is idle";
-        if (isRunning) {
-          if (isAllRunning) {
-            statusTextValue = "Building all playlists";
-          } else if (isPlaylistRunning && activeJob?.playlist) {
-            statusTextValue = `Building "${activeJob.playlist}"`;
-          } else {
-            statusTextValue = "Build in progress";
-          }
-        } else if (status.status === "error") {
-          statusTextValue = "Build encountered an issue";
-        }
+        const statusTextValue = isRunning ? "Building" : "Idle";
         buildStatusText.textContent = statusTextValue;
 
         const jobProgress = activeJob?.progress;
@@ -1201,6 +1321,9 @@
 
         buildStatusMessage.textContent = statusMessageValue;
 
+        const projectedFinish = isRunning
+          ? computeProjectedFinishDate(jobProgress)
+          : null;
         const metaParts = [];
         if (isRunning && status.pid) {
           metaParts.push(`PID ${status.pid}`);
@@ -1208,8 +1331,10 @@
         if (isRunning && status.since) {
           metaParts.push(`Started ${formatTimestamp(status.since)}`);
         }
-        if (isPlaylistRunning && activeJob?.playlist) {
-          metaParts.push(`Playlist '${activeJob.playlist}'`);
+        if (isRunning && projectedFinish) {
+          metaParts.push(
+            `Projected finish ${formatTimestamp(projectedFinish.toISOString())}`
+          );
         }
         if (!isRunning) {
           const lastAllResult = status.results?.all;
@@ -1317,10 +1442,10 @@
           return;
         }
 
+        const activePlaylistsSet = collectActivePlaylistSet(latestBuildStatus);
         const isRunningThisPlaylist = Boolean(
           latestBuildStatus?.running &&
-            latestBuildStatus?.job?.type === "playlist" &&
-            latestBuildStatus?.job?.playlist === playlistName
+            activePlaylistsSet.has(playlistName)
         );
 
         if (
