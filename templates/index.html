@@ -473,6 +473,10 @@
         overflow: hidden;
       }
 
+      .playlist-log-entry.progress-entry {
+        gap: 10px;
+      }
+
       .playlist-log-entry::after {
         content: "";
         position: absolute;
@@ -508,6 +512,26 @@
         animation: filteringPulse 1.8s ease-in-out infinite;
       }
 
+      .playlist-log-message {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .playlist-log-spinner {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid rgba(229, 160, 13, 0.25);
+        border-top-color: var(--plex-orange);
+        animation: spin 0.9s linear infinite;
+        flex-shrink: 0;
+      }
+
+      .playlist-log-entry:not(.is-active-step) .playlist-log-spinner {
+        display: none;
+      }
+
       .playlist-log-text {
         font-size: 14px;
         color: rgba(255, 255, 255, 0.85);
@@ -518,6 +542,12 @@
       .playlist-log-empty {
         font-size: 13px;
         color: rgba(255, 255, 255, 0.55);
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
       }
 
       .playlist-log-entry.general-entry {
@@ -921,7 +951,8 @@
           renderedGroups += 1;
           const block = document.createElement("div");
           block.className = "build-log-playlist";
-          if (running && trimmedName === activePlaylistName) {
+          const isActivePlaylist = running && trimmedName === activePlaylistName;
+          if (isActivePlaylist) {
             block.classList.add("is-active");
           }
 
@@ -933,33 +964,84 @@
           const listEl = document.createElement("div");
           listEl.className = "build-log-playlist-entries";
 
-          if (entries.length) {
-            entries.forEach((entry, index) => {
+          const normalizedEntries = Array.isArray(entries)
+            ? entries.map((entry) => {
+                if (entry && typeof entry === "object") {
+                  return entry;
+                }
+                return {
+                  type: "message",
+                  text: typeof entry === "string" ? entry : String(entry ?? ""),
+                };
+              })
+            : [];
+
+          if (normalizedEntries.length) {
+            normalizedEntries.forEach((entry, index) => {
               const item = document.createElement("div");
               item.className = "playlist-log-entry";
 
-              const progressWrapper = document.createElement("div");
-              progressWrapper.className = "playlist-log-bar";
-              const progressFill = document.createElement("span");
-              const progressValue = ((index + 1) / entries.length) * 100;
-              progressFill.style.setProperty("--progress", `${progressValue}%`);
-              progressWrapper.appendChild(progressFill);
+              const isProgressEntry =
+                entry && entry.type === "progress" && typeof entry.percent === "number";
+              const isLastEntry = index === normalizedEntries.length - 1;
+              const showSpinner = isActivePlaylist && !isProgressEntry && isLastEntry;
+
+              if (isProgressEntry) {
+                item.classList.add("progress-entry");
+                const progressWrapper = document.createElement("div");
+                progressWrapper.className = "playlist-log-bar";
+                const progressFill = document.createElement("span");
+                const percentValue = Number.isFinite(entry.percent)
+                  ? Math.max(0, Math.min(100, entry.percent))
+                  : 0;
+                progressFill.style.setProperty("--progress", `${percentValue}%`);
+                progressWrapper.appendChild(progressFill);
+                item.appendChild(progressWrapper);
+              }
+
+              const messageRow = document.createElement("div");
+              messageRow.className = "playlist-log-message";
+
+              if (showSpinner) {
+                item.classList.add("is-active-step");
+                const spinner = document.createElement("div");
+                spinner.className = "playlist-log-spinner";
+                messageRow.appendChild(spinner);
+              }
 
               const text = document.createElement("div");
               text.className = "playlist-log-text";
-              text.textContent = entry;
+              text.textContent = entry?.text || "";
+              messageRow.appendChild(text);
 
-              item.appendChild(progressWrapper);
-              item.appendChild(text);
+              item.appendChild(messageRow);
               listEl.appendChild(item);
             });
           } else {
-            const empty = document.createElement("div");
-            empty.className = "playlist-log-empty";
-            empty.textContent = running
+            const placeholder = document.createElement("div");
+            placeholder.className = "playlist-log-entry";
+            if (isActivePlaylist) {
+              placeholder.classList.add("is-active-step");
+            }
+
+            const messageRow = document.createElement("div");
+            messageRow.className = "playlist-log-message";
+
+            if (isActivePlaylist) {
+              const spinner = document.createElement("div");
+              spinner.className = "playlist-log-spinner";
+              messageRow.appendChild(spinner);
+            }
+
+            const text = document.createElement("div");
+            text.className = "playlist-log-text";
+            text.textContent = running
               ? "Waiting for playlist activity…"
               : "No recent activity.";
-            listEl.appendChild(empty);
+
+            messageRow.appendChild(text);
+            placeholder.appendChild(messageRow);
+            listEl.appendChild(placeholder);
           }
 
           block.appendChild(listEl);
@@ -1035,7 +1117,41 @@
           statusTextValue = "Build encountered an issue";
         }
         buildStatusText.textContent = statusTextValue;
-        buildStatusMessage.textContent = status.message || "";
+
+        const jobProgress = activeJob?.progress;
+        let statusMessageValue = status.message || "";
+        if (
+          isRunning &&
+          jobProgress &&
+          typeof jobProgress.percent === "number" &&
+          Number.isFinite(jobProgress.percent)
+        ) {
+          const currentValue = Number.isFinite(jobProgress.current)
+            ? Math.max(0, Math.floor(jobProgress.current))
+            : null;
+          const totalValue = Number.isFinite(jobProgress.total)
+            ? Math.max(0, Math.floor(jobProgress.total))
+            : null;
+          const percentDisplay = Math.round(jobProgress.percent);
+          const totalText =
+            currentValue !== null && totalValue !== null
+              ? `${currentValue}/${totalValue}`
+              : currentValue !== null
+              ? `${currentValue}`
+              : null;
+
+          statusMessageValue = totalText
+            ? `Filtering tracks… ${totalText} (${percentDisplay}%)`
+            : `Filtering tracks… ${percentDisplay}%`;
+
+          if (jobProgress.rate) {
+            statusMessageValue = `${statusMessageValue} – ${jobProgress.rate}`;
+          } else if (jobProgress.details) {
+            statusMessageValue = `${statusMessageValue} ${jobProgress.details}`;
+          }
+        }
+
+        buildStatusMessage.textContent = statusMessageValue;
 
         const metaParts = [];
         if (isRunning && status.pid) {
