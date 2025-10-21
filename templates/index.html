@@ -1212,6 +1212,13 @@
           }
         });
 
+        const activeOrder = new Map();
+        activePlaylists.forEach((name, index) => {
+          if (!activeOrder.has(name)) {
+            activeOrder.set(name, index);
+          }
+        });
+
         buildStatusPanel.classList.toggle("running", running);
 
         const rawLogsByPlaylist = status?.logs?.playlists || {};
@@ -1249,12 +1256,30 @@
           playlistNames.push(trimmedName);
         });
 
-        playlistNames.sort((a, b) => {
-          const aIndex = waitingOrder.has(a) ? waitingOrder.get(a) : Infinity;
-          const bIndex = waitingOrder.has(b) ? waitingOrder.get(b) : Infinity;
-          if (aIndex !== bIndex) {
-            return aIndex - bIndex;
+        const getGroupRank = (name) => {
+          if (activeOrder.has(name)) {
+            return 0;
           }
+          if (waitingOrder.has(name)) {
+            return 1;
+          }
+          return 2;
+        };
+
+        playlistNames.sort((a, b) => {
+          const groupDiff = getGroupRank(a) - getGroupRank(b);
+          if (groupDiff !== 0) {
+            return groupDiff;
+          }
+
+          if (activeOrder.has(a) && activeOrder.has(b)) {
+            return activeOrder.get(a) - activeOrder.get(b);
+          }
+
+          if (waitingOrder.has(a) && waitingOrder.has(b)) {
+            return waitingOrder.get(a) - waitingOrder.get(b);
+          }
+
           return a.localeCompare(b);
         });
 
