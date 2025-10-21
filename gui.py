@@ -114,6 +114,10 @@ def _format_timestamp(value: Optional[datetime]) -> Optional[str]:
     return value.astimezone(timezone.utc).isoformat()
 
 
+class PlaylistConflictError(Exception):
+    """Raised when attempting to save a playlist that already exists."""
+
+
 class BuildManager:
     _INFO_LINE_PATTERN = re.compile(r"\[(?P<level>[A-Z]+)\]\s*(?P<message>.*)")
     _PLAYLIST_QUOTED_PATTERN = re.compile(r"'([^']+)'")
@@ -975,7 +979,11 @@ def load_yaml_data() -> Dict[str, Any]:
         data = yaml.safe_load(playlist_file) or {}
 
     defaults = data.get("defaults", {}) or {}
-    playlists = data.get("playlists", {}) or {}
+    raw_playlists = data.get("playlists", {}) or {}
+    if isinstance(raw_playlists, OrderedDict):
+        playlists = raw_playlists
+    else:
+        playlists = OrderedDict(raw_playlists.items())
     return {"defaults": defaults, "playlists": playlists}
 
 
@@ -1158,6 +1166,84 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         yaml.safe_dump(yaml_structure, playlist_file, sort_keys=False, allow_unicode=True)
 
 
+def save_single_playlist(
+    playlist_payload: Dict[str, Any], original_name: Optional[str] = None
+) -> str:
+    playlist_name = (playlist_payload.get("name") or "").strip()
+    if not playlist_name:
+        raise ValueError("Playlist name is required.")
+
+    extras = playlist_payload.get("extras")
+    playlist_config: Dict[str, Any] = {}
+    if isinstance(extras, dict):
+        playlist_config.update(extras)
+
+    limit = to_int(playlist_payload.get("limit", 0))
+    artist_limit = to_int(playlist_payload.get("artist_limit", 0))
+    album_limit = to_int(playlist_payload.get("album_limit", 0))
+    sort_by = (playlist_payload.get("sort_by") or "").strip() or None
+
+    playlist_config["limit"] = max(limit, 0)
+    playlist_config["artist_limit"] = max(artist_limit, 0)
+    playlist_config["album_limit"] = max(album_limit, 0)
+    if sort_by:
+        playlist_config["sort_by"] = sort_by
+
+    playlist_filters = []
+    for filter_entry in playlist_payload.get("plex_filter", []):
+        yaml_filter = build_filter_for_yaml(filter_entry)
+        if yaml_filter is not None:
+            playlist_filters.append(yaml_filter)
+    if playlist_filters:
+        playlist_config["plex_filter"] = playlist_filters
+
+    yaml_data = load_yaml_data()
+    defaults_config = yaml_data.get("defaults", {}) or {}
+    existing_playlists = yaml_data.get("playlists", OrderedDict()) or OrderedDict()
+    if not isinstance(existing_playlists, OrderedDict):
+        existing_playlists = OrderedDict(existing_playlists.items())
+
+    normalized_original = (original_name or "").strip()
+    updated_playlists: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+    inserted = False
+    conflict = False
+
+    for existing_name, existing_config in existing_playlists.items():
+        if normalized_original:
+            if existing_name == normalized_original:
+                updated_playlists[playlist_name] = playlist_config
+                inserted = True
+                continue
+        else:
+            if existing_name == playlist_name:
+                updated_playlists[playlist_name] = playlist_config
+                inserted = True
+                continue
+
+        if existing_name == playlist_name:
+            conflict = True
+
+        updated_playlists[existing_name] = existing_config
+
+    if conflict:
+        raise PlaylistConflictError(
+            f"Playlist '{playlist_name}' already exists. Please choose a different name."
+        )
+
+    if not inserted:
+        updated_playlists[playlist_name] = playlist_config
+
+    yaml_structure: Dict[str, Any] = {
+        "defaults": defaults_config,
+        "playlists": updated_playlists,
+    }
+
+    with PLAYLISTS_PATH.open("w", encoding="utf-8") as playlist_file:
+        yaml.safe_dump(yaml_structure, playlist_file, sort_keys=False, allow_unicode=True)
+
+    return playlist_name
+
+
 def _determine_separator(raw_path: str) -> str:
     if raw_path.count("\\") > raw_path.count("/"):
         return "\\"
@@ -1336,6 +1422,29 @@ def create_app() -> Flask:
             "directory": str(directory),
             "entries": entries,
         })
+
+    @app.route("/api/playlists/save_single", methods=["POST"])
+    def save_single_playlist_route() -> Any:
+        payload = request.get_json(force=True, silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Invalid JSON payload."}), 400
+
+        playlist_payload = payload.get("playlist")
+        if not isinstance(playlist_payload, dict):
+            return jsonify({"error": "Playlist data is required."}), 400
+
+        original_name = payload.get("original_name")
+
+        try:
+            saved_name = save_single_playlist(playlist_payload, original_name)
+        except PlaylistConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:  # pragma: no cover - protective logging only
+            return jsonify({"error": str(exc)}), 500
+
+        return jsonify({"status": "saved", "name": saved_name})
 
     @app.route("/api/playlists", methods=["POST"])
     def write_playlists() -> Any:

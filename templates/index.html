@@ -1587,6 +1587,10 @@
           statusGroup.appendChild(statusIndicator);
           statusGroup.appendChild(statusTextWrapper);
 
+          const saveBtn = document.createElement("button");
+          saveBtn.type = "button";
+          saveBtn.textContent = "💾 Save Playlist";
+
           const buildBtn = document.createElement("button");
           buildBtn.type = "button";
           buildBtn.className = "playlist-build-btn secondary";
@@ -1605,6 +1609,7 @@
           });
 
           headerActions.appendChild(statusGroup);
+          headerActions.appendChild(saveBtn);
           headerActions.appendChild(buildBtn);
           headerActions.appendChild(removeBtn);
 
@@ -1636,6 +1641,10 @@
             updatePlaylistBuildUi(playlist);
           });
           nameLabel.appendChild(nameInput);
+
+          saveBtn.addEventListener("click", () =>
+            savePlaylist(playlist, saveBtn, title, nameInput)
+          );
 
           const limitLabel = document.createElement("label");
           limitLabel.textContent = "Limit";
@@ -1778,20 +1787,26 @@
           }));
           state.defaults.extras = data.defaults?.extras || {};
 
-          state.playlists = (data.playlists || []).map((playlist) => ({
-            name: playlist.name || "",
-            limit: playlist.limit ?? 0,
-            artist_limit: playlist.artist_limit ?? 0,
-            album_limit: playlist.album_limit ?? 0,
-            sort_by: playlist.sort_by || "",
-            plex_filter: (playlist.plex_filter || []).map((filter) => ({
-              field: filter.field || "",
-              operator: filter.operator || "equals",
-              value: filter.value || "",
-              match_all: filter.match_all !== undefined ? filter.match_all : true,
-            })),
-            extras: playlist.extras || {},
-          }));
+          state.playlists = (data.playlists || []).map((playlist) => {
+            const playlistName = playlist.name || "";
+            const entry = {
+              name: playlistName,
+              limit: playlist.limit ?? 0,
+              artist_limit: playlist.artist_limit ?? 0,
+              album_limit: playlist.album_limit ?? 0,
+              sort_by: playlist.sort_by || "",
+              plex_filter: (playlist.plex_filter || []).map((filter) => ({
+                field: filter.field || "",
+                operator: filter.operator || "equals",
+                value: filter.value || "",
+                match_all:
+                  filter.match_all !== undefined ? filter.match_all : true,
+              })),
+              extras: playlist.extras || {},
+            };
+            entry._originalName = playlistName;
+            return entry;
+          });
 
           renderAll();
         } catch (error) {
@@ -1847,6 +1862,67 @@
         }
       }
 
+      async function savePlaylist(playlist, triggerButton, titleEl, nameInputEl) {
+        const trimmedName = (playlist.name || "").trim();
+        if (!trimmedName) {
+          showMessage("Playlist name is required before saving.", true);
+          return;
+        }
+
+        const payload = {
+          playlist: {
+            name: trimmedName,
+            limit: playlist.limit ?? 0,
+            artist_limit: playlist.artist_limit ?? 0,
+            album_limit: playlist.album_limit ?? 0,
+            sort_by: playlist.sort_by || "",
+            plex_filter: prepareFiltersForSave(playlist.plex_filter),
+            extras: sanitizeExtras(playlist.extras || {}),
+          },
+          original_name: playlist._originalName || "",
+        };
+
+        if (triggerButton) {
+          triggerButton.disabled = true;
+        }
+
+        try {
+          const response = await fetch("/api/playlists/save_single", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+          });
+
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(result.error || "Failed to save playlist.");
+          }
+
+          const savedName = result.name || trimmedName;
+          playlist._originalName = savedName;
+          playlist.name = trimmedName;
+
+          if (titleEl) {
+            titleEl.textContent = trimmedName || "Untitled Playlist";
+          }
+
+          if (nameInputEl) {
+            nameInputEl.value = trimmedName;
+          }
+
+          showMessage(`Playlist '${savedName}' saved.`);
+        } catch (error) {
+          console.error(error);
+          showMessage(error.message, true);
+        } finally {
+          if (triggerButton) {
+            triggerButton.disabled = false;
+          }
+        }
+      }
+
       document.getElementById("addDefaultFilter").addEventListener("click", () => {
         state.defaults.plex_filter.push({
           field: "",
@@ -1867,6 +1943,7 @@
           sort_by: defaultSort,
           plex_filter: [],
           extras: {},
+          _originalName: "",
         });
         renderPlaylists();
       });
