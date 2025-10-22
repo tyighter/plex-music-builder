@@ -1147,6 +1147,19 @@ class SpotifyPopularityProvider:
         if exc is None:
             return None
 
+        def _normalize_retry_value(value, allow_milliseconds=False):
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return None
+
+            # Some Spotify error responses report retry windows in milliseconds.
+            # Treat very large values as milliseconds and convert to seconds.
+            if allow_milliseconds and numeric > 1000:
+                numeric /= 1000.0
+
+            return numeric if numeric > 0 else None
+
         header_value = None
 
         for attr_name in ("headers", "http_headers"):
@@ -1159,16 +1172,23 @@ class SpotifyPopularityProvider:
         if header_value is None:
             header_value = getattr(exc, "retry_after", None)
 
-        if header_value is None:
-            return None
+        message = str(exc) if exc is not None else ""
+        message_retry = None
+        if message:
+            match = re.search(r"Retry will occur after:\s*(?P<value>[0-9]+(?:\.[0-9]+)?)", message)
+            if match:
+                message_retry = _normalize_retry_value(
+                    match.group("value"), allow_milliseconds=True
+                )
 
-        try:
-            return float(header_value)
-        except (TypeError, ValueError):
-            try:
-                return float(str(header_value).strip())
-            except (TypeError, ValueError):
-                return None
+        retry_after = _normalize_retry_value(header_value, allow_milliseconds=False)
+        if retry_after is None:
+            return message_retry
+
+        if message_retry is not None and retry_after > message_retry * 10:
+            return message_retry
+
+        return retry_after
 
     def get_population_resume_state(self):
         with self._population_state_lock:
