@@ -1317,6 +1317,7 @@
           } else if (activePlaylistName) {
             detailParts.push(`Currently building '${activePlaylistName}'`);
           }
+          detailParts.push("Click the build button to queue this playlist");
         } else if (lastResult) {
           if (lastResult.message) {
             detailParts.push(lastResult.message);
@@ -1330,27 +1331,31 @@
         if (isRunningThisPlaylist) {
           button.textContent = "⏹ Stop Build";
           button.classList.add("danger");
+        } else if (status?.running && playlistName) {
+          button.textContent = "⏳ Queue Build";
+          button.classList.remove("danger");
         } else {
           button.textContent = "▶ Build Playlist";
           button.classList.remove("danger");
         }
 
-        const disableButton = !playlistName || (status?.running && !isRunningThisPlaylist);
+        const disableButton = !playlistName;
         button.disabled = Boolean(disableButton);
         if (!playlistName) {
           button.title = "Enter a playlist name to build it individually.";
         } else if (status?.running && !isRunningThisPlaylist) {
+          const queueHints = [];
           if (otherActiveNames.length === 1) {
-            button.title = `Building '${otherActiveNames[0]}'. Please wait.`;
+            queueHints.push(`Currently building '${otherActiveNames[0]}'`);
           } else if (otherActiveNames.length > 1) {
-            button.title = `Building ${otherActiveNames.length} playlists. Please wait.`;
+            queueHints.push(`Currently building ${otherActiveNames.length} playlists`);
           } else if (isAllRunning) {
-            button.title = "Building all playlists. Please wait.";
+            queueHints.push("Currently building all playlists");
           } else if (activePlaylistName) {
-            button.title = `Building '${activePlaylistName}'. Please wait.`;
-          } else {
-            button.title = "Another build is currently running.";
+            queueHints.push(`Currently building '${activePlaylistName}'`);
           }
+          queueHints.push("Click to queue this playlist.");
+          button.title = queueHints.join(". ");
         } else {
           button.title = "";
         }
@@ -1833,18 +1838,6 @@
           latestBuildStatus?.running &&
             activePlaylistsSet.has(playlistName)
         );
-
-        if (
-          !isRunningThisPlaylist &&
-          latestBuildStatus?.running &&
-          latestBuildStatus?.job?.type === "all"
-        ) {
-          showMessage(
-            "Can't start an individual build while all playlists are building.",
-            true
-          );
-          return;
-        }
 
         const elements = playlist._statusElements || {};
         if (elements.button) {
