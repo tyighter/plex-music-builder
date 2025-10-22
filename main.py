@@ -1054,6 +1054,7 @@ class SpotifyPopularityProvider:
         self._rate_lock = threading.Lock()
         self._next_allowed_request = 0.0
         self._backoff_until = 0.0
+        self._backoff_expires_at = 0.0
         self._min_request_interval = max(0.0, SPOTIFY_REQUEST_MIN_INTERVAL or 0.0)
         self._retry_backoff_seconds = max(0.0, SPOTIFY_REQUEST_RETRY_BACKOFF or 0.0)
         self._population_state_lock = threading.Lock()
@@ -1133,19 +1134,43 @@ class SpotifyPopularityProvider:
         if delay <= 0:
             return
 
+        persist_backoff = False
         with self._rate_lock:
-            resume_at = time.monotonic() + delay
+            now_monotonic = time.monotonic()
+            now_wall = time.time()
+            resume_at = now_monotonic + delay
             if resume_at > self._backoff_until:
                 self._backoff_until = resume_at
+            resume_wall = now_wall + delay
+            if resume_wall > self._backoff_expires_at:
+                self._backoff_expires_at = resume_wall
+                persist_backoff = True
+            next_allowed = resume_at
             if self._min_request_interval > 0:
-                resume_at += self._min_request_interval
-            if resume_at > self._next_allowed_request:
-                self._next_allowed_request = resume_at
+                next_allowed += self._min_request_interval
+            if next_allowed > self._next_allowed_request:
+                self._next_allowed_request = next_allowed
+
+        if persist_backoff:
+            self._write_state_file()
 
     @staticmethod
     def _extract_retry_after(exc):
         if exc is None:
             return None
+
+        def _normalize_retry_value(value, allow_milliseconds=False):
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return None
+
+            # Some Spotify error responses report retry windows in milliseconds.
+            # Treat very large values as milliseconds and convert to seconds.
+            if allow_milliseconds and numeric > 1000:
+                numeric /= 1000.0
+
+            return numeric if numeric > 0 else None
 
         header_value = None
 
@@ -1159,16 +1184,23 @@ class SpotifyPopularityProvider:
         if header_value is None:
             header_value = getattr(exc, "retry_after", None)
 
-        if header_value is None:
-            return None
+        message = str(exc) if exc is not None else ""
+        message_retry = None
+        if message:
+            match = re.search(r"Retry will occur after:\s*(?P<value>[0-9]+(?:\.[0-9]+)?)", message)
+            if match:
+                message_retry = _normalize_retry_value(
+                    match.group("value"), allow_milliseconds=True
+                )
 
-        try:
-            return float(header_value)
-        except (TypeError, ValueError):
-            try:
-                return float(str(header_value).strip())
-            except (TypeError, ValueError):
-                return None
+        retry_after = _normalize_retry_value(header_value, allow_milliseconds=True)
+        if retry_after is None:
+            return message_retry
+
+        if message_retry is not None and retry_after > message_retry * 10:
+            return message_retry
+
+        return retry_after
 
     def get_population_resume_state(self):
         with self._population_state_lock:
@@ -1333,6 +1365,7 @@ class SpotifyPopularityProvider:
         last_populated = payload.get("last_populated_at")
         summary = payload.get("summary")
         resume = payload.get("in_progress")
+        backoff_expires_at = payload.get("backoff_expires_at")
 
         if last_populated:
             self._last_populated_at = last_populated
@@ -1376,6 +1409,8 @@ class SpotifyPopularityProvider:
 
             with self._population_state_lock:
                 self._population_state = normalized_state
+
+        self._restore_rate_limit_backoff(backoff_expires_at)
 
     def _remember_profile(self, spotify_id, profile):
         if not spotify_id:
@@ -1601,6 +1636,9 @@ class SpotifyPopularityProvider:
             if not isinstance(summary, dict):
                 summary = {}
 
+        with self._rate_lock:
+            backoff_expires_at = self._backoff_expires_at
+
         with self._population_state_lock:
             in_progress = copy.deepcopy(self._population_state)
 
@@ -1613,6 +1651,10 @@ class SpotifyPopularityProvider:
 
         if in_progress:
             payload["in_progress"] = in_progress
+
+        now_wall = time.time()
+        if backoff_expires_at and backoff_expires_at > now_wall:
+            payload["backoff_expires_at"] = backoff_expires_at
 
         state_dir = os.path.dirname(self._state_file)
         if state_dir and not os.path.exists(state_dir):
@@ -1627,6 +1669,33 @@ class SpotifyPopularityProvider:
                 self._state_file,
                 exc,
             )
+
+    def _restore_rate_limit_backoff(self, expires_at):
+        try:
+            expires_value = float(expires_at)
+        except (TypeError, ValueError):
+            return
+
+        if expires_value <= 0:
+            return
+
+        now_wall = time.time()
+        remaining = expires_value - now_wall
+        if remaining <= 0:
+            return
+
+        with self._rate_lock:
+            now_monotonic = time.monotonic()
+            resume_at = now_monotonic + remaining
+            if resume_at > self._backoff_until:
+                self._backoff_until = resume_at
+            next_allowed = resume_at
+            if self._min_request_interval > 0:
+                next_allowed += self._min_request_interval
+            if next_allowed > self._next_allowed_request:
+                self._next_allowed_request = next_allowed
+            if expires_value > self._backoff_expires_at:
+                self._backoff_expires_at = expires_value
 
     def record_population_run(self, summary=None):
         timestamp = datetime.now(timezone.utc).isoformat()
