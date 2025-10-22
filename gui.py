@@ -489,6 +489,7 @@ class BuildManager:
                     read_from_start = True
 
                 with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                    bootstrap = read_from_start
                     if read_from_start:
                         size = stat_info.st_size
                         if size > self._max_initial_log_read:
@@ -503,6 +504,7 @@ class BuildManager:
                         line = handle.readline()
                         if not line:
                             offset = handle.tell()
+                            bootstrap = False
                             time.sleep(0.5)
                             try:
                                 current_stat = log_path.stat()
@@ -518,7 +520,7 @@ class BuildManager:
 
                         sanitized = line.strip("\r\n")
                         if sanitized:
-                            self._handle_log_line(sanitized)
+                            self._handle_log_line(sanitized, is_bootstrap=bootstrap)
             except FileNotFoundError:
                 offset = 0
                 read_from_start = True
@@ -887,7 +889,7 @@ class BuildManager:
             "message": message,
         }
 
-    def _handle_log_line(self, line: str) -> None:
+    def _handle_log_line(self, line: str, *, is_bootstrap: bool = False) -> None:
         progress = self._parse_filtering_progress_line(line)
         progress_playlist: Optional[str] = None
         handled_progress = False
@@ -896,7 +898,8 @@ class BuildManager:
             if progress_playlist:
                 with self._lock:
                     self._record_filtering_progress_locked(progress_playlist, progress)
-                    self._observed_active_playlists.add(progress_playlist)
+                    if not is_bootstrap:
+                        self._observed_active_playlists.add(progress_playlist)
                 handled_progress = True
 
         info_message = self._extract_info_message(line)
@@ -906,8 +909,9 @@ class BuildManager:
         playlist_name = self._extract_playlist_from_message(info_message)
         lowercase_message = info_message.lower()
         with self._lock:
-            self._update_passive_state_from_message_locked(playlist_name, info_message)
-            self._update_waiting_playlists_locked(info_message, playlist_name)
+            if not is_bootstrap:
+                self._update_passive_state_from_message_locked(playlist_name, info_message)
+                self._update_waiting_playlists_locked(info_message, playlist_name)
             if playlist_name:
                 if handled_progress and playlist_name == progress_playlist:
                     return
