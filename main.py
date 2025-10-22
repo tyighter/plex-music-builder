@@ -740,11 +740,36 @@ def _compute_spotify_popularity_score(track, spotify_provider=None, playlist_log
 
 
 def _resolve_track_popularity_value(track, spotify_provider=None, playlist_logger=None):
-    return _compute_spotify_popularity_score(
+    popularity = _compute_spotify_popularity_score(
         track,
         spotify_provider=spotify_provider,
         playlist_logger=playlist_logger,
     )
+
+    if popularity is not None:
+        return popularity
+
+    fallback = None
+    for attr_name in ("ratingCount", "parentRatingCount"):
+        raw_value = getattr(track, attr_name, None)
+        fallback = _coerce_non_negative_float(raw_value)
+        if fallback is not None:
+            break
+
+    if fallback is not None and playlist_logger and hasattr(playlist_logger, "debug"):
+        try:
+            track_title = getattr(track, "title", "<unknown>")
+            album_title = getattr(track, "parentTitle", "<unknown>")
+            playlist_logger.debug(
+                "Falling back to Plex ratingCount (%s) for track '%s' (album='%s')",
+                fallback,
+                track_title,
+                album_title,
+            )
+        except Exception:  # pragma: no cover - defensive logging guard
+            pass
+
+    return fallback
 
 
 def _deduplicate_tracks(tracks, log, spotify_provider=None):
