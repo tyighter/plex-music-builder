@@ -3522,6 +3522,81 @@ def check_condition(value, operator, expected, match_all=True):
     return all(results) if match_all else any(results)
 
 # ----------------------------
+# Filter evaluation helpers
+# ----------------------------
+
+
+def _evaluate_track_filters(track, wildcard_filters, regular_filters, log, debug_logging):
+    """Determine whether a track should be kept based on wildcard/regular filters."""
+
+    wildcard_matched = False
+    if wildcard_filters:
+        for f in wildcard_filters:
+            field = f["field"]
+            operator = f["operator"]
+            expected = f["value"]
+            match_all = f.get("match_all", True)
+
+            val = get_field_value(track, field)
+            if debug_logging:
+                log.debug(
+                    "  Wildcard condition: field='%s', operator='%s', expected=%s, match_all=%s",
+                    field,
+                    operator,
+                    expected,
+                    match_all,
+                )
+                log.debug("    Extracted value: %s", val)
+            if check_condition(val, operator, expected, match_all):
+                wildcard_matched = True
+                if debug_logging:
+                    log.debug(
+                        "    ✅ Wildcard condition matched for field '%s'; skipping remaining filters",
+                        field,
+                    )
+                break
+            if debug_logging:
+                log.debug("    ❌ Wildcard condition failed for field '%s'", field)
+
+    regular_matched = True
+    if not wildcard_matched and regular_filters:
+        for f in regular_filters:
+            field = f["field"]
+            operator = f["operator"]
+            expected = f["value"]
+            match_all = f.get("match_all", True)
+
+            val = get_field_value(track, field)
+            if debug_logging:
+                log.debug(
+                    "  Condition: field='%s', operator='%s', expected=%s, match_all=%s",
+                    field,
+                    operator,
+                    expected,
+                    match_all,
+                )
+                log.debug("    Extracted value: %s", val)
+            if not check_condition(val, operator, expected, match_all):
+                regular_matched = False
+                if debug_logging:
+                    log.debug("    ❌ Condition failed for field '%s'", field)
+                break
+
+    keep = False
+    if wildcard_matched:
+        keep = True
+    elif regular_filters:
+        keep = regular_matched
+    elif wildcard_filters:
+        keep = False
+        if debug_logging:
+            log.debug("    ❌ Track did not match any wildcard filters")
+    else:
+        keep = True
+
+    return keep, wildcard_matched
+
+# ----------------------------
 # Playlist Builder
 # ----------------------------
 
@@ -3617,6 +3692,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     log.info(f"Building playlist: {name}")
     build_start = time.perf_counter()
     filters = config.get("plex_filter", [])
+    wildcard_filters = [f for f in filters if bool(f.get("wildcard"))]
+    regular_filters = [f for f in filters if not bool(f.get("wildcard"))]
     library = plex.library.section(config.get("library", LIBRARY_NAME))
     limit = config.get("limit")
     sort_by = config.get("sort_by")
@@ -3747,7 +3824,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     processed_count = 0
     with tqdm(total=total_tracks, desc=f"Filtering '{name}'", unit="track", dynamic_ncols=True) as pbar:
         for track in all_tracks:
-            keep = True
             if debug_logging:
                 track_title = getattr(track, "title", "<unknown title>")
                 track_artist = getattr(track, "grandparentTitle", "<unknown artist>")
@@ -3759,27 +3835,15 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                     track_album,
                     getattr(track, "ratingKey", "<no-key>")
                 )
-            for f in filters:
-                field = f["field"]
-                operator = f["operator"]
-                expected = f["value"]
-                match_all = f.get("match_all", True)
 
-                val = get_field_value(track, field)
-                if debug_logging:
-                    log.debug(
-                        "  Condition: field='%s', operator='%s', expected=%s, match_all=%s",
-                        field,
-                        operator,
-                        expected,
-                        match_all
-                    )
-                    log.debug("    Extracted value: %s", val)
-                if not check_condition(val, operator, expected, match_all):
-                    if debug_logging:
-                        log.debug("    ❌ Condition failed for field '%s'", field)
-                    keep = False
-                    break
+            keep, wildcard_matched = _evaluate_track_filters(
+                track,
+                wildcard_filters,
+                regular_filters,
+                log,
+                debug_logging,
+            )
+
             if keep:
                 match_count += 1
                 if stream_enabled:
@@ -3789,7 +3853,12 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 else:
                     matched_tracks.append(track)
                 if debug_logging:
-                    log.debug("    ✅ Track matched all conditions")
+                    if wildcard_matched:
+                        log.debug("    ✅ Track kept due to wildcard filter match")
+                    elif regular_filters:
+                        log.debug("    ✅ Track matched all non-wildcard conditions")
+                    else:
+                        log.debug("    ✅ Track kept (no filters defined)")
             pbar.update(1)
             processed_count += 1
             progress_reporter.update(processed_count)

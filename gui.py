@@ -1565,17 +1565,26 @@ def normalize_filter_entry(filter_entry: Dict[str, Any]) -> Dict[str, Any]:
     operator = filter_entry.get("operator", "equals")
     value = filter_entry.get("value", "")
     match_all = filter_entry.get("match_all")
+    wildcard = filter_entry.get("wildcard")
 
     if isinstance(value, list):
         value_str = ", ".join(str(item) for item in value)
     else:
         value_str = "" if value is None else str(value)
 
+    if isinstance(wildcard, bool):
+        wildcard_value = wildcard
+    elif wildcard is None:
+        wildcard_value = False
+    else:
+        wildcard_value = bool(wildcard)
+
     return {
         "field": field,
         "operator": operator,
         "value": value_str,
         "match_all": bool(match_all) if match_all is not None else True,
+        "wildcard": wildcard_value,
     }
 
 
@@ -1660,6 +1669,7 @@ def build_filter_for_yaml(filter_entry: Dict[str, Any]) -> Optional[Dict[str, An
     operator = filter_entry.get("operator", "equals").strip() or "equals"
     value = parse_filter_value(filter_entry.get("value", ""))
     match_all = filter_entry.get("match_all", True)
+    wildcard = filter_entry.get("wildcard", False)
 
     yaml_entry: Dict[str, Any] = {
         "field": field,
@@ -1672,6 +1682,9 @@ def build_filter_for_yaml(filter_entry: Dict[str, Any]) -> Optional[Dict[str, An
             yaml_entry["match_all"] = False
     elif isinstance(match_all, bool) and not match_all:
         yaml_entry["match_all"] = False
+
+    if isinstance(wildcard, bool) and wildcard:
+        yaml_entry["wildcard"] = True
 
     return yaml_entry
 

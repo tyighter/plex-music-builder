@@ -342,15 +342,23 @@
 
       .filter-row .value-input {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         gap: 10px;
+        flex-wrap: wrap;
       }
 
       .filter-row .value-input input {
         flex: 1;
+        min-width: 180px;
       }
 
-      .filter-row .match-all {
+      .filter-row .filter-flags {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .filter-row .filter-flag {
         display: flex;
         align-items: center;
         gap: 6px;
@@ -765,7 +773,11 @@
           grid-template-columns: 1fr;
         }
 
-        .filter-row .match-all {
+        .filter-row .filter-flags {
+          width: 100%;
+        }
+
+        .filter-row .filter-flag {
           justify-content: flex-start;
         }
       }
@@ -2051,8 +2063,11 @@
             filter.value = event.target.value;
           });
 
+          const flagsWrapper = document.createElement("div");
+          flagsWrapper.className = "filter-flags";
+
           const matchAllLabel = document.createElement("label");
-          matchAllLabel.className = "match-all";
+          matchAllLabel.className = "filter-flag";
           const matchAllInput = document.createElement("input");
           matchAllInput.type = "checkbox";
           matchAllInput.checked = filter.match_all !== undefined ? !!filter.match_all : true;
@@ -2061,8 +2076,24 @@
           });
           matchAllLabel.appendChild(matchAllInput);
           matchAllLabel.appendChild(document.createTextNode("Match all values"));
+          flagsWrapper.appendChild(matchAllLabel);
+
+          const wildcardLabel = document.createElement("label");
+          wildcardLabel.className = "filter-flag";
+          const wildcardInput = document.createElement("input");
+          wildcardInput.type = "checkbox";
+          wildcardInput.checked = !!filter.wildcard;
+          wildcardInput.addEventListener("change", (event) => {
+            filter.wildcard = event.target.checked;
+          });
+          wildcardLabel.appendChild(wildcardInput);
+          wildcardLabel.appendChild(
+            document.createTextNode("Wildcard (ignore other filters)")
+          );
+          flagsWrapper.appendChild(wildcardLabel);
+
           valueWrapper.appendChild(valueInput);
-          valueWrapper.appendChild(matchAllLabel);
+          valueWrapper.appendChild(flagsWrapper);
 
           const removeBtn = document.createElement("button");
           removeBtn.type = "button";
@@ -2287,6 +2318,7 @@
               operator: "equals",
               value: "",
               match_all: true,
+              wildcard: false,
             });
             renderPlaylists();
           });
@@ -2325,6 +2357,7 @@
             operator: filter.operator || "equals",
             value: filter.value || "",
             match_all: filter.match_all !== undefined ? filter.match_all : true,
+            wildcard: filter.wildcard !== undefined ? !!filter.wildcard : false,
           }));
           state.defaults.extras = data.defaults?.extras || {};
 
@@ -2342,6 +2375,7 @@
                 value: filter.value || "",
                 match_all:
                   filter.match_all !== undefined ? filter.match_all : true,
+                wildcard: filter.wildcard !== undefined ? !!filter.wildcard : false,
               })),
               extras: playlist.extras || {},
             };
@@ -2362,6 +2396,7 @@
           operator: filter.operator || "equals",
           value: filter.value || "",
           match_all: filter.match_all !== undefined ? !!filter.match_all : true,
+          wildcard: filter.wildcard !== undefined ? !!filter.wildcard : false,
         }));
       }
 
@@ -2470,6 +2505,7 @@
           operator: "equals",
           value: "",
           match_all: true,
+          wildcard: false,
         });
         renderDefaultFilters();
       });

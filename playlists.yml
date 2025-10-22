@@ -42,6 +42,10 @@ playlists:
           - Speed Metal
           - Thrash Metal
         match_all: false
+      - field: artist
+        operator: equals
+        value: Foxy Shazam
+        wildcard: true
 
   Is it New Wave?:
     limit: 1000
