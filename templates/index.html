@@ -336,26 +336,28 @@
         display: grid;
         grid-template-columns: 1.1fr 1fr 1fr auto;
         gap: 12px;
-        align-items: center;
+        align-items: start;
         margin-bottom: 10px;
       }
 
       .filter-row .value-input {
         display: flex;
-        align-items: flex-start;
-        gap: 10px;
-        flex-wrap: wrap;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
       }
 
       .filter-row .value-input input {
-        flex: 1;
+        width: 100%;
         min-width: 180px;
       }
 
       .filter-row .filter-flags {
         display: flex;
-        flex-direction: column;
-        gap: 6px;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        justify-content: flex-start;
       }
 
       .filter-row .filter-flag {
@@ -364,6 +366,7 @@
         gap: 6px;
         font-size: 13px;
         color: rgba(255, 255, 255, 0.7);
+        white-space: nowrap;
       }
 
       .path-input {
@@ -779,6 +782,10 @@
 
         .filter-row .filter-flag {
           justify-content: flex-start;
+        }
+
+        .filter-row .value-input input {
+          min-width: 0;
         }
       }
     </style>
@@ -2071,11 +2078,12 @@
           const matchAllInput = document.createElement("input");
           matchAllInput.type = "checkbox";
           matchAllInput.checked = filter.match_all !== undefined ? !!filter.match_all : true;
+          matchAllInput.setAttribute("aria-label", "Match all values");
           matchAllInput.addEventListener("change", (event) => {
             filter.match_all = event.target.checked;
           });
           matchAllLabel.appendChild(matchAllInput);
-          matchAllLabel.appendChild(document.createTextNode("Match all values"));
+          matchAllLabel.appendChild(document.createTextNode("Match All"));
           flagsWrapper.appendChild(matchAllLabel);
 
           const wildcardLabel = document.createElement("label");
@@ -2083,13 +2091,15 @@
           const wildcardInput = document.createElement("input");
           wildcardInput.type = "checkbox";
           wildcardInput.checked = !!filter.wildcard;
+          wildcardInput.setAttribute(
+            "aria-label",
+            "Wildcard (ignore other filters)"
+          );
           wildcardInput.addEventListener("change", (event) => {
             filter.wildcard = event.target.checked;
           });
           wildcardLabel.appendChild(wildcardInput);
-          wildcardLabel.appendChild(
-            document.createTextNode("Wildcard (ignore other filters)")
-          );
+          wildcardLabel.appendChild(document.createTextNode("🃏"));
           flagsWrapper.appendChild(wildcardLabel);
 
           valueWrapper.appendChild(valueInput);
