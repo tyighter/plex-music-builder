@@ -173,7 +173,7 @@ if isinstance(_spotify_chunk_setting, bool) and not _spotify_chunk_setting:
 else:
     _spotify_chunk_size = _coerce_positive_int(_spotify_chunk_setting)
     if _spotify_chunk_size is None:
-        SPOTIFY_POPULATION_CHUNK_SIZE = 1000
+        SPOTIFY_POPULATION_CHUNK_SIZE = 10
     else:
         SPOTIFY_POPULATION_CHUNK_SIZE = _spotify_chunk_size
 
