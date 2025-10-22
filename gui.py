@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, IO, List, Optional, Set, Tuple
@@ -83,6 +84,18 @@ def _resolve_path_setting(raw_value: Any, default_path: Path) -> Path:
             candidate = (CONFIG_DIR / candidate).resolve()
         return candidate
     return default_path
+
+
+@dataclass
+class _ProcessHandle:
+    process: subprocess.Popen
+    job: Dict[str, Any]
+    log_thread: Optional[threading.Thread] = None
+    stop_requested: bool = False
+    started_at: datetime = field(default_factory=lambda: _utcnow())
+    finished_at: Optional[datetime] = None
+    exit_code: Optional[int] = None
+    last_message: Optional[str] = None
 
 
 def _load_config_data() -> Dict[str, Any]:
@@ -225,16 +238,13 @@ class BuildManager:
         self._command = command or [sys.executable, "main.py"]
         self._work_dir = str(work_dir) if work_dir is not None else None
         self._lock = threading.Lock()
-        self._process: Optional[subprocess.Popen] = None
+        self._processes: List[_ProcessHandle] = []
         self._last_exit_code: Optional[int] = None
         self._last_message: Optional[str] = None
         self._last_started_at: Optional[datetime] = None
         self._last_finished_at: Optional[datetime] = None
-        self._active_job: Optional[Dict[str, Any]] = None
         self._last_all_result: Optional[Dict[str, Any]] = None
         self._last_playlist_results: Dict[str, Dict[str, Any]] = {}
-        self._stop_requested = False
-        self._log_thread: Optional[threading.Thread] = None
         self._playlist_logs: Dict[str, List[Dict[str, Any]]] = {}
         self._general_logs: List[Dict[str, Any]] = []
         self._log_file_path: Optional[Path] = resolve_log_file_path()
@@ -258,6 +268,22 @@ class BuildManager:
             return None
         key = str(name).strip()
         return key or None
+
+    def _find_handle_for_playlist_locked(
+        self, playlist_name: Optional[str]
+    ) -> Optional[_ProcessHandle]:
+        normalized = self._normalize_playlist_key(playlist_name)
+        if not normalized:
+            return None
+
+        for handle in self._processes:
+            job = handle.job or {}
+            if job.get("type") == "playlist":
+                candidate = self._normalize_playlist_key(job.get("playlist"))
+                if candidate == normalized:
+                    return handle
+
+        return None
 
     @classmethod
     def _extract_info_message(cls, line: str) -> Optional[str]:
@@ -302,7 +328,7 @@ class BuildManager:
         }
         self._playlist_logs[playlist_name] = [entry]
         self._passive_last_message = message
-        if self._process is None:
+        if not self._processes:
             self._last_message = message
 
     def _record_filtering_progress_locked(
@@ -324,14 +350,11 @@ class BuildManager:
         }
         self._playlist_logs[playlist_name] = [entry]
         self._passive_last_message = entry["text"]
-        if self._process is None:
+        if not self._processes:
             self._last_message = entry["text"]
 
-        if (
-            self._active_job
-            and self._active_job.get("type") == "playlist"
-            and self._active_job.get("playlist") == playlist_name
-        ):
+        handle = self._find_handle_for_playlist_locked(playlist_name)
+        if handle is not None:
             progress_snapshot = {
                 key: entry.get(key)
                 for key in (
@@ -345,7 +368,7 @@ class BuildManager:
                     "eta",
                 )
             }
-            self._active_job["progress"] = progress_snapshot
+            handle.job["progress"] = progress_snapshot
 
     def _prune_general_logs_locked(
         self, reference_time: Optional[datetime] = None
@@ -397,7 +420,7 @@ class BuildManager:
         self._general_logs.append(entry)
         self._prune_general_logs_locked(entry["timestamp"])
         self._passive_last_message = message
-        if self._process is None:
+        if not self._processes:
             self._last_message = message
 
     def _remove_waiting_playlist_locked(self, playlist_name: Optional[str]) -> None:
@@ -513,9 +536,9 @@ class BuildManager:
         if playlist_name:
             if normalized.startswith("building playlist:"):
                 self._observed_active_playlists.add(playlist_name)
-                if self._process is None and not self._passive_running:
+                if not self._processes and not self._passive_running:
                     self._passive_last_started_at = now
-                if self._process is None:
+                if not self._processes:
                     self._passive_running = True
                     self._passive_last_state = "running"
                     if not self._passive_job or self._passive_job.get("type") != "all":
@@ -525,9 +548,9 @@ class BuildManager:
                         }
             elif normalized.startswith("build started for playlist"):
                 self._observed_active_playlists.add(playlist_name)
-                if self._process is None and not self._passive_running:
+                if not self._processes and not self._passive_running:
                     self._passive_last_started_at = now
-                if self._process is None:
+                if not self._processes:
                     self._passive_running = True
                     self._passive_last_state = "running"
                     if not self._passive_job or self._passive_job.get("type") != "all":
@@ -548,7 +571,7 @@ class BuildManager:
                     self._passive_last_state = "success"
                 self._observed_active_playlists.discard(playlist_name)
                 if (
-                    self._process is None
+                    not self._processes
                     and not self._observed_active_playlists
                     and (not self._passive_job or self._passive_job.get("type") != "all")
                 ):
@@ -557,30 +580,30 @@ class BuildManager:
                     self._passive_job = None
         else:
             if normalized.startswith("processing") and "playlist" in normalized:
-                if self._process is None and not self._passive_running:
+                if not self._processes and not self._passive_running:
                     self._passive_last_started_at = now
-                if self._process is None:
+                if not self._processes:
                     self._passive_running = True
                     self._passive_last_state = "running"
                     self._passive_job = {"type": "all"}
             elif normalized.startswith("build for all playlists started"):
-                if self._process is None and not self._passive_running:
+                if not self._processes and not self._passive_running:
                     self._passive_last_started_at = now
-                if self._process is None:
+                if not self._processes:
                     self._passive_running = True
                     self._passive_last_state = "running"
                     self._passive_job = {"type": "all"}
             elif normalized.startswith("✅ all playlists processed") or normalized.startswith(
                 "✅ selected playlists processed"
             ):
-                if self._process is None:
+                if not self._processes:
                     self._passive_running = False
                     self._passive_last_finished_at = now
                     self._passive_job = None
                     self._passive_last_state = "success"
                     self._queued_playlists = []
             elif normalized.startswith("sleeping for") or "completed successfully" in normalized:
-                if self._process is None:
+                if not self._processes:
                     self._passive_running = False
                     self._passive_last_finished_at = now
                     self._passive_job = None
@@ -591,14 +614,14 @@ class BuildManager:
                     else:
                         self._passive_last_state = "success"
             elif "failed" in normalized:
-                if self._process is None:
+                if not self._processes:
                     self._passive_last_state = "error"
                     self._passive_running = False
                     self._passive_last_finished_at = now
                     self._passive_job = None
                     self._queued_playlists = []
             elif "stopped" in normalized:
-                if self._process is None:
+                if not self._processes:
                     self._passive_last_state = "stopped"
                     self._passive_running = False
                     self._passive_last_finished_at = now
@@ -894,7 +917,9 @@ class BuildManager:
             elif not handled_progress:
                 self._append_general_log_locked(info_message)
 
-    def _consume_process_output(self, stream: IO[str]) -> None:
+    def _consume_process_output(
+        self, handle: _ProcessHandle, stream: IO[str]
+    ) -> None:
         pending = ""
         try:
             for raw_line in stream:
@@ -923,7 +948,20 @@ class BuildManager:
             except Exception:  # pragma: no cover - defensive
                 pass
             with self._lock:
-                self._log_thread = None
+                if handle in self._processes:
+                    handle.log_thread = None
+    def _parallel_limit_locked(self) -> int:
+        config_data = _load_config_data()
+        runtime_cfg = config_data.get("runtime") or {}
+        value = runtime_cfg.get("max_workers")
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            numeric = 1
+        if numeric < 1:
+            numeric = 1
+        return numeric
+
     def _launch_job_locked(self, job: Dict[str, Any]) -> Tuple[bool, str]:
         command = list(self._command)
         job_type = job.get("type")
@@ -938,6 +976,7 @@ class BuildManager:
             playlist_name = playlist_name.strip()
             command = command + ["--playlist", playlist_name]
             job_payload: Dict[str, Any] = {"type": "playlist", "playlist": playlist_name}
+            job_payload["active_playlists"] = [playlist_name]
             job_message = f"Build started for playlist '{playlist_name}'."
             self._playlist_logs.pop(playlist_name, None)
         else:
@@ -958,8 +997,6 @@ class BuildManager:
             )
         except Exception as exc:  # pragma: no cover - defensive
             error_message = f"Unable to start build: {exc}"
-            self._process = None
-            self._active_job = None
             self._last_message = error_message
             self._last_started_at = None
             self._last_finished_at = _utcnow()
@@ -967,23 +1004,23 @@ class BuildManager:
             self._last_run_state = "error"
             return False, error_message
 
-        self._process = process
-        self._active_job = job_payload
+        handle = _ProcessHandle(process=process, job=job_payload)
+        handle.last_message = job_message
+        self._processes.append(handle)
         self._last_exit_code = None
         self._last_finished_at = None
-        self._last_started_at = _utcnow()
+        self._last_started_at = handle.started_at
         self._last_message = job_message
-        self._stop_requested = False
         self._last_run_state = None
 
         if process.stdout is not None:
             thread = threading.Thread(
                 target=self._consume_process_output,
-                args=(process.stdout,),
-                name="build-log-consumer",
+                args=(handle, process.stdout),
+                name=f"build-log-consumer-{process.pid}",
                 daemon=True,
             )
-            self._log_thread = thread
+            handle.log_thread = thread
             thread.start()
 
         if playlist_name:
@@ -991,12 +1028,17 @@ class BuildManager:
         self._sync_waiting_from_pending_locked()
         return True, job_message
 
-    def _launch_next_pending_job_locked(self) -> None:
-        while self._pending_jobs:
-            next_job = self._pending_jobs.pop(0)
+    def _launch_jobs_if_capacity_locked(self) -> None:
+        limit = self._parallel_limit_locked()
+        while self._pending_jobs and len(self._processes) < limit:
+            next_job = dict(self._pending_jobs[0])
             success, _ = self._launch_job_locked(next_job)
             if success:
-                return
+                self._pending_jobs.pop(0)
+            else:
+                # Prevent tight loop if job cannot start.
+                self._pending_jobs.pop(0)
+                break
         self._sync_waiting_from_pending_locked()
 
 
@@ -1028,66 +1070,82 @@ class BuildManager:
                 self._last_playlist_results[playlist_name] = result
 
     def _normalize_process_state_locked(self) -> None:
-        if self._process is None:
+        if not self._processes:
             return
 
-        return_code = self._process.poll()
-        if return_code is None:
-            return
+        active_handles: List[_ProcessHandle] = []
+        any_finished = False
 
-        job = self._active_job.copy() if self._active_job is not None else None
-        started_at = self._last_started_at
-        finished_at = _utcnow()
-        self._last_exit_code = return_code
-        self._process = None
-        self._last_finished_at = finished_at
+        for handle in list(self._processes):
+            return_code = handle.process.poll()
+            if return_code is None:
+                active_handles.append(handle)
+                continue
 
-        if self._stop_requested:
-            if job and job.get("type") == "playlist" and job.get("playlist"):
-                self._last_message = f"Build for playlist '{job['playlist']}' stopped."
-            elif job and job.get("type") == "all":
-                self._last_message = "Build for all playlists stopped."
+            any_finished = True
+            finished_at = _utcnow()
+            handle.exit_code = return_code
+            handle.finished_at = finished_at
+            self._last_exit_code = return_code
+            self._last_finished_at = finished_at
+
+            job_snapshot = handle.job.copy() if isinstance(handle.job, dict) else {}
+            started_at = handle.started_at
+
+            if handle.stop_requested:
+                if job_snapshot.get("type") == "playlist" and job_snapshot.get("playlist"):
+                    message = f"Build for playlist '{job_snapshot['playlist']}' stopped."
+                elif job_snapshot.get("type") == "all":
+                    message = "Build for all playlists stopped."
+                else:
+                    message = "Build process stopped."
+                state = "stopped"
             else:
-                self._last_message = "Build process stopped."
-            state = "stopped"
-        else:
-            if return_code == 0:
-                self._last_message = "Build completed successfully."
-                state = "success"
-            else:
-                self._last_message = f"Build exited with code {return_code}."
-                state = "error"
+                if return_code == 0:
+                    message = "Build completed successfully."
+                    state = "success"
+                else:
+                    message = f"Build exited with code {return_code}."
+                    state = "error"
 
-        self._record_job_result_locked(
-            job,
-            return_code,
-            started_at,
-            finished_at,
-            state,
-            self._last_message,
-        )
-        self._last_run_state = state
-        self._active_job = None
-        self._stop_requested = False
-        if job and job.get("type") == "playlist":
-            self._remove_waiting_playlist_locked(job.get("playlist"))
-        if not self._pending_jobs:
-            self._queued_playlists = []
-        self._observed_active_playlists.clear()
-        self._passive_running = False
-        self._passive_job = None
-        self._passive_last_state = state
-        self._passive_last_started_at = started_at
-        self._passive_last_finished_at = finished_at
-        self._passive_last_message = self._last_message
-        self._sync_waiting_from_pending_locked()
-        self._launch_next_pending_job_locked()
+            self._last_message = message
+            self._record_job_result_locked(
+                job_snapshot,
+                return_code,
+                started_at,
+                finished_at,
+                state,
+                message,
+            )
+            self._last_run_state = state
+
+            playlist_name = job_snapshot.get("playlist")
+            if playlist_name:
+                self._remove_waiting_playlist_locked(playlist_name)
+                self._observed_active_playlists.discard(playlist_name)
+
+        self._processes = active_handles
+
+        if not self._processes:
+            if not self._pending_jobs:
+                self._queued_playlists = []
+            self._observed_active_playlists.clear()
+            self._passive_running = False
+            self._passive_job = None
+            self._passive_last_state = self._last_run_state
+            self._passive_last_started_at = None
+            self._passive_last_finished_at = self._last_finished_at
+            self._passive_last_message = self._last_message
+
+        if any_finished:
+            self._sync_waiting_from_pending_locked()
+            self._launch_jobs_if_capacity_locked()
 
     def _status_snapshot_locked(self) -> Dict[str, Any]:
         self._normalize_process_state_locked()
         self._sync_waiting_from_pending_locked()
 
-        running_process = self._process is not None
+        running_process = bool(self._processes)
         passive_active = self._passive_running or bool(self._observed_active_playlists)
         running = running_process or passive_active
 
@@ -1106,29 +1164,58 @@ class BuildManager:
             if normalized:
                 observed_active_names.add(normalized)
 
-        job = self._active_job.copy() if self._active_job is not None else None
-        if job is None and passive_active:
+        job: Optional[Dict[str, Any]] = None
+        if self._processes:
+            if len(self._processes) == 1:
+                handle = self._processes[0]
+                raw_job = handle.job or {}
+                job = raw_job.copy()
+                if isinstance(job.get("active_playlists"), list):
+                    job["active_playlists"] = list(job["active_playlists"])
+                job["started_at"] = _format_timestamp(handle.started_at)
+                if handle.stop_requested:
+                    job["stop_requested"] = True
+            else:
+                job = {"type": "parallel_playlists", "jobs": []}
+                for handle in self._processes:
+                    raw_job = handle.job or {}
+                    entry = raw_job.copy()
+                    if isinstance(entry.get("active_playlists"), list):
+                        entry["active_playlists"] = list(entry["active_playlists"])
+                    entry["started_at"] = _format_timestamp(handle.started_at)
+                    job["jobs"].append(entry)
+        elif passive_active:
             job = self._build_passive_job_snapshot_locked()
 
         job_active_names: Set[str] = set(observed_active_names)
-        if job:
-            if isinstance(job.get("progress"), dict):
-                job["progress"] = job["progress"].copy()
 
-            existing_active = job.get("active_playlists")
+        def _collect_names_from_job(job_payload: Optional[Dict[str, Any]]) -> None:
+            if not isinstance(job_payload, dict):
+                return
+            existing_active = job_payload.get("active_playlists")
             if isinstance(existing_active, list):
-                for name in existing_active:
-                    if isinstance(name, str):
-                        normalized = name.strip()
-                        if normalized:
-                            job_active_names.add(normalized)
+                for item in existing_active:
+                    normalized = self._normalize_playlist_key(item)
+                    if normalized:
+                        job_active_names.add(normalized)
+            playlist_value = job_payload.get("playlist")
+            normalized_playlist = self._normalize_playlist_key(playlist_value)
+            if normalized_playlist:
+                job_active_names.add(normalized_playlist)
 
-            if job.get("type") == "playlist":
-                playlist_name = job.get("playlist")
-                if isinstance(playlist_name, str):
-                    normalized_playlist = playlist_name.strip()
-                    if normalized_playlist:
-                        job_active_names.add(normalized_playlist)
+        if self._processes:
+            for handle in self._processes:
+                _collect_names_from_job(handle.job)
+
+        if job:
+            if job.get("type") == "parallel_playlists":
+                for entry in job.get("jobs", []):
+                    if isinstance(entry, dict):
+                        _collect_names_from_job(entry)
+            else:
+                if isinstance(job.get("progress"), dict):
+                    job["progress"] = job["progress"].copy()
+                _collect_names_from_job(job)
 
             if job_active_names:
                 job["active_playlists"] = sorted(job_active_names)
@@ -1169,7 +1256,12 @@ class BuildManager:
                     normalized_entries.append(entry)
             playlist_logs[name] = normalized_entries
 
-        since_timestamp = self._last_started_at if running_process else self._passive_last_started_at
+        if running_process:
+            start_times = [handle.started_at for handle in self._processes if handle.started_at]
+            since_timestamp = min(start_times) if start_times else None
+        else:
+            since_timestamp = self._passive_last_started_at
+
         finished_timestamp = (
             self._last_finished_at if running_process else self._passive_last_finished_at
         )
@@ -1185,10 +1277,15 @@ class BuildManager:
 
         active_playlists_payload = sorted(job_active_names)
 
+        if running_process and len(self._processes) == 1:
+            pid_value: Optional[int] = self._processes[0].process.pid
+        else:
+            pid_value = None
+
         return {
             "running": running,
             "status": status_label,
-            "pid": self._process.pid if running_process and self._process is not None else None,
+            "pid": pid_value,
             "since": _format_timestamp(since_timestamp),
             "last_finished": _format_timestamp(finished_timestamp),
             "exit_code": self._last_exit_code,
@@ -1229,7 +1326,8 @@ class BuildManager:
             else:
                 job = {"type": "all"}
 
-            if self._process is not None:
+            parallel_limit = self._parallel_limit_locked()
+            if len(self._processes) >= parallel_limit:
                 self._pending_jobs.append(dict(job))
                 if job.get("type") == "playlist":
                     queue_message = f"Build for playlist '{playlist_name}' queued."
@@ -1240,14 +1338,15 @@ class BuildManager:
                 status = self._status_snapshot_locked()
                 return True, status, queue_message
 
-            self._observed_active_playlists.clear()
-            self._passive_running = False
-            self._passive_job = None
-            self._passive_last_started_at = None
-            self._passive_last_finished_at = None
-            self._passive_last_message = None
-            self._passive_last_state = None
-            self._queued_playlists = []
+            if not self._processes:
+                self._observed_active_playlists.clear()
+                self._passive_running = False
+                self._passive_job = None
+                self._passive_last_started_at = None
+                self._passive_last_finished_at = None
+                self._passive_last_message = None
+                self._passive_last_state = None
+                self._queued_playlists = []
 
             success, message = self._launch_job_locked(job)
             if not success:
@@ -1255,42 +1354,53 @@ class BuildManager:
                 status["status"] = "error"
                 return False, status, message
 
+            self._launch_jobs_if_capacity_locked()
             status = self._status_snapshot_locked()
             return True, status, message
 
     def stop(self, timeout: float = 10.0) -> Tuple[bool, Dict[str, Any], Optional[str]]:
         with self._lock:
             self._normalize_process_state_locked()
-            if self._process is None:
+            if not self._processes:
                 message = "Builder is not running."
                 self._last_message = message
                 return False, self._status_snapshot_locked(), message
 
-            process = self._process
-            job = self._active_job.copy() if self._active_job is not None else None
-            if job and job.get("type") == "playlist" and job.get("playlist"):
-                stopping_message = f"Stopping build for playlist '{job['playlist']}'."
-            elif job and job.get("type") == "all":
-                stopping_message = "Stopping build for all playlists."
+            handles = list(self._processes)
+            if len(handles) == 1:
+                job = handles[0].job if isinstance(handles[0].job, dict) else {}
+                if job.get("type") == "playlist" and job.get("playlist"):
+                    stopping_message = f"Stopping build for playlist '{job['playlist']}'."
+                elif job.get("type") == "all":
+                    stopping_message = "Stopping build for all playlists."
+                else:
+                    stopping_message = "Stopping build."
             else:
-                stopping_message = "Stopping build."
+                stopping_message = "Stopping all active builds."
+
             self._last_message = stopping_message
-            self._stop_requested = True
+            for handle in handles:
+                handle.stop_requested = True
             self._pending_jobs.clear()
             self._queued_playlists = []
             self._sync_waiting_from_pending_locked()
 
-        try:
-            process.terminate()
+        encountered_error: Optional[Exception] = None
+        for handle in handles:
             try:
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        except Exception as exc:  # pragma: no cover - defensive
+                handle.process.terminate()
+                try:
+                    handle.process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    handle.process.kill()
+                    handle.process.wait(timeout=5)
+            except Exception as exc:  # pragma: no cover - defensive
+                encountered_error = exc
+                break
+
+        if encountered_error is not None:
             with self._lock:
-                self._stop_requested = False
-                error_message = f"Unable to stop build: {exc}"
+                error_message = f"Unable to stop build: {encountered_error}"
                 self._last_message = error_message
                 status = self._status_snapshot_locked()
                 status["status"] = "error"
