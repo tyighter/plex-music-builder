@@ -740,11 +740,35 @@ def _compute_spotify_popularity_score(track, spotify_provider=None, playlist_log
 
 
 def _resolve_track_popularity_value(track, spotify_provider=None, playlist_logger=None):
-    popularity = _compute_spotify_popularity_score(
-        track,
-        spotify_provider=spotify_provider,
-        playlist_logger=playlist_logger,
-    )
+    should_query_spotify = True
+
+    if spotify_provider and hasattr(spotify_provider, "inspect_track_cache"):
+        try:
+            _, cache_found, _ = spotify_provider.inspect_track_cache(track)
+        except Exception:  # pragma: no cover - defensive guard
+            cache_found = True
+        else:
+            if not cache_found:
+                should_query_spotify = False
+                if playlist_logger and hasattr(playlist_logger, "debug"):
+                    try:
+                        track_title = getattr(track, "title", "<unknown>")
+                        album_title = getattr(track, "parentTitle", "<unknown>")
+                        playlist_logger.debug(
+                            "Spotify popularity cache miss for track '%s' (album='%s'); using Plex ratingCount fallback",
+                            track_title,
+                            album_title,
+                        )
+                    except Exception:  # pragma: no cover - defensive logging guard
+                        pass
+
+    popularity = None
+    if should_query_spotify:
+        popularity = _compute_spotify_popularity_score(
+            track,
+            spotify_provider=spotify_provider,
+            playlist_logger=playlist_logger,
+        )
 
     if popularity is not None:
         return popularity
