@@ -13,7 +13,7 @@ import threading
 import copy
 from datetime import datetime, timezone
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key
 from xml.etree import ElementTree as ET
@@ -575,6 +575,35 @@ if os.path.exists(CACHE_FILE):
             metadata_cache = {}
 else:
     metadata_cache = {}
+
+# In-memory caches used during filtering. These dramatically reduce repeated
+# metadata parsing and field aggregation work when evaluating large playlists.
+_METADATA_FIELD_CACHE = OrderedDict()
+_METADATA_FIELD_CACHE_MAX_SIZE = 50000
+
+_TRACK_FIELD_CACHE = OrderedDict()
+_TRACK_FIELD_CACHE_MAX_SIZE = 20000
+
+
+def _touch_cache_entry(cache: OrderedDict, key):
+    if key in cache:
+        cache.move_to_end(key)
+
+
+def _set_cache_entry(cache: OrderedDict, key, value, max_size: int):
+    cache[key] = value
+    cache.move_to_end(key)
+    if max_size and len(cache) > max_size:
+        cache.popitem(last=False)
+
+
+def _build_track_cache_key(track):
+    if track is None:
+        return None
+    rating_key = getattr(track, "ratingKey", None)
+    if rating_key is not None:
+        return f"track:{rating_key}"
+    return f"object:{id(track)}"
 
 def save_cache():
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
@@ -3372,12 +3401,80 @@ def parse_field_from_xml(xml_text, field):
         logger.debug("XML parse error.")
         return None
 
+
+def _normalize_metadata_values(raw_value):
+    """Normalize Plex metadata values into a flat list of strings."""
+
+    normalized = []
+    if raw_value is None:
+        return normalized
+
+    if isinstance(raw_value, (list, tuple, set)):
+        iterable = raw_value
+    else:
+        iterable = [raw_value]
+
+    for item in iterable:
+        if item is None:
+            continue
+        if isinstance(item, (list, tuple, set)):
+            normalized.extend(_normalize_metadata_values(item))
+            continue
+
+        candidate = getattr(item, "tag", item)
+        if isinstance(candidate, (list, tuple, set)):
+            normalized.extend(_normalize_metadata_values(candidate))
+            continue
+
+        text = str(candidate).strip()
+        if text:
+            normalized.append(text)
+        elif candidate in {0, 0.0}:
+            normalized.append(str(candidate))
+
+    return normalized
+
+
+def _extract_metadata_values(source_key, field_name):
+    """Return normalized metadata values for a given Plex rating key."""
+
+    if not source_key or not field_name:
+        return []
+
+    cache_key = (str(source_key), str(field_name))
+    cached = _METADATA_FIELD_CACHE.get(cache_key)
+    if cached is not None:
+        _touch_cache_entry(_METADATA_FIELD_CACHE, cache_key)
+        return list(cached)
+
+    try:
+        xml_text = fetch_full_metadata(source_key)
+        xml_val = parse_field_from_xml(xml_text, field_name)
+    except Exception as exc:
+        logger.debug(f"Metadata error for key {source_key}: {exc}")
+        _set_cache_entry(_METADATA_FIELD_CACHE, cache_key, tuple(), _METADATA_FIELD_CACHE_MAX_SIZE)
+        return []
+
+    normalized = tuple(_normalize_metadata_values(xml_val))
+    _set_cache_entry(_METADATA_FIELD_CACHE, cache_key, normalized, _METADATA_FIELD_CACHE_MAX_SIZE)
+    return list(normalized)
+
 # ----------------------------
 # Attribute Retrieval (with Cache)
 # ----------------------------
 def get_field_value(track, field):
     """Retrieve and merge a field (e.g., genres) from track, album, and artist levels with caching."""
-    values = set()  # use a set to avoid duplicates
+
+    cache_key = _build_track_cache_key(track)
+    if cache_key is not None:
+        cached_bucket = _TRACK_FIELD_CACHE.get(cache_key)
+        if cached_bucket is not None:
+            _touch_cache_entry(_TRACK_FIELD_CACHE, cache_key)
+            cached_values = cached_bucket.get(field)
+            if cached_values is not None:
+                return list(cached_values)
+
+    values = set()
 
     resolved_field = FIELD_ALIASES.get(field, field)
     if resolved_field != field:
@@ -3391,58 +3488,14 @@ def get_field_value(track, field):
             merge_styles_for_genres = True
             break
 
-    def _normalize_to_list(raw_value):
-        """Normalize Plex metadata values into a flat list of strings."""
-        normalized = []
-        if raw_value is None:
-            return normalized
-
-        if isinstance(raw_value, (list, tuple, set)):
-            iterable = raw_value
-        else:
-            iterable = [raw_value]
-
-        for item in iterable:
-            if item is None:
-                continue
-            if isinstance(item, (list, tuple, set)):
-                normalized.extend(_normalize_to_list(item))
-                continue
-
-            candidate = getattr(item, "tag", item)
-            if isinstance(candidate, (list, tuple, set)):
-                normalized.extend(_normalize_to_list(candidate))
-                continue
-
-            text = str(candidate).strip()
-            if text:
-                normalized.append(text)
-            elif candidate in {0, 0.0}:
-                normalized.append(str(candidate))
-
-        return normalized
-
-    # Helper to extract and normalize field values
-    def extract_values(source_key, field_name):
-        if not source_key:
-            return []
-        try:
-            xml_text = fetch_full_metadata(source_key)
-            xml_val = parse_field_from_xml(xml_text, field_name)
-            if xml_val is not None:
-                return _normalize_to_list(xml_val)
-        except Exception as e:
-            logger.debug(f"Metadata error for key {source_key}: {e}")
-        return []
-
     # Album type needs to collate information explicitly from album objects
     if field == "album.type":
         parent_key = getattr(track, "parentRatingKey", None)
         if parent_key:
-            values.update(extract_values(parent_key, "type"))
+            values.update(_extract_metadata_values(parent_key, "type"))
 
         parent_type = getattr(track, "parentType", None)
-        values.update(_normalize_to_list(parent_type))
+        values.update(_normalize_metadata_values(parent_type))
 
         album_obj = getattr(track, "album", None)
         album = None
@@ -3454,9 +3507,18 @@ def get_field_value(track, field):
         else:
             album = album_obj
         if album is not None:
-            values.update(_normalize_to_list(getattr(album, "type", None)))
+            values.update(_normalize_metadata_values(getattr(album, "type", None)))
 
-        return sorted(values)
+        result = sorted(values)
+        if cache_key is not None:
+            bucket = _TRACK_FIELD_CACHE.get(cache_key)
+            if bucket is None:
+                bucket = {}
+                _set_cache_entry(_TRACK_FIELD_CACHE, cache_key, bucket, _TRACK_FIELD_CACHE_MAX_SIZE)
+            else:
+                _touch_cache_entry(_TRACK_FIELD_CACHE, cache_key)
+            bucket[field] = tuple(result)
+        return result
 
     seen_fields = set()
     style_sources_collected = set()
@@ -3476,7 +3538,7 @@ def get_field_value(track, field):
                     val = val()
                 except TypeError:
                     val = None
-            values.update(_normalize_to_list(val))
+            values.update(_normalize_metadata_values(val))
 
         if merge_styles_for_genres:
             track_styles = getattr(track, "styles", None)
@@ -3486,30 +3548,30 @@ def get_field_value(track, field):
                         track_styles = track_styles()
                     except TypeError:
                         track_styles = None
-                values.update(_normalize_to_list(track_styles))
+                values.update(_normalize_metadata_values(track_styles))
 
         # 2️⃣ Try cached XML for the track
         track_key = getattr(track, "ratingKey", None)
         if track_key:
-            values.update(extract_values(track_key, candidate))
+            values.update(_extract_metadata_values(track_key, candidate))
             if merge_styles_for_genres and "track" not in style_sources_collected:
-                values.update(extract_values(track_key, "styles"))
+                values.update(_extract_metadata_values(track_key, "styles"))
                 style_sources_collected.add("track")
 
         # 3️⃣ Try album level
         parent_key = getattr(track, "parentRatingKey", None)
         if parent_key:
-            values.update(extract_values(parent_key, candidate))
+            values.update(_extract_metadata_values(parent_key, candidate))
             if merge_styles_for_genres and "album" not in style_sources_collected:
-                values.update(extract_values(parent_key, "styles"))
+                values.update(_extract_metadata_values(parent_key, "styles"))
                 style_sources_collected.add("album")
 
         # 4️⃣ Try artist level
         artist_key = getattr(track, "grandparentRatingKey", None)
         if artist_key:
-            values.update(extract_values(artist_key, candidate))
+            values.update(_extract_metadata_values(artist_key, candidate))
             if merge_styles_for_genres and "artist" not in style_sources_collected:
-                values.update(extract_values(artist_key, "styles"))
+                values.update(_extract_metadata_values(artist_key, "styles"))
                 style_sources_collected.add("artist")
 
         return len(values) > before
@@ -3522,8 +3584,17 @@ def get_field_value(track, field):
     if not collected and resolved_field != field:
         collect_from_candidate(field)
 
-    # Return sorted list for consistency
-    return sorted(values)
+    result = sorted(values)
+    if cache_key is not None:
+        bucket = _TRACK_FIELD_CACHE.get(cache_key)
+        if bucket is None:
+            bucket = {}
+            _set_cache_entry(_TRACK_FIELD_CACHE, cache_key, bucket, _TRACK_FIELD_CACHE_MAX_SIZE)
+        else:
+            _touch_cache_entry(_TRACK_FIELD_CACHE, cache_key)
+        bucket[field] = tuple(result)
+
+    return result
 
 # ----------------------------
 # Field Comparison
