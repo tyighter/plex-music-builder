@@ -249,6 +249,7 @@ class BuildManager:
         self._queued_playlists: List[str] = []
         self._max_initial_log_read = 65536
         self._last_run_state: Optional[str] = None
+        self._pending_jobs: List[Dict[str, Any]] = []
         self._start_log_watcher()
 
     @staticmethod
@@ -398,6 +399,39 @@ class BuildManager:
         self._passive_last_message = message
         if self._process is None:
             self._last_message = message
+
+    def _remove_waiting_playlist_locked(self, playlist_name: Optional[str]) -> None:
+        normalized = self._normalize_playlist_key(playlist_name)
+        if not normalized:
+            return
+        self._queued_playlists = [
+            name
+            for name in self._queued_playlists
+            if self._normalize_playlist_key(name) != normalized
+        ]
+
+    def _sync_waiting_from_pending_locked(self) -> None:
+        pending_names: List[str] = []
+        for job in self._pending_jobs:
+            if job.get("type") == "playlist":
+                name = job.get("playlist")
+                if isinstance(name, str):
+                    normalized = name.strip()
+                    if normalized:
+                        pending_names.append(normalized)
+        if not pending_names:
+            return
+        existing = {
+            self._normalize_playlist_key(name)
+            for name in self._queued_playlists
+            if isinstance(name, str)
+        }
+        for name in pending_names:
+            normalized = self._normalize_playlist_key(name)
+            if normalized and normalized not in existing:
+                self._queued_playlists.append(name)
+                existing.add(normalized)
+
 
     def _start_log_watcher(self) -> None:
         if self._log_file_path is None:
@@ -638,7 +672,8 @@ class BuildManager:
     ) -> None:
         queue_names = self._parse_processing_playlist_message(message)
         if queue_names is not None:
-            self._queued_playlists = queue_names
+            self._queued_playlists = list(queue_names)
+            self._sync_waiting_from_pending_locked()
             return
 
         normalized_message = message.strip().lower()
@@ -648,17 +683,15 @@ class BuildManager:
             if normalized_message.startswith("building playlist:") or normalized_message.startswith(
                 "build started for playlist"
             ):
-                self._queued_playlists = [
-                    name for name in self._queued_playlists if name != normalized_name
-                ]
+                self._remove_waiting_playlist_locked(playlist_name)
             elif normalized_message.startswith("✅") or "failed" in normalized_message or "stopped" in normalized_message:
-                self._queued_playlists = [
-                    name for name in self._queued_playlists if name != normalized_name
-                ]
+                self._remove_waiting_playlist_locked(playlist_name)
         elif normalized_message.startswith("✅ all playlists processed") or normalized_message.startswith(
             "✅ selected playlists processed"
         ) or normalized_message.startswith("sleeping for"):
             self._queued_playlists = []
+
+        self._sync_waiting_from_pending_locked()
 
     def _build_passive_job_snapshot_locked(self) -> Optional[Dict[str, Any]]:
         if self._passive_job:
@@ -870,9 +903,20 @@ class BuildManager:
                 pending += raw_line
                 segments = re.split(r"[\r\n]+", pending)
                 if pending and pending[-1] not in {"\r", "\n"}:
-                    pending = segments.pop()
+                    if segments:
+                        pending = segments.pop()
+                    else:
+                        pending = ""
                 else:
                     pending = ""
+                for segment in segments:
+                    sanitized = segment.strip("\r\n")
+                    if sanitized:
+                        self._handle_log_line(sanitized)
+            if pending:
+                sanitized = pending.strip("\r\n")
+                if sanitized:
+                    self._handle_log_line(sanitized)
         finally:
             try:
                 stream.close()
@@ -880,6 +924,81 @@ class BuildManager:
                 pass
             with self._lock:
                 self._log_thread = None
+    def _launch_job_locked(self, job: Dict[str, Any]) -> Tuple[bool, str]:
+        command = list(self._command)
+        job_type = job.get("type")
+        playlist_name: Optional[str] = None
+
+        if job_type == "playlist":
+            playlist_name = job.get("playlist")
+            if not isinstance(playlist_name, str) or not playlist_name.strip():
+                message = "Playlist name is required to start a build."
+                self._last_message = message
+                return False, message
+            playlist_name = playlist_name.strip()
+            command = command + ["--playlist", playlist_name]
+            job_payload: Dict[str, Any] = {"type": "playlist", "playlist": playlist_name}
+            job_message = f"Build started for playlist '{playlist_name}'."
+            self._playlist_logs.pop(playlist_name, None)
+        else:
+            job_payload = {"type": "all"}
+            job_message = "Build for all playlists started."
+            self._playlist_logs = {}
+            self._general_logs = []
+
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=self._work_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                encoding="utf-8",
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            error_message = f"Unable to start build: {exc}"
+            self._process = None
+            self._active_job = None
+            self._last_message = error_message
+            self._last_started_at = None
+            self._last_finished_at = _utcnow()
+            self._last_exit_code = None
+            self._last_run_state = "error"
+            return False, error_message
+
+        self._process = process
+        self._active_job = job_payload
+        self._last_exit_code = None
+        self._last_finished_at = None
+        self._last_started_at = _utcnow()
+        self._last_message = job_message
+        self._stop_requested = False
+        self._last_run_state = None
+
+        if process.stdout is not None:
+            thread = threading.Thread(
+                target=self._consume_process_output,
+                args=(process.stdout,),
+                name="build-log-consumer",
+                daemon=True,
+            )
+            self._log_thread = thread
+            thread.start()
+
+        if playlist_name:
+            self._remove_waiting_playlist_locked(playlist_name)
+        self._sync_waiting_from_pending_locked()
+        return True, job_message
+
+    def _launch_next_pending_job_locked(self) -> None:
+        while self._pending_jobs:
+            next_job = self._pending_jobs.pop(0)
+            success, _ = self._launch_job_locked(next_job)
+            if success:
+                return
+        self._sync_waiting_from_pending_locked()
+
 
     def _record_job_result_locked(
         self,
@@ -950,7 +1069,10 @@ class BuildManager:
         self._last_run_state = state
         self._active_job = None
         self._stop_requested = False
-        self._queued_playlists = []
+        if job and job.get("type") == "playlist":
+            self._remove_waiting_playlist_locked(job.get("playlist"))
+        if not self._pending_jobs:
+            self._queued_playlists = []
         self._observed_active_playlists.clear()
         self._passive_running = False
         self._passive_job = None
@@ -958,9 +1080,12 @@ class BuildManager:
         self._passive_last_started_at = started_at
         self._passive_last_finished_at = finished_at
         self._passive_last_message = self._last_message
+        self._sync_waiting_from_pending_locked()
+        self._launch_next_pending_job_locked()
 
     def _status_snapshot_locked(self) -> Dict[str, Any]:
         self._normalize_process_state_locked()
+        self._sync_waiting_from_pending_locked()
 
         running_process = self._process is not None
         passive_active = self._passive_running or bool(self._observed_active_playlists)
@@ -1088,10 +1213,6 @@ class BuildManager:
     def start(self, playlist: Optional[str] = None) -> Tuple[bool, Dict[str, Any], Optional[str]]:
         with self._lock:
             self._normalize_process_state_locked()
-            if self._process is not None:
-                message = "Builder is already running."
-                self._last_message = message
-                return False, self._status_snapshot_locked(), message
 
             playlist_name: Optional[str]
             if playlist is None:
@@ -1103,6 +1224,22 @@ class BuildManager:
                     self._last_message = message
                     return False, self._status_snapshot_locked(), message
 
+            if playlist_name:
+                job: Dict[str, Any] = {"type": "playlist", "playlist": playlist_name}
+            else:
+                job = {"type": "all"}
+
+            if self._process is not None:
+                self._pending_jobs.append(dict(job))
+                if job.get("type") == "playlist":
+                    queue_message = f"Build for playlist '{playlist_name}' queued."
+                else:
+                    queue_message = "Build for all playlists queued."
+                self._last_message = queue_message
+                self._sync_waiting_from_pending_locked()
+                status = self._status_snapshot_locked()
+                return True, status, queue_message
+
             self._observed_active_playlists.clear()
             self._passive_running = False
             self._passive_job = None
@@ -1111,60 +1248,15 @@ class BuildManager:
             self._passive_last_message = None
             self._passive_last_state = None
             self._queued_playlists = []
-            self._last_run_state = None
 
-            command = list(self._command)
-            job: Dict[str, Any]
-            if playlist_name:
-                command = command + ["--playlist", playlist_name]
-                job = {"type": "playlist", "playlist": playlist_name}
-                job_message = f"Build started for playlist '{playlist_name}'."
-                self._playlist_logs.pop(playlist_name, None)
-            else:
-                job = {"type": "all"}
-                job_message = "Build for all playlists started."
-                self._playlist_logs = {}
-                self._general_logs = []
-
-            try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=self._work_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    encoding="utf-8",
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                error_message = f"Unable to start build: {exc}"
-                self._process = None
-                self._last_message = error_message
-                self._last_started_at = None
-                self._last_finished_at = _utcnow()
-                self._last_exit_code = None
-                self._last_run_state = "error"
+            success, message = self._launch_job_locked(job)
+            if not success:
                 status = self._status_snapshot_locked()
                 status["status"] = "error"
-                return False, status, error_message
+                return False, status, message
 
-            self._process = process
-            self._active_job = job
-            self._last_exit_code = None
-            self._last_finished_at = None
-            self._last_started_at = _utcnow()
-            self._last_message = job_message
-            self._stop_requested = False
-            if process.stdout is not None:
-                self._log_thread = threading.Thread(
-                    target=self._consume_process_output,
-                    args=(process.stdout,),
-                    name="build-log-consumer",
-                    daemon=True,
-                )
-                self._log_thread.start()
             status = self._status_snapshot_locked()
-            return True, status, job_message
+            return True, status, message
 
     def stop(self, timeout: float = 10.0) -> Tuple[bool, Dict[str, Any], Optional[str]]:
         with self._lock:
@@ -1184,6 +1276,9 @@ class BuildManager:
                 stopping_message = "Stopping build."
             self._last_message = stopping_message
             self._stop_requested = True
+            self._pending_jobs.clear()
+            self._queued_playlists = []
+            self._sync_waiting_from_pending_locked()
 
         try:
             process.terminate()
