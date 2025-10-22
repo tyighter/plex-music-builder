@@ -134,6 +134,16 @@ def _coerce_positive_float(value):
     return numeric
 
 
+def _coerce_positive_int(value):
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    return numeric
+
+
 spotify_cfg = cfg.get("spotify", {}) or {}
 SPOTIFY_CLIENT_ID = spotify_cfg.get("client_id")
 SPOTIFY_CLIENT_SECRET = spotify_cfg.get("client_secret")
@@ -155,6 +165,27 @@ if _spotify_retry_backoff is None:
     SPOTIFY_REQUEST_RETRY_BACKOFF = 5.0
 else:
     SPOTIFY_REQUEST_RETRY_BACKOFF = _spotify_retry_backoff
+
+
+_spotify_chunk_setting = spotify_cfg.get("population_chunk_size")
+if isinstance(_spotify_chunk_setting, bool) and not _spotify_chunk_setting:
+    SPOTIFY_POPULATION_CHUNK_SIZE = None
+else:
+    _spotify_chunk_size = _coerce_positive_int(_spotify_chunk_setting)
+    if _spotify_chunk_size is None:
+        SPOTIFY_POPULATION_CHUNK_SIZE = 1000
+    else:
+        SPOTIFY_POPULATION_CHUNK_SIZE = _spotify_chunk_size
+
+_spotify_chunk_delay_setting = spotify_cfg.get("population_chunk_delay_seconds")
+if isinstance(_spotify_chunk_delay_setting, bool) and not _spotify_chunk_delay_setting:
+    SPOTIFY_POPULATION_CHUNK_DELAY = 0.0
+else:
+    _spotify_chunk_delay = _coerce_positive_float(_spotify_chunk_delay_setting)
+    if _spotify_chunk_delay is None:
+        SPOTIFY_POPULATION_CHUNK_DELAY = SPOTIFY_REQUEST_RETRY_BACKOFF
+    else:
+        SPOTIFY_POPULATION_CHUNK_DELAY = _spotify_chunk_delay
 
 
 _spotify_cache_file_setting = spotify_cfg.get("cache_file")
@@ -4376,6 +4407,23 @@ def build_spotify_popularity_cache():
                 cached_profiles,
             )
 
+    total_pending_entries = len(pending_rating_keys)
+
+    chunk_size = SPOTIFY_POPULATION_CHUNK_SIZE or 0
+    chunk_delay = SPOTIFY_POPULATION_CHUNK_DELAY or 0.0
+    if chunk_size and total_pending_entries:
+        if chunk_delay > 0:
+            spotify_logger.info(
+                "Spotify popularity cache build will pause for %.2fs after every %d track(s) to reduce Spotify load.",
+                chunk_delay,
+                chunk_size,
+            )
+        else:
+            spotify_logger.info(
+                "Spotify popularity cache build will process tracks in chunks of %d before continuing immediately.",
+                chunk_size,
+            )
+
     initial_cached_progress = cached_profiles
     initial_progress = initial_cached_progress + processed_pending
 
@@ -4398,6 +4446,8 @@ def build_spotify_popularity_cache():
         provider.save_cache()
 
     start_time = time.perf_counter()
+
+    initial_processed_counter = processed_pending
 
     if resuming:
         def _iter_pending():
@@ -4468,6 +4518,31 @@ def build_spotify_popularity_cache():
                     provider.save_cache()
 
                 progress_bar.update(1)
+
+                if chunk_size:
+                    processed_in_run = processed_pending - initial_processed_counter
+                    remaining_in_run = max(total_pending_entries - processed_in_run, 0)
+                    if processed_pending % chunk_size == 0 and remaining_in_run > 0:
+                        provider.save_cache()
+                        chunk_processed_run = processed_in_run
+                        chunk_processed_total = processed_pending
+                        if chunk_delay > 0:
+                            spotify_logger.info(
+                                "Chunk boundary reached (%d processed this run, %d total); %d track(s) remain. "
+                                "Sleeping for %.2fs to respect Spotify rate limits.",
+                                chunk_processed_run,
+                                chunk_processed_total,
+                                remaining_in_run,
+                                chunk_delay,
+                            )
+                            time.sleep(chunk_delay)
+                        else:
+                            spotify_logger.info(
+                                "Chunk boundary reached (%d processed this run, %d total); %d track(s) remain.",
+                                chunk_processed_run,
+                                chunk_processed_total,
+                                remaining_in_run,
+                            )
     finally:
         progress_bar.close()
 
