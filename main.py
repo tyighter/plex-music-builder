@@ -124,6 +124,16 @@ SAVE_INTERVAL = runtime_cfg.get("save_interval", 100)  # save cache every N item
 PLAYLIST_CHUNK_SIZE = runtime_cfg.get("playlist_chunk_size", 200)
 MAX_WORKERS = runtime_cfg.get("max_workers", 3)
 
+def _coerce_positive_float(value):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    return numeric
+
+
 spotify_cfg = cfg.get("spotify", {}) or {}
 SPOTIFY_CLIENT_ID = spotify_cfg.get("client_id")
 SPOTIFY_CLIENT_SECRET = spotify_cfg.get("client_secret")
@@ -145,16 +155,6 @@ if _spotify_retry_backoff is None:
     SPOTIFY_REQUEST_RETRY_BACKOFF = 5.0
 else:
     SPOTIFY_REQUEST_RETRY_BACKOFF = _spotify_retry_backoff
-
-
-def _coerce_positive_float(value):
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    if numeric <= 0:
-        return None
-    return numeric
 
 
 _spotify_cache_file_setting = spotify_cfg.get("cache_file")
