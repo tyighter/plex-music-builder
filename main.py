@@ -130,6 +130,22 @@ SPOTIFY_CLIENT_SECRET = spotify_cfg.get("client_secret")
 SPOTIFY_MARKET = spotify_cfg.get("market")
 SPOTIFY_SEARCH_LIMIT = spotify_cfg.get("search_limit", 10)
 
+_spotify_min_interval = _coerce_positive_float(
+    spotify_cfg.get("request_min_interval_seconds")
+)
+if _spotify_min_interval is None:
+    SPOTIFY_REQUEST_MIN_INTERVAL = 0.25
+else:
+    SPOTIFY_REQUEST_MIN_INTERVAL = _spotify_min_interval
+
+_spotify_retry_backoff = _coerce_positive_float(
+    spotify_cfg.get("request_retry_backoff_seconds")
+)
+if _spotify_retry_backoff is None:
+    SPOTIFY_REQUEST_RETRY_BACKOFF = 5.0
+else:
+    SPOTIFY_REQUEST_RETRY_BACKOFF = _spotify_retry_backoff
+
 
 def _coerce_positive_float(value):
     try:
@@ -1035,6 +1051,13 @@ class SpotifyPopularityProvider:
         self._last_populated_summary = None
         self.market = self._normalize_market(SPOTIFY_MARKET)
         self.search_limit = self._coerce_search_limit(SPOTIFY_SEARCH_LIMIT)
+        self._rate_lock = threading.Lock()
+        self._next_allowed_request = 0.0
+        self._backoff_until = 0.0
+        self._min_request_interval = max(0.0, SPOTIFY_REQUEST_MIN_INTERVAL or 0.0)
+        self._retry_backoff_seconds = max(0.0, SPOTIFY_REQUEST_RETRY_BACKOFF or 0.0)
+        self._population_state_lock = threading.Lock()
+        self._population_state = None
 
         self._load_cache()
         self._load_state()
@@ -1073,6 +1096,165 @@ class SpotifyPopularityProvider:
         except (TypeError, ValueError):
             numeric = 10
         return max(1, numeric)
+
+    def _throttle_spotify_request(self):
+        min_interval = self._min_request_interval
+
+        if min_interval <= 0 and self._backoff_until <= 0:
+            return
+
+        while True:
+            with self._rate_lock:
+                now = time.monotonic()
+                wait_until = max(self._next_allowed_request, self._backoff_until)
+                if now >= wait_until:
+                    next_time = now + min_interval if min_interval > 0 else now
+                    self._next_allowed_request = next_time
+                    return
+
+                sleep_for = wait_until - now
+
+            if sleep_for <= 0:
+                return
+
+            time.sleep(min(sleep_for, 5.0))
+
+    def _register_rate_limit_backoff(self, retry_after=None, minimum=None):
+        delay = 0.0
+
+        for candidate in (retry_after, minimum, self._retry_backoff_seconds):
+            if candidate is None:
+                continue
+            try:
+                delay = max(delay, float(candidate))
+            except (TypeError, ValueError):
+                continue
+
+        if delay <= 0:
+            return
+
+        with self._rate_lock:
+            resume_at = time.monotonic() + delay
+            if resume_at > self._backoff_until:
+                self._backoff_until = resume_at
+            if self._min_request_interval > 0:
+                resume_at += self._min_request_interval
+            if resume_at > self._next_allowed_request:
+                self._next_allowed_request = resume_at
+
+    @staticmethod
+    def _extract_retry_after(exc):
+        if exc is None:
+            return None
+
+        header_value = None
+
+        for attr_name in ("headers", "http_headers"):
+            header_dict = getattr(exc, attr_name, None)
+            if isinstance(header_dict, dict):
+                header_value = header_dict.get("Retry-After") or header_dict.get("retry-after")
+                if header_value is not None:
+                    break
+
+        if header_value is None:
+            header_value = getattr(exc, "retry_after", None)
+
+        if header_value is None:
+            return None
+
+        try:
+            return float(header_value)
+        except (TypeError, ValueError):
+            try:
+                return float(str(header_value).strip())
+            except (TypeError, ValueError):
+                return None
+
+    def get_population_resume_state(self):
+        with self._population_state_lock:
+            if not self._population_state:
+                return None
+            return copy.deepcopy(self._population_state)
+
+    def begin_population_run(self, pending_keys, total_tracks, cached_profiles=0):
+        if not isinstance(pending_keys, (list, tuple, set)):
+            pending_iterable = list(pending_keys or [])
+        else:
+            pending_iterable = list(pending_keys)
+
+        normalized_keys = [
+            str(key)
+            for key in pending_iterable
+            if key not in (None, "")
+        ]
+
+        try:
+            total_tracks_value = int(total_tracks) if total_tracks is not None else None
+        except (TypeError, ValueError):
+            total_tracks_value = None
+
+        try:
+            cached_profiles_value = int(cached_profiles)
+        except (TypeError, ValueError):
+            cached_profiles_value = 0
+
+        state = {
+            "pending_keys": normalized_keys,
+            "total_tracks": total_tracks_value,
+            "processed": 0,
+            "new_profiles": 0,
+            "refreshed_profiles": 0,
+            "cached_profiles": cached_profiles_value,
+            "missing_profiles": 0,
+            "errors": 0,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with self._population_state_lock:
+            self._population_state = state
+
+        self._write_state_file()
+        return copy.deepcopy(state)
+
+    def update_population_resume(self, rating_key, outcome=None):
+        rating_key_str = None if rating_key in (None, "") else str(rating_key)
+
+        with self._population_state_lock:
+            if not self._population_state:
+                return
+
+            state = self._population_state
+            pending = state.get("pending_keys", [])
+
+            if rating_key_str is not None and isinstance(pending, list):
+                if pending and pending[0] == rating_key_str:
+                    pending.pop(0)
+                else:
+                    try:
+                        pending.remove(rating_key_str)
+                    except ValueError:
+                        pass
+
+            state["processed"] = state.get("processed", 0) + 1
+
+            if outcome == "new":
+                state["new_profiles"] = state.get("new_profiles", 0) + 1
+            elif outcome == "refreshed":
+                state["refreshed_profiles"] = state.get("refreshed_profiles", 0) + 1
+            elif outcome == "cached":
+                state["cached_profiles"] = state.get("cached_profiles", 0) + 1
+            elif outcome == "missing":
+                state["missing_profiles"] = state.get("missing_profiles", 0) + 1
+            elif outcome == "error":
+                state["errors"] = state.get("errors", 0) + 1
+
+        self._write_state_file()
+
+    def clear_population_resume(self):
+        with self._population_state_lock:
+            self._population_state = None
+
+        self._write_state_file()
 
     def _load_cache(self):
         if not self._cache_file:
@@ -1150,11 +1332,50 @@ class SpotifyPopularityProvider:
 
         last_populated = payload.get("last_populated_at")
         summary = payload.get("summary")
+        resume = payload.get("in_progress")
 
         if last_populated:
             self._last_populated_at = last_populated
         if isinstance(summary, dict):
             self._last_populated_summary = summary
+
+        if isinstance(resume, dict):
+            pending = resume.get("pending_keys")
+            if isinstance(pending, list):
+                normalized_pending = [
+                    str(key)
+                    for key in pending
+                    if key not in (None, "")
+                ]
+            else:
+                normalized_pending = []
+
+            def _coerce_int(value, default=0):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return default
+
+            total_tracks = resume.get("total_tracks")
+            try:
+                total_tracks = int(total_tracks) if total_tracks is not None else None
+            except (TypeError, ValueError):
+                total_tracks = None
+
+            normalized_state = {
+                "pending_keys": normalized_pending,
+                "total_tracks": total_tracks,
+                "processed": _coerce_int(resume.get("processed"), 0),
+                "new_profiles": _coerce_int(resume.get("new_profiles"), 0),
+                "refreshed_profiles": _coerce_int(resume.get("refreshed_profiles"), 0),
+                "cached_profiles": _coerce_int(resume.get("cached_profiles"), 0),
+                "missing_profiles": _coerce_int(resume.get("missing_profiles"), 0),
+                "errors": _coerce_int(resume.get("errors"), 0),
+                "started_at": resume.get("started_at"),
+            }
+
+            with self._population_state_lock:
+                self._population_state = normalized_state
 
     def _remember_profile(self, spotify_id, profile):
         if not spotify_id:
@@ -1215,35 +1436,80 @@ class SpotifyPopularityProvider:
         if not self._client:
             return fallback_profile if fallback_found else None
 
-        try:
-            with self._client_lock:
-                data = self._client.track(spotify_id)
-        except SpotifyException as exc:
-            self._log.debug(
-                "Spotify track lookup failed for %s: %s",
-                spotify_id,
-                exc,
-            )
-            status = getattr(exc, "http_status", None)
-            if status == 404:
-                self._remember_profile(spotify_id, None)
-                return None
-            if fallback_found:
-                return fallback_profile
-            return None
-        except Exception as exc:
-            self._log.debug(
-                "Unexpected Spotify error during track lookup for %s: %s",
-                spotify_id,
-                exc,
-            )
-            if fallback_found:
-                return fallback_profile
-            return None
+        attempts = 0
+        max_attempts = 3
 
-        profile = self._extract_track_profile(data)
-        self._remember_profile(spotify_id, profile)
-        return profile
+        while attempts < max_attempts:
+            attempts += 1
+
+            self._throttle_spotify_request()
+
+            try:
+                with self._client_lock:
+                    data = self._client.track(spotify_id)
+            except SpotifyException as exc:
+                status = getattr(exc, "http_status", None)
+
+                if status == 404:
+                    self._remember_profile(spotify_id, None)
+                    return None
+
+                retry_after = self._extract_retry_after(exc)
+
+                if status == 429:
+                    backoff_seconds = retry_after or self._retry_backoff_seconds or 1.0
+                    self._log.warning(
+                        "Spotify rate limit encountered for %s; backing off for %.2fs",
+                        spotify_id,
+                        backoff_seconds,
+                    )
+                    self._register_rate_limit_backoff(retry_after)
+                    if attempts < max_attempts:
+                        continue
+                elif status in {500, 502, 503, 504}:
+                    self._log.debug(
+                        "Transient Spotify error (%s) during track lookup for %s; retrying",
+                        status,
+                        spotify_id,
+                    )
+                    self._register_rate_limit_backoff(
+                        max(
+                            retry_after or 0.0,
+                            (self._retry_backoff_seconds or 1.0) * attempts,
+                        )
+                    )
+                    if attempts < max_attempts:
+                        continue
+                else:
+                    self._log.debug(
+                        "Spotify track lookup failed for %s: %s",
+                        spotify_id,
+                        exc,
+                    )
+                    if retry_after:
+                        self._register_rate_limit_backoff(retry_after)
+
+                if fallback_found:
+                    return fallback_profile
+                return None
+            except Exception as exc:
+                self._log.debug(
+                    "Unexpected Spotify error during track lookup for %s: %s",
+                    spotify_id,
+                    exc,
+                )
+                self._register_rate_limit_backoff(self._retry_backoff_seconds)
+                if attempts < max_attempts:
+                    continue
+                if fallback_found:
+                    return fallback_profile
+                return None
+
+            profile = self._extract_track_profile(data)
+            self._remember_profile(spotify_id, profile)
+            return profile
+
+        return fallback_profile if fallback_found else None
 
     def _resolve_profile_by_id(self, spotify_id):
         profile, found, is_stale = self._get_profile_from_cache(spotify_id)
@@ -1323,18 +1589,30 @@ class SpotifyPopularityProvider:
                 self._save_counter = 0
 
         if should_write_state:
-            self._write_state_file(self._last_populated_summary or {})
+            self._write_state_file()
 
-    def _write_state_file(self, summary):
+    def _write_state_file(self):
         if not self._state_file:
             return
+
+        with self._cache_lock:
+            last_populated = self._last_populated_at
+            summary = copy.deepcopy(self._last_populated_summary)
+            if not isinstance(summary, dict):
+                summary = {}
+
+        with self._population_state_lock:
+            in_progress = copy.deepcopy(self._population_state)
 
         payload = {
             "version": SPOTIFY_CACHE_VERSION,
             "cache_file": self._cache_file,
-            "last_populated_at": self._last_populated_at,
+            "last_populated_at": last_populated,
             "summary": summary or {},
         }
+
+        if in_progress:
+            payload["in_progress"] = in_progress
 
         state_dir = os.path.dirname(self._state_file)
         if state_dir and not os.path.exists(state_dir):
@@ -1360,7 +1638,10 @@ class SpotifyPopularityProvider:
             if self._cache_file:
                 self._cache_dirty = True
 
-        self._write_state_file(summary_payload)
+        with self._population_state_lock:
+            self._population_state = None
+
+        self._write_state_file()
         return timestamp
 
     def get_population_state(self):
@@ -1497,20 +1778,67 @@ class SpotifyPopularityProvider:
         if cache_key in self._query_cache:
             candidates = self._query_cache[cache_key]
         else:
-            try:
-                with self._client_lock:
-                    response = self._client.search(
-                        q=query,
-                        type="track",
-                        market=self.market,
-                        limit=self.search_limit,
-                    )
-            except SpotifyException as exc:
-                self._log.debug("Spotify search failed for '%s': %s", query, exc)
-                self._query_cache[cache_key] = []
-                return None
-            except Exception as exc:
-                self._log.debug("Unexpected Spotify error during search for '%s': %s", query, exc)
+            attempts = 0
+            max_attempts = 3
+
+            while attempts < max_attempts:
+                attempts += 1
+
+                self._throttle_spotify_request()
+
+                try:
+                    with self._client_lock:
+                        response = self._client.search(
+                            q=query,
+                            type="track",
+                            market=self.market,
+                            limit=self.search_limit,
+                        )
+                except SpotifyException as exc:
+                    status = getattr(exc, "http_status", None)
+                    retry_after = self._extract_retry_after(exc)
+
+                    if status == 429:
+                        backoff_seconds = retry_after or self._retry_backoff_seconds or 1.0
+                        self._log.warning(
+                            "Spotify rate limit encountered during search for '%s'; backing off for %.2fs",
+                            query,
+                            backoff_seconds,
+                        )
+                        self._register_rate_limit_backoff(retry_after)
+                        if attempts < max_attempts:
+                            continue
+                    elif status in {500, 502, 503, 504}:
+                        self._log.debug(
+                            "Transient Spotify search error (%s) for '%s'; retrying",
+                            status,
+                            query,
+                        )
+                        self._register_rate_limit_backoff(
+                            max(
+                                retry_after or 0.0,
+                                (self._retry_backoff_seconds or 1.0) * attempts,
+                            )
+                        )
+                        if attempts < max_attempts:
+                            continue
+                    else:
+                        self._log.debug("Spotify search failed for '%s': %s", query, exc)
+                        if retry_after:
+                            self._register_rate_limit_backoff(retry_after)
+
+                    self._query_cache[cache_key] = []
+                    return None
+                except Exception as exc:
+                    self._log.debug("Unexpected Spotify error during search for '%s': %s", query, exc)
+                    self._register_rate_limit_backoff(self._retry_backoff_seconds)
+                    if attempts < max_attempts:
+                        continue
+                    self._query_cache[cache_key] = []
+                    return None
+                else:
+                    break
+            else:
                 self._query_cache[cache_key] = []
                 return None
 
@@ -3866,25 +4194,110 @@ def build_spotify_popularity_cache():
 
     try:
         library = plex.library.section(LIBRARY_NAME)
-        all_tracks = library.searchTracks()
     except Exception as exc:
-        spotify_logger.exception("Unable to enumerate library tracks for Spotify cache build: %s", exc)
+        spotify_logger.exception("Unable to access Plex library for Spotify cache build: %s", exc)
         return {
             "status": "error",
             "reason": str(exc),
         }
 
-    total_tracks = len(all_tracks)
-    spotify_logger.info("Starting Spotify popularity cache build for %d track(s)", total_tracks)
+    def _coerce_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
-    processed = 0
+    resume_state = provider.get_population_resume_state() or {}
+    pending_rating_keys = []
+    pending_entries = []
+    resuming = False
+
+    cached_profiles = 0
     new_profiles = 0
     refreshed_profiles = 0
-    cached_profiles = 0
     missing_profiles = 0
     errors = 0
+    processed_pending = 0
+    total_tracks = None
 
-    start_time = time.perf_counter()
+    if resume_state and resume_state.get("pending_keys"):
+        resuming = True
+        pending_rating_keys = [
+            str(key)
+            for key in resume_state.get("pending_keys", [])
+            if key not in (None, "")
+        ]
+        cached_profiles = _coerce_int(resume_state.get("cached_profiles"), 0)
+        new_profiles = _coerce_int(resume_state.get("new_profiles"), 0)
+        refreshed_profiles = _coerce_int(resume_state.get("refreshed_profiles"), 0)
+        missing_profiles = _coerce_int(resume_state.get("missing_profiles"), 0)
+        errors = _coerce_int(resume_state.get("errors"), 0)
+        processed_pending = _coerce_int(resume_state.get("processed"), 0)
+        total_tracks = resume_state.get("total_tracks")
+        try:
+            total_tracks = int(total_tracks) if total_tracks is not None else None
+        except (TypeError, ValueError):
+            total_tracks = None
+
+        if total_tracks is None:
+            total_tracks = len(pending_rating_keys) + processed_pending + cached_profiles
+
+        spotify_logger.info(
+            "Resuming Spotify popularity cache build with %d pending track(s)",
+            len(pending_rating_keys),
+        )
+    else:
+        try:
+            all_tracks = library.searchTracks()
+        except Exception as exc:
+            spotify_logger.exception("Unable to enumerate library tracks for Spotify cache build: %s", exc)
+            return {
+                "status": "error",
+                "reason": str(exc),
+            }
+
+        total_tracks = len(all_tracks)
+        spotify_logger.info("Starting Spotify popularity cache build for %d track(s)", total_tracks)
+
+        for track in all_tracks:
+            rating_key = getattr(track, "ratingKey", None)
+            if rating_key is None:
+                errors += 1
+                spotify_logger.debug(
+                    "Skipping track without rating key during Spotify cache build: %s",
+                    getattr(track, "title", "<unknown>"),
+                )
+                continue
+
+            _, had_cache, was_stale = provider.inspect_track_cache(track)
+            if had_cache and not was_stale:
+                cached_profiles += 1
+                continue
+
+            pending_entries.append((str(rating_key), track))
+
+        pending_rating_keys = [key for key, _ in pending_entries]
+        provider.begin_population_run(pending_rating_keys, total_tracks, cached_profiles)
+
+        if pending_rating_keys:
+            spotify_logger.info(
+                "Spotify popularity cache build will fetch %d uncached track(s); %d cached value(s) reused.",
+                len(pending_rating_keys),
+                cached_profiles,
+            )
+        else:
+            spotify_logger.info(
+                "Spotify popularity cache build found %d cached track(s); nothing to fetch.",
+                cached_profiles,
+            )
+
+    initial_cached_progress = cached_profiles
+    initial_progress = initial_cached_progress + processed_pending
+
+    if total_tracks is None:
+        total_tracks = len(pending_rating_keys) + initial_cached_progress
+    if total_tracks < initial_progress:
+        total_tracks = initial_progress
 
     progress_bar = tqdm(
         total=total_tracks,
@@ -3893,47 +4306,95 @@ def build_spotify_popularity_cache():
         dynamic_ncols=True,
     )
 
+    if initial_progress:
+        progress_bar.update(initial_progress)
+
+    if SAVE_INTERVAL and initial_progress and initial_progress % SAVE_INTERVAL == 0:
+        provider.save_cache()
+
+    start_time = time.perf_counter()
+
+    if resuming:
+        def _iter_pending():
+            for rating_key in pending_rating_keys:
+                track_obj = None
+                try:
+                    fetch_key = int(rating_key)
+                except (TypeError, ValueError):
+                    fetch_key = rating_key
+                try:
+                    track_obj = plex.fetchItem(fetch_key)
+                except Exception as exc:
+                    spotify_logger.debug(
+                        "Unable to fetch track %s from Plex while resuming Spotify cache build: %s",
+                        rating_key,
+                        exc,
+                    )
+                yield rating_key, track_obj
+
+        pending_iterator = _iter_pending()
+    else:
+        pending_iterator = iter(pending_entries)
+
     try:
-        for track in all_tracks:
-            processed += 1
+        for rating_key, track in pending_iterator:
+            rating_key_str = None if rating_key in (None, "") else str(rating_key)
+            outcome = None
+
             try:
-                _, had_cache, was_stale = provider.inspect_track_cache(track)
-                profile = provider.get_track_profile(track)
-                if profile is None:
-                    missing_profiles += 1
+                if track is None:
+                    errors += 1
+                    outcome = "error"
                 else:
-                    if not had_cache:
-                        new_profiles += 1
-                    elif was_stale:
-                        refreshed_profiles += 1
-                    else:
+                    _, had_cache, was_stale = provider.inspect_track_cache(track)
+                    if had_cache and not was_stale:
                         cached_profiles += 1
+                        outcome = "cached"
+                    else:
+                        profile = provider.get_track_profile(track)
+                        if profile is None:
+                            missing_profiles += 1
+                            outcome = "missing"
+                        else:
+                            if had_cache:
+                                refreshed_profiles += 1
+                                outcome = "refreshed"
+                            else:
+                                new_profiles += 1
+                                outcome = "new"
             except Exception as exc:
                 errors += 1
-                track_title = getattr(track, "title", "<unknown>")
-                track_artist = getattr(track, "grandparentTitle", "<unknown>")
+                track_title = getattr(track, "title", "<unknown>") if track else "<missing>"
+                track_artist = getattr(track, "grandparentTitle", "<unknown>") if track else "<missing>"
                 spotify_logger.debug(
                     "Failed to populate Spotify popularity for '%s' by '%s': %s",
                     track_title,
                     track_artist,
                     exc,
                 )
+                outcome = "error"
+            finally:
+                processed_pending += 1
+                if rating_key_str is not None:
+                    provider.update_population_resume(rating_key_str, outcome or "error")
 
-            if SAVE_INTERVAL and processed % SAVE_INTERVAL == 0:
-                provider.save_cache()
+                total_progress = initial_cached_progress + processed_pending
+                if SAVE_INTERVAL and total_progress % SAVE_INTERVAL == 0:
+                    provider.save_cache()
 
-            progress_bar.update(1)
+                progress_bar.update(1)
     finally:
         progress_bar.close()
 
     provider.save_cache()
 
     duration = time.perf_counter() - start_time
+    processed_tracks = initial_cached_progress + processed_pending
 
     summary = {
         "status": "completed",
         "total_tracks": total_tracks,
-        "processed_tracks": processed,
+        "processed_tracks": processed_tracks,
         "new_profiles": new_profiles,
         "refreshed_profiles": refreshed_profiles,
         "cached_profiles": cached_profiles,

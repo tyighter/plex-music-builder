@@ -21,6 +21,8 @@ spotify:
   search_limit: 10             # optional: number of search results to evaluate
   cache_file: "/app/spotify_popularity.json"   # optional: persistent cache for Spotify profiles (set to false to disable)
   cache_max_age_days: 30       # optional: refresh cached entries after N days (omit or <=0 to keep forever)
+  request_min_interval_seconds: 0.25  # optional: minimum delay between Spotify API calls to avoid rate limits
+  request_retry_backoff_seconds: 5.0  # optional: fallback delay when Spotify returns rate-limit errors
 
 allmusic:
   enabled: true
