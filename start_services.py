@@ -114,12 +114,12 @@ def start_process(name: str, command: List[str]) -> subprocess.Popen:
 
 def terminate_all() -> None:
     deadline = time.time() + 10
-    for name, process in processes:
+    for name, process in list(processes):
         if process.poll() is None:
             print(f"Stopping {name} (pid={process.pid})", flush=True)
             process.terminate()
 
-    for name, process in processes:
+    for name, process in list(processes):
         if process.poll() is None:
             remaining = max(0.0, deadline - time.time())
             try:
@@ -128,11 +128,13 @@ def terminate_all() -> None:
                 print(f"Force killing {name} (pid={process.pid})", flush=True)
                 process.kill()
 
-    for _, process in processes:
+    for _, process in list(processes):
         try:
             process.wait(timeout=0.1)
         except subprocess.TimeoutExpired:
             process.kill()
+
+    processes.clear()
 
 
 def handle_signal(signum: int, frame: object) -> None:  # pragma: no cover - signal handler
@@ -152,17 +154,28 @@ def supervise() -> int:
 
     try:
         while True:
-            for name, process in processes:
+            for name, process in list(processes):
                 return_code = process.poll()
-                if return_code is not None:
-                    if return_code != 0:
-                        exit_code = return_code
-                        print(
-                            f"Process '{name}' exited with code {return_code}.", flush=True
-                        )
-                    else:
-                        print(f"Process '{name}' completed successfully.", flush=True)
+                if return_code is None:
+                    continue
+
+                try:
+                    processes.remove((name, process))
+                except ValueError:
+                    pass
+
+                if return_code != 0:
+                    exit_code = return_code
+                    print(
+                        f"Process '{name}' exited with code {return_code}.", flush=True
+                    )
                     return exit_code
+
+                print(f"Process '{name}' completed successfully.", flush=True)
+
+            if not processes:
+                break
+
             time.sleep(1)
     except KeyboardInterrupt:  # pragma: no cover - manual interrupt
         print("Keyboard interrupt received. Shutting down...", flush=True)

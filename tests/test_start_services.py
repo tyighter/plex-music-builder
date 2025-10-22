@@ -1,10 +1,43 @@
 import contextlib
 import io
 import unittest
+from typing import Iterable, List, Optional
 from unittest.mock import patch
 
 import start_services
 from start_services import _coerce_runtime_flag
+
+
+class FakeProcess:
+    def __init__(self, poll_sequence: Iterable[Optional[int]], pid: int = 100) -> None:
+        self._sequence: List[Optional[int]] = list(poll_sequence)
+        if not self._sequence:
+            self._sequence.append(None)
+        self._index = 0
+        self._returncode: Optional[int] = None
+        self.pid = pid
+        self.poll_calls = 0
+
+    def poll(self) -> Optional[int]:
+        if self._index < len(self._sequence):
+            result = self._sequence[self._index]
+            self._index += 1
+        else:
+            result = self._returncode
+
+        self.poll_calls += 1
+        if result is not None:
+            self._returncode = result
+        return result
+
+    def terminate(self) -> None:
+        self._returncode = self._returncode or 0
+
+    def wait(self, timeout: Optional[float] = None) -> Optional[int]:  # pragma: no cover - compatibility
+        return self._returncode
+
+    def kill(self) -> None:  # pragma: no cover - compatibility
+        self._returncode = self._returncode or 0
 
 
 class CoerceRuntimeFlagTests(unittest.TestCase):
@@ -94,6 +127,32 @@ class BuilderStartupDecisionTests(unittest.TestCase):
 
         self.assertFalse(any(name == "builder" for name, _ in commands))
         self.assertIn("Build-on-start disabled", buffer.getvalue())
+
+
+class SupervisorBehaviourTests(unittest.TestCase):
+    def test_supervisor_keeps_gui_running_after_builder_finishes(self) -> None:
+        builder_process = FakeProcess([0], pid=123)
+        gui_process = FakeProcess([None, 0], pid=456)
+
+        fake_commands = [("builder", ["builder"]), ("gui", ["gui"])]
+
+        with patch("start_services.processes", []), patch(
+            "start_services.COMMANDS", fake_commands
+        ), patch("start_services.signal.signal"), patch(
+            "start_services.time.sleep", side_effect=lambda _timeout: None
+        ):
+
+            def fake_start(name: str, command: List[str]) -> FakeProcess:
+                process = builder_process if name == "builder" else gui_process
+                start_services.processes.append((name, process))
+                return process
+
+            with patch("start_services.start_process", side_effect=fake_start):
+                exit_code = start_services.supervise()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(builder_process.poll_calls, 1)
+        self.assertGreaterEqual(gui_process.poll_calls, 2)
 
 
 if __name__ == "__main__":  # pragma: no cover - unittest convenience
