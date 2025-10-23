@@ -438,16 +438,11 @@
 
       .boost-row .boost-input {
         display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-
-      .boost-row .boost-input label {
-        font-size: 13px;
-        color: rgba(255, 255, 255, 0.7);
+        align-items: center;
       }
 
       .boost-row .boost-input input {
+        width: 100%;
         min-width: 110px;
       }
 
@@ -2654,33 +2649,48 @@
 
           const boostWrapper = document.createElement("div");
           boostWrapper.className = "boost-input";
-          const boostLabel = document.createElement("label");
-          boostLabel.textContent = "Multiplier";
           const boostInput = document.createElement("input");
           boostInput.type = "number";
           boostInput.min = "0";
           boostInput.step = "0.1";
-          const normalized = normalizePopularityBoostMultiplier(
-            boost.boost !== undefined ? boost.boost : 1.0
-          );
-          boost.boost = normalized;
-          boostInput.value = normalized;
-          boostInput.placeholder = "1.0";
+          boostInput.placeholder = "Multiplier";
+          const hasExistingMultiplier =
+            boost.boost !== undefined && boost.boost !== null && boost.boost !== "";
+          if (hasExistingMultiplier) {
+            const normalized = normalizePopularityBoostMultiplier(boost.boost);
+            boost.boost = normalized;
+            boostInput.value = String(normalized);
+          } else {
+            boost.boost = undefined;
+          }
           boostInput.addEventListener("input", (event) => {
-            const parsed = Number.parseFloat(event.target.value);
+            const { value } = event.target;
+            const parsed = Number.parseFloat(value);
             if (Number.isFinite(parsed) && parsed >= 0) {
               boost.boost = parsed;
+            } else if (value.trim() === "") {
+              boost.boost = undefined;
             }
           });
           boostInput.addEventListener("blur", (event) => {
-            const parsed = Number.parseFloat(event.target.value);
+            const { value } = event.target;
+            const trimmed = value.trim();
+            if (trimmed === "") {
+              boost.boost = undefined;
+              event.target.value = "";
+              return;
+            }
+            const parsed = Number.parseFloat(value);
             if (!Number.isFinite(parsed) || parsed < 0) {
-              boost.boost = 1.0;
-              event.target.value = "1.0";
+              const normalized = normalizePopularityBoostMultiplier(value);
+              boost.boost = normalized;
+              event.target.value = String(normalized);
+            } else {
+              boost.boost = parsed;
+              event.target.value = String(parsed);
             }
           });
-          boostLabel.appendChild(boostInput);
-          boostWrapper.appendChild(boostLabel);
+          boostWrapper.appendChild(boostInput);
           row.appendChild(boostWrapper);
 
           const removeBtn = document.createElement("button");
@@ -3179,7 +3189,6 @@
               field: "",
               operator: "equals",
               value: "",
-              boost: 1.0,
             });
             playlist._boostsOpen = true;
             renderPlaylists();
