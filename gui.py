@@ -521,6 +521,46 @@ class BuildManager:
             self._playlist_logs.pop(name, None)
             self._last_playlist_results.pop(name, None)
 
+        for raw_name, entries in list(self._playlist_logs.items()):
+            normalized = self._normalize_playlist_key(raw_name)
+            if not normalized:
+                self._playlist_logs.pop(raw_name, None)
+                continue
+            if normalized in active_playlists or normalized in waiting_set:
+                continue
+            if normalized in self._playlist_completed_at:
+                continue
+
+            most_recent: Optional[datetime] = None
+            if isinstance(entries, list):
+                for entry in entries:
+                    timestamp = entry.get("timestamp") if isinstance(entry, dict) else None
+                    candidate: Optional[datetime]
+                    if isinstance(timestamp, datetime):
+                        candidate = timestamp
+                    elif isinstance(timestamp, str):
+                        try:
+                            candidate = datetime.fromisoformat(timestamp)
+                            if candidate.tzinfo is None:
+                                candidate = candidate.replace(tzinfo=timezone.utc)
+                        except ValueError:
+                            candidate = None
+                    else:
+                        candidate = None
+
+                    if candidate is None:
+                        candidate = reference_time
+
+                    if most_recent is None or candidate > most_recent:
+                        most_recent = candidate
+
+            if most_recent is None:
+                most_recent = reference_time
+
+            if most_recent < cutoff:
+                self._playlist_logs.pop(raw_name, None)
+                self._last_playlist_results.pop(normalized, None)
+
     def _remove_waiting_playlist_locked(self, playlist_name: Optional[str]) -> None:
         normalized = self._normalize_playlist_key(playlist_name)
         if not normalized:
