@@ -1026,6 +1026,8 @@
       const rateLimitCountdownEntries = new Set();
       let rateLimitCountdownTimer = null;
       const ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
+      const waitingPlaylistOrder = new Map();
+      let nextWaitingOrderValue = 1;
 
       function clearRateLimitCountdowns(rootElement = null) {
         const entries = Array.from(rateLimitCountdownEntries);
@@ -1592,7 +1594,7 @@
             : "";
         const activePlaylistsSet = collectActivePlaylistSet(status);
         const activePlaylistNames = Array.from(activePlaylistsSet);
-        const isRunningThisPlaylist = Boolean(
+        let isRunningThisPlaylist = Boolean(
           status?.running && playlistName && activePlaylistsSet.has(playlistName)
         );
         const isAllRunning = Boolean(status?.running && activeJob?.type === "all");
@@ -1619,11 +1621,16 @@
           ...normalizeWaitingNames(activeJob?.waiting_playlists),
         ];
         const waitingSet = new Set(waitingPlaylists);
+
         const isWaitingThisPlaylist = Boolean(
           playlistName &&
             !isRunningThisPlaylist &&
             waitingSet.has(playlistName)
         );
+
+        if (isWaitingThisPlaylist) {
+          isRunningThisPlaylist = false;
+        }
 
         const playlistResults = status?.results?.playlists || {};
         const lastResult = playlistName ? playlistResults[playlistName] : undefined;
@@ -1631,6 +1638,8 @@
         let indicatorState = "idle";
         if (isRunningThisPlaylist) {
           indicatorState = "running";
+        } else if (isWaitingThisPlaylist) {
+          indicatorState = "idle";
         } else if (lastResult) {
           if (lastResult.state === "success") {
             indicatorState = "success";
@@ -1649,8 +1658,8 @@
         let statusLineText = playlistName ? "Idle" : "Name required to build";
         if (isRunningThisPlaylist) {
           statusLineText = "Building now…";
-        } else if (isWaitingThisPlaylist || otherJobRunning || isAllRunning) {
-          statusLineText = "Waiting";
+        } else if (isWaitingThisPlaylist) {
+          statusLineText = "Queued – waiting";
         }
         line.textContent = statusLineText;
 
@@ -1722,10 +1731,31 @@
           ])
         );
         const waitingSet = new Set(waitingPlaylists);
+
+        if (waitingSet.size === 0) {
+          waitingPlaylistOrder.clear();
+          nextWaitingOrderValue = 1;
+        } else {
+          Array.from(waitingPlaylistOrder.keys()).forEach((name) => {
+            if (!waitingSet.has(name)) {
+              waitingPlaylistOrder.delete(name);
+            }
+          });
+        }
+
+        waitingPlaylists.forEach((name) => {
+          if (!waitingPlaylistOrder.has(name)) {
+            waitingPlaylistOrder.set(name, nextWaitingOrderValue++);
+          }
+        });
         const waitingOrder = new Map();
         waitingPlaylists.forEach((name, index) => {
+          const orderValue = waitingPlaylistOrder.get(name);
           if (!waitingOrder.has(name)) {
-            waitingOrder.set(name, index);
+            waitingOrder.set(
+              name,
+              orderValue !== undefined ? orderValue : index
+            );
           }
         });
 
@@ -1816,7 +1846,10 @@
 
           const block = document.createElement("div");
           block.className = "build-log-playlist";
-          const isActivePlaylist = running && activePlaylistsSet.has(trimmedName);
+          const isActivePlaylist =
+            running &&
+            activePlaylistsSet.has(trimmedName) &&
+            !waitingSet.has(trimmedName);
           if (isActivePlaylist) {
             block.classList.add("is-active");
           }
