@@ -1055,6 +1055,47 @@ def _apply_configured_popularity_boosts(
     return adjustments_by_key, adjustments_by_object
 
 
+def _resolve_popularity_for_sort(
+    track,
+    cache_key_str,
+    object_cache_key,
+    dedup_popularity_cache,
+    album_popularity_cache,
+    album_popularity_cache_by_object,
+    spotify_provider=None,
+    playlist_logger=None,
+    sort_desc=True,
+):
+    """Return the popularity score used for sorting and update caches."""
+
+    popularity_value = None
+
+    if cache_key_str and cache_key_str in album_popularity_cache:
+        popularity_value = album_popularity_cache[cache_key_str]
+    elif cache_key_str is None and object_cache_key in album_popularity_cache_by_object:
+        popularity_value = album_popularity_cache_by_object[object_cache_key]
+    elif cache_key_str and cache_key_str in dedup_popularity_cache:
+        popularity_value = dedup_popularity_cache[cache_key_str]
+    else:
+        popularity_value = _resolve_track_popularity_value(
+            track,
+            spotify_provider=spotify_provider,
+            playlist_logger=playlist_logger,
+        )
+
+    if popularity_value is None:
+        sentinel = float("-inf") if sort_desc else float("inf")
+        return sentinel, False
+
+    if cache_key_str is not None:
+        dedup_popularity_cache[cache_key_str] = popularity_value
+        album_popularity_cache[cache_key_str] = popularity_value
+    else:
+        album_popularity_cache_by_object[object_cache_key] = popularity_value
+
+    return popularity_value, True
+
+
 def _resolve_album_year(track):
     """Return the best-known release year for the provided track's album."""
 
@@ -4200,32 +4241,18 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             if cache_key_str is None and object_cache_key in sort_value_cache_by_object:
                 return sort_value_cache_by_object[object_cache_key]
 
-            if cache_key_str and cache_key_str in dedup_popularity_cache:
-                value = dedup_popularity_cache[cache_key_str]
-                sort_value_cache[cache_key_str] = value
-                return value
-
             if resolved_sort_by == "spotifyPopularity":
-                popularity_value = None
-
-                if cache_key_str and cache_key_str in album_popularity_cache:
-                    popularity_value = album_popularity_cache[cache_key_str]
-                elif cache_key_str is None and object_cache_key in album_popularity_cache_by_object:
-                    popularity_value = album_popularity_cache_by_object[object_cache_key]
-                else:
-                    popularity_value = _resolve_track_popularity_value(
-                        track,
-                        spotify_provider=spotify_provider,
-                        playlist_logger=log,
-                    )
-
-                if popularity_value is None:
-                    sentinel = float("-inf") if sort_desc else float("inf")
-                    if cache_key_str:
-                        sort_value_cache[cache_key_str] = sentinel
-                    else:
-                        sort_value_cache_by_object[object_cache_key] = sentinel
-                    return sentinel
+                popularity_value, _ = _resolve_popularity_for_sort(
+                    track,
+                    cache_key_str,
+                    object_cache_key,
+                    dedup_popularity_cache,
+                    album_popularity_cache,
+                    album_popularity_cache_by_object,
+                    spotify_provider=spotify_provider,
+                    playlist_logger=log,
+                    sort_desc=sort_desc,
+                )
 
                 if cache_key_str:
                     sort_value_cache[cache_key_str] = popularity_value
