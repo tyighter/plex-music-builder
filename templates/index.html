@@ -446,7 +446,7 @@
       }
 
       .boost-row {
-        grid-template-columns: 1.1fr 1fr 1fr 0.6fr auto;
+        grid-template-columns: 1.1fr 1fr 1fr auto 0.6fr auto;
       }
 
       .boost-row .boost-input {
@@ -2690,6 +2690,28 @@
           valueWrapper.appendChild(valueInput);
           row.appendChild(valueWrapper);
 
+          const flagsWrapper = document.createElement("div");
+          flagsWrapper.className = "filter-flags";
+          const matchAllLabel = document.createElement("label");
+          matchAllLabel.className = "filter-flag";
+          const matchAllInput = document.createElement("input");
+          matchAllInput.type = "checkbox";
+          const normalizedMatchAll =
+            boost.match_all !== undefined ? !!boost.match_all : true;
+          matchAllInput.checked = normalizedMatchAll;
+          matchAllInput.setAttribute(
+            "aria-label",
+            "Require a track to match every listed value"
+          );
+          boost.match_all = normalizedMatchAll;
+          matchAllInput.addEventListener("change", (event) => {
+            boost.match_all = event.target.checked;
+          });
+          matchAllLabel.appendChild(matchAllInput);
+          matchAllLabel.appendChild(document.createTextNode("Match All"));
+          flagsWrapper.appendChild(matchAllLabel);
+          row.appendChild(flagsWrapper);
+
           const boostWrapper = document.createElement("div");
           boostWrapper.className = "boost-input";
           const boostInput = document.createElement("input");
@@ -3207,7 +3229,7 @@
 
           const boostsDescription = document.createElement("p");
           boostsDescription.textContent =
-            "Boost multipliers adjust the popularity score of matching tracks.";
+            "Boost multipliers adjust the popularity score of matching tracks. Uncheck Match All to treat comma-separated values as match-any.";
           boostsPanel.appendChild(boostsDescription);
 
           const boostsContainer = document.createElement("div");
@@ -3232,6 +3254,7 @@
               field: "",
               operator: "equals",
               value: "",
+              match_all: true,
             });
             playlist._boostsOpen = true;
             renderPlaylists();
@@ -3316,6 +3339,8 @@
                   field: boost.field || "",
                   operator: boost.operator || "equals",
                   value: boost.value || "",
+                  match_all:
+                    boost.match_all !== undefined ? !!boost.match_all : true,
                   boost: normalizePopularityBoostMultiplier(
                     boost.boost !== undefined ? boost.boost : 1.0
                   ),
@@ -3351,6 +3376,7 @@
           field: boost.field || "",
           operator: boost.operator || "equals",
           value: boost.value || "",
+          match_all: boost.match_all !== undefined ? !!boost.match_all : true,
           boost: normalizePopularityBoostMultiplier(
             boost.boost !== undefined ? boost.boost : 1.0
           ),

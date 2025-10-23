@@ -48,6 +48,55 @@ def test_popularity_boost_updates_dedup_cache():
     assert dedup_popularity_cache["1"] == pytest.approx(100.0)
 
 
+def test_comma_separated_values_use_match_any():
+    track = DummyTrack(rating_key="5", genre="Rock")
+    dedup_popularity_cache = {"5": 10.0}
+    boosts = [
+        {
+            "field": "genre",
+            "operator": "equals",
+            "value": "Rock, Pop",
+            "boost": 3.0,
+        }
+    ]
+
+    _apply_configured_popularity_boosts(
+        [track],
+        boosts,
+        dedup_popularity_cache,
+        {},
+        {},
+        playlist_logger=None,
+    )
+
+    assert dedup_popularity_cache["5"] == pytest.approx(30.0)
+
+
+def test_comma_separated_values_override_explicit_match_all_true():
+    track = DummyTrack(rating_key="6", genre="Rock")
+    dedup_popularity_cache = {"6": 12.0}
+    boosts = [
+        {
+            "field": "genre",
+            "operator": "equals",
+            "value": "Rock, Pop",
+            "boost": 2.0,
+            "match_all": True,
+        }
+    ]
+
+    _apply_configured_popularity_boosts(
+        [track],
+        boosts,
+        dedup_popularity_cache,
+        {},
+        {},
+        playlist_logger=None,
+    )
+
+    assert dedup_popularity_cache["6"] == pytest.approx(24.0)
+
+
 def test_multiple_rules_stack_multiplier_and_update_album_cache():
     track = DummyTrack(rating_key="2", artist="The Rockets")
     dedup_popularity_cache = {"2": 10.0}
