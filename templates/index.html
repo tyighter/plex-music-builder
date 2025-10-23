@@ -123,24 +123,6 @@
         gap: 20px;
       }
 
-      .popularity-card {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 24px;
-        flex-wrap: wrap;
-      }
-
-      .popularity-card .status-info {
-        flex: 1;
-      }
-
-      .popularity-card .status-actions {
-        display: flex;
-        gap: 12px;
-        flex-wrap: wrap;
-      }
-
       .build-status-header {
         display: flex;
         align-items: center;
@@ -752,17 +734,6 @@
           align-items: flex-start;
         }
 
-        .popularity-card {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 16px;
-        }
-
-        .popularity-card .status-actions {
-          width: 100%;
-          justify-content: flex-start;
-        }
-
         .playlist-status {
           width: 100%;
         }
@@ -836,21 +807,6 @@
       </section>
 
       <section>
-        <h2><span class="section-icon">🎧</span>Spotify Popularity Cache</h2>
-        <div class="card popularity-card">
-          <div class="status-info">
-            <div class="status-headline">
-              <div class="status-text">
-                <div id="popularityStatusText">Checking popularity cache…</div>
-                <div id="popularityStatusMessage" class="status-message"></div>
-              </div>
-            </div>
-            <div id="popularityStatusMeta" class="status-meta"></div>
-          </div>
-        </div>
-      </section>
-
-      <section>
         <h2><span class="section-icon">⚙</span>Default Plex Filters</h2>
         <div class="card">
           <div id="defaultFilters" class="filters-container"></div>
@@ -893,9 +849,6 @@
         "playlistActivityToggle"
       );
       const buildLogContainer = document.getElementById("buildLogContainer");
-      const popularityStatusText = document.getElementById("popularityStatusText");
-      const popularityStatusMessage = document.getElementById("popularityStatusMessage");
-      const popularityStatusMeta = document.getElementById("popularityStatusMeta");
       const buildPopularityBtn = document.getElementById("buildPopularityBtn");
       const clearPopularityCacheBtn = document.getElementById("clearPopularityCacheBtn");
       let latestBuildStatus = null;
@@ -1144,79 +1097,36 @@
         return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
       }
 
-      function summarizePopularityRun(summary) {
-        if (!summary || typeof summary !== "object") {
-          return [];
+      function getSpotifyStatusHeadline(status) {
+        const statusLabel = (status?.status || "").toLowerCase();
+
+        if (status?.cache_enabled === false) {
+          return "Popularity cache disabled";
         }
 
-        const parts = [];
-        const fields = [
-          ["processed_tracks", "Processed"],
-          ["new_profiles", "New"],
-          ["refreshed_profiles", "Refreshed"],
-          ["cached_profiles", "Cached"],
-          ["missing_profiles", "Missing"],
-          ["errors", "Errors"],
-        ];
-
-        for (const [key, label] of fields) {
-          const value = summary[key];
-          if (typeof value === "number" && value > 0) {
-            parts.push(`${label}: ${value}`);
-          }
+        if (status?.running) {
+          return "Populating Spotify popularity…";
         }
 
-        if (typeof summary.duration_seconds === "number" && summary.duration_seconds > 0) {
-          parts.push(`Duration: ${Math.round(summary.duration_seconds)}s`);
+        if (statusLabel === "success") {
+          return "Popularity cache up to date";
         }
 
-        return parts;
+        if (statusLabel === "error") {
+          return "Popularity cache encountered an error";
+        }
+
+        if (statusLabel === "stopped") {
+          return "Popularity cache stopped";
+        }
+
+        return "Popularity cache idle";
       }
 
       function updatePopularityStatus(status) {
         latestPopularityStatus = status || null;
 
-        if (!popularityStatusText) {
-          return;
-        }
-
         const running = Boolean(status?.running);
-        const statusLabel = (status?.status || "").toLowerCase();
-        let headline = "Popularity cache idle";
-
-        if (status?.cache_enabled === false) {
-          headline = "Popularity cache disabled";
-        } else if (running) {
-          headline = "Populating Spotify popularity…";
-        } else if (statusLabel === "success") {
-          headline = "Popularity cache up to date";
-        } else if (statusLabel === "error") {
-          headline = "Popularity cache encountered an error";
-        } else if (statusLabel === "stopped") {
-          headline = "Popularity cache stopped";
-        }
-
-        popularityStatusText.textContent = headline;
-
-        if (popularityStatusMessage) {
-          const messageText = status?.message || "";
-          popularityStatusMessage.textContent = messageText;
-          unregisterRateLimitCountdown(popularityStatusMessage);
-
-          const hasRateLimit = Boolean(
-            status &&
-              (status.rate_limit_resume_epoch || status.rate_limit_resume)
-          );
-
-          if (hasRateLimit) {
-            registerRateLimitCountdown(popularityStatusMessage, {
-              text: messageText,
-              rate_limit_resume_epoch: status.rate_limit_resume_epoch,
-              rate_limit_resume: status.rate_limit_resume,
-              timestamp: status.last_log_at,
-            });
-          }
-        }
 
         if (buildPopularityBtn) {
           buildPopularityBtn.disabled = !status?.cache_enabled || running;
@@ -1226,36 +1136,12 @@
           clearPopularityCacheBtn.disabled = status?.cache_enabled === false;
         }
 
-        if (popularityStatusMeta) {
-          const metaParts = [];
-          if (status?.last_populated_at) {
-            metaParts.push(`Last populated ${formatTimestamp(status.last_populated_at)}`);
-          } else if (status?.cache_enabled === false) {
-            metaParts.push("Popularity cache disabled");
-          } else {
-            metaParts.push("Popularity cache has not been populated yet");
-          }
-
-          const summaryParts = summarizePopularityRun(status?.summary);
-          metaParts.push(...summaryParts);
-
-          if (status?.status && status?.status !== "running") {
-            metaParts.push(`Status: ${status.status}`);
-          }
-
-          popularityStatusMeta.textContent = metaParts.filter(Boolean).join(" • ");
-        }
-
         if (latestBuildStatus) {
           updateBuildLogsUi(latestBuildStatus);
         }
       }
 
       async function refreshPopularityStatus() {
-        if (!popularityStatusText) {
-          return;
-        }
-
         try {
           const response = await fetch("/api/cache/popularity/status");
           if (!response.ok) {
@@ -1265,10 +1151,10 @@
           updatePopularityStatus(status);
         } catch (error) {
           console.error(error);
-          if (popularityStatusMessage) {
-            popularityStatusMessage.textContent = error.message;
-            unregisterRateLimitCountdown(popularityStatusMessage);
-          }
+          updatePopularityStatus({
+            status: "error",
+            message: error?.message || "Failed to retrieve popularity cache status.",
+          });
         }
       }
 
@@ -1715,117 +1601,10 @@
 
         buildLogContainer.innerHTML = "";
 
+        const blocksToRender = [];
         let renderedGroups = 0;
 
-        if (generalLogs.length) {
-          renderedGroups += 1;
-          const block = document.createElement("div");
-          block.className = "build-log-playlist general-activity";
-          const title = document.createElement("div");
-          title.className = "build-log-playlist-title";
-          title.textContent = "General Activity";
-          block.appendChild(title);
-
-          const listEl = document.createElement("div");
-          listEl.className = "build-log-playlist-entries";
-
-          const normalizedGeneralEntries = generalLogs
-            .slice(-3)
-            .map((entry) => normalizeGeneralLogEntry(entry));
-
-          normalizedGeneralEntries.forEach((entry) => {
-            const item = document.createElement("div");
-            item.className = "playlist-log-entry general-entry";
-            const text = document.createElement("div");
-            text.className = "playlist-log-text";
-            text.textContent = entry.text || "";
-            if (
-              entry.rate_limit_resume_epoch !== undefined ||
-              entry.rate_limit_resume
-            ) {
-              registerRateLimitCountdown(text, entry);
-            }
-            item.appendChild(text);
-            listEl.appendChild(item);
-          });
-
-          block.appendChild(listEl);
-          buildLogContainer.appendChild(block);
-        }
-
-        const spotifyStatus = latestPopularityStatus || {};
-        const rawSpotifyLogs = Array.isArray(spotifyStatus.logs)
-          ? spotifyStatus.logs.slice(-5)
-          : [];
-        const normalizedSpotifyEntries = rawSpotifyLogs.map((entry) =>
-          normalizeGeneralLogEntry(entry)
-        );
-
-        const spotifyMessage = (spotifyStatus.message || "").trim();
-        if (
-          spotifyMessage &&
-          !normalizedSpotifyEntries.some(
-            (entry) => (entry.text || "").trim() === spotifyMessage
-          )
-        ) {
-          normalizedSpotifyEntries.push(
-            normalizeGeneralLogEntry({
-              text: spotifyMessage,
-              rate_limit_resume_epoch: spotifyStatus.rate_limit_resume_epoch,
-              rate_limit_resume: spotifyStatus.rate_limit_resume,
-              rate_limit_seconds: spotifyStatus.rate_limit_seconds,
-            })
-          );
-        }
-
-        const shouldShowSpotifyBlock =
-          normalizedSpotifyEntries.length > 0 ||
-          spotifyStatus.running ||
-          spotifyMessage;
-
-        if (shouldShowSpotifyBlock) {
-          renderedGroups += 1;
-          const block = document.createElement("div");
-          block.className = "build-log-playlist spotify-activity";
-          const title = document.createElement("div");
-          title.className = "build-log-playlist-title";
-          title.textContent = "Spotify Activity";
-          block.appendChild(title);
-
-          const listEl = document.createElement("div");
-          listEl.className = "build-log-playlist-entries";
-
-          if (normalizedSpotifyEntries.length) {
-            normalizedSpotifyEntries.forEach((entry) => {
-              const item = document.createElement("div");
-              item.className = "playlist-log-entry general-entry";
-              const text = document.createElement("div");
-              text.className = "playlist-log-text";
-              text.textContent = entry.text || "";
-              if (
-                entry.rate_limit_resume_epoch !== undefined ||
-                entry.rate_limit_resume
-              ) {
-                registerRateLimitCountdown(text, entry);
-              }
-              item.appendChild(text);
-              listEl.appendChild(item);
-            });
-          } else {
-            const placeholder = document.createElement("div");
-            placeholder.className = "playlist-log-entry";
-            const text = document.createElement("div");
-            text.className = "playlist-log-text";
-            text.textContent = spotifyStatus.running
-              ? "Waiting for Spotify activity…"
-              : "No Spotify activity recorded yet.";
-            placeholder.appendChild(text);
-            listEl.appendChild(placeholder);
-          }
-
-          block.appendChild(listEl);
-          buildLogContainer.appendChild(block);
-        }
+        const playlistBlocks = [];
 
         playlistNames.forEach((trimmedName) => {
           const entries = logsByPlaylist[trimmedName] || [];
@@ -1834,7 +1613,6 @@
             return;
           }
 
-          renderedGroups += 1;
           const block = document.createElement("div");
           block.className = "build-log-playlist";
           const isActivePlaylist = running && activePlaylistsSet.has(trimmedName);
@@ -1949,8 +1727,113 @@
           }
 
           block.appendChild(listEl);
-          buildLogContainer.appendChild(block);
+          playlistBlocks.push(block);
         });
+
+        if (playlistBlocks.length) {
+          renderedGroups += playlistBlocks.length;
+          playlistBlocks.forEach((block) => blocksToRender.push(block));
+        }
+
+        if (generalLogs.length) {
+          const block = document.createElement("div");
+          block.className = "build-log-playlist general-activity";
+          const title = document.createElement("div");
+          title.className = "build-log-playlist-title";
+          title.textContent = "General Activity";
+          block.appendChild(title);
+
+          const listEl = document.createElement("div");
+          listEl.className = "build-log-playlist-entries";
+
+          const normalizedGeneralEntries = generalLogs
+            .slice(-3)
+            .map((entry) => normalizeGeneralLogEntry(entry));
+
+          normalizedGeneralEntries.forEach((entry) => {
+            const item = document.createElement("div");
+            item.className = "playlist-log-entry general-entry";
+            const text = document.createElement("div");
+            text.className = "playlist-log-text";
+            text.textContent = entry.text || "";
+            if (
+              entry.rate_limit_resume_epoch !== undefined ||
+              entry.rate_limit_resume
+            ) {
+              registerRateLimitCountdown(text, entry);
+            }
+            item.appendChild(text);
+            listEl.appendChild(item);
+          });
+
+          block.appendChild(listEl);
+          blocksToRender.push(block);
+          renderedGroups += 1;
+        }
+
+        const spotifyStatus = latestPopularityStatus || {};
+        const spotifyHeadline = getSpotifyStatusHeadline(spotifyStatus);
+        const spotifyMessage = (spotifyStatus.message || "").trim();
+        const hasRateLimit = Boolean(
+          spotifyStatus &&
+            (spotifyStatus.rate_limit_resume_epoch ||
+              spotifyStatus.rate_limit_resume)
+        );
+        const shouldShowSpotifyMessage = Boolean(spotifyMessage || hasRateLimit);
+
+        if (spotifyHeadline || shouldShowSpotifyMessage) {
+          const block = document.createElement("div");
+          block.className = "build-log-playlist spotify-activity";
+          const title = document.createElement("div");
+          title.className = "build-log-playlist-title";
+          title.textContent = "Spotify Activity";
+          block.appendChild(title);
+
+          const listEl = document.createElement("div");
+          listEl.className = "build-log-playlist-entries";
+
+          if (spotifyHeadline) {
+            const statusEntry = document.createElement("div");
+            statusEntry.className = "playlist-log-entry general-entry";
+            const statusRow = document.createElement("div");
+            statusRow.className = "playlist-log-message";
+            const statusText = document.createElement("div");
+            statusText.className = "playlist-log-text";
+            statusText.textContent = spotifyHeadline;
+            statusRow.appendChild(statusText);
+            statusEntry.appendChild(statusRow);
+            listEl.appendChild(statusEntry);
+          }
+
+          if (shouldShowSpotifyMessage) {
+            const messageEntry = document.createElement("div");
+            messageEntry.className = "playlist-log-entry general-entry";
+            const messageRow = document.createElement("div");
+            messageRow.className = "playlist-log-message";
+            const messageTextEl = document.createElement("div");
+            messageTextEl.className = "playlist-log-text";
+            const baseText = spotifyMessage || "Spotify rate limit reached.";
+            messageTextEl.textContent = baseText;
+            messageRow.appendChild(messageTextEl);
+            messageEntry.appendChild(messageRow);
+            listEl.appendChild(messageEntry);
+
+            if (hasRateLimit) {
+              registerRateLimitCountdown(messageTextEl, {
+                text: baseText,
+                rate_limit_resume_epoch: spotifyStatus.rate_limit_resume_epoch,
+                rate_limit_resume: spotifyStatus.rate_limit_resume,
+                timestamp: spotifyStatus.last_log_at,
+              });
+            }
+          }
+
+          block.appendChild(listEl);
+          blocksToRender.push(block);
+          renderedGroups += 1;
+        }
+
+        blocksToRender.forEach((block) => buildLogContainer.appendChild(block));
 
         if (!renderedGroups) {
           const empty = document.createElement("div");
