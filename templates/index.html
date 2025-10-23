@@ -73,7 +73,7 @@
 
       main {
         flex: 1;
-        padding: 32px 48px 64px;
+        padding: 32px 48px 120px;
         overflow-y: auto;
       }
 
@@ -250,6 +250,19 @@
         justify-content: flex-end;
         gap: 12px;
         flex-wrap: wrap;
+      }
+
+      #addPlaylist {
+        position: fixed;
+        bottom: 32px;
+        right: 48px;
+        z-index: 1100;
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.5);
+      }
+
+      #addPlaylist:hover,
+      #addPlaylist:focus-visible {
+        transform: translateY(-2px);
       }
 
       .playlist-header h3 {
@@ -839,12 +852,18 @@
       @media (max-width: 960px) {
         main {
           padding: 24px;
+          padding-bottom: 120px;
         }
 
         header {
           flex-direction: column;
           align-items: flex-start;
           gap: 16px;
+        }
+
+        #addPlaylist {
+          bottom: 24px;
+          right: 24px;
         }
 
         .playlist-header {
@@ -950,17 +969,22 @@
               id="toggleDefaultFilters"
               class="icon-only secondary default-filters-collapse-btn"
               type="button"
-              aria-expanded="true"
+              aria-expanded="false"
               aria-controls="defaultFiltersCard"
-              aria-label="Collapse default filters"
-              title="Collapse default filters"
+              aria-label="Expand default filters"
+              title="Expand default filters"
             >
-              ▾
+              ▸
             </button>
             <h2><span class="section-icon">⚙</span>Default Plex Filters</h2>
           </div>
         </div>
-        <div id="defaultFiltersCard" class="card collapsible-card">
+        <div
+          id="defaultFiltersCard"
+          class="card collapsible-card collapsed"
+          hidden
+          aria-hidden="true"
+        >
           <div id="defaultFilters" class="filters-container"></div>
           <button id="addDefaultFilter" class="secondary" type="button">＋ Add Default Filter</button>
         </div>
@@ -1022,7 +1046,7 @@
       let buildStatusTimer = null;
       let popularityStatusTimer = null;
       let isActivityCollapsed = false;
-      let isDefaultFiltersCollapsed = false;
+      let isDefaultFiltersCollapsed = true;
       const rateLimitCountdownEntries = new Set();
       let rateLimitCountdownTimer = null;
       const ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
@@ -1310,6 +1334,15 @@
 
         const collapsed = Boolean(isDefaultFiltersCollapsed);
         defaultFiltersCard.classList.toggle("collapsed", collapsed);
+        if (collapsed) {
+          defaultFiltersCard.setAttribute("hidden", "");
+        } else {
+          defaultFiltersCard.removeAttribute("hidden");
+        }
+        defaultFiltersCard.setAttribute(
+          "aria-hidden",
+          collapsed ? "true" : "false"
+        );
         toggleDefaultFiltersBtn.setAttribute(
           "aria-expanded",
           String(!collapsed)
@@ -3291,7 +3324,7 @@
               extras: playlist.extras || {},
             };
             entry._originalName = playlistName;
-            entry._collapsed = false;
+            entry._collapsed = true;
             entry._boostsOpen = false;
             return entry;
           });
