@@ -4626,10 +4626,11 @@ def build_spotify_popularity_cache():
         desc="Caching Spotify popularity",
         unit="track",
         dynamic_ncols=True,
+        initial=initial_progress,
     )
 
     if initial_progress:
-        progress_bar.update(initial_progress)
+        progress_bar.refresh()
 
     if SAVE_INTERVAL and initial_progress and initial_progress % SAVE_INTERVAL == 0:
         provider.save_cache()
