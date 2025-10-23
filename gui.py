@@ -207,6 +207,56 @@ def _format_timestamp(value: Optional[datetime]) -> Optional[str]:
     return value.astimezone(timezone.utc).isoformat()
 
 
+RATE_LIMIT_RETRY_PATTERN = re.compile(
+    r"Retry will occur after:\s*(?P<value>[0-9]+(?:\.[0-9]+)?)",
+    re.IGNORECASE,
+)
+
+
+def _parse_rate_limit_details(
+    message: Optional[str], reference_time: Optional[float] = None
+) -> Optional[Dict[str, Any]]:
+    if not message:
+        return None
+
+    match = RATE_LIMIT_RETRY_PATTERN.search(message)
+    if not match:
+        return None
+
+    try:
+        retry_seconds = float(match.group("value"))
+    except (TypeError, ValueError):
+        return None
+
+    if retry_seconds <= 0:
+        return None
+
+    if isinstance(reference_time, datetime):
+        base_epoch = reference_time.timestamp()
+    elif reference_time is not None:
+        try:
+            base_epoch = float(reference_time)
+        except (TypeError, ValueError):
+            base_epoch = time.time()
+    else:
+        base_epoch = time.time()
+
+    resume_epoch = base_epoch + retry_seconds
+    try:
+        resume_at = datetime.fromtimestamp(resume_epoch, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
+        resume_at = None
+
+    details: Dict[str, Any] = {
+        "rate_limit_seconds": retry_seconds,
+        "rate_limit_resume_epoch": resume_epoch,
+    }
+    if resume_at is not None:
+        details["rate_limit_resume"] = resume_at
+
+    return details
+
+
 class PlaylistConflictError(Exception):
     """Raised when attempting to save a playlist that already exists."""
 
@@ -230,11 +280,6 @@ class BuildManager:
         r"Processing\s+(?P<count>\d+)\s+playlist\(s\):\s*(?P<names>.+)",
         re.IGNORECASE,
     )
-    _RATE_LIMIT_RETRY_PATTERN = re.compile(
-        r"Retry will occur after:\s*(?P<value>[0-9]+(?:\.[0-9]+)?)",
-        re.IGNORECASE,
-    )
-
     def __init__(
         self,
         command: Optional[List[str]] = None,
@@ -322,38 +367,6 @@ class BuildManager:
             return cls._normalize_playlist_key(name)
 
         return None
-
-    @classmethod
-    def _extract_rate_limit_details(cls, message: str) -> Optional[Dict[str, Any]]:
-        if not message:
-            return None
-
-        match = cls._RATE_LIMIT_RETRY_PATTERN.search(message)
-        if not match:
-            return None
-
-        try:
-            retry_seconds = float(match.group("value"))
-        except (TypeError, ValueError):
-            return None
-
-        if retry_seconds <= 0:
-            return None
-
-        resume_epoch = time.time() + retry_seconds
-        try:
-            resume_at = datetime.fromtimestamp(resume_epoch, tz=timezone.utc)
-        except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
-            resume_at = None
-
-        details: Dict[str, Any] = {
-            "rate_limit_seconds": retry_seconds,
-            "rate_limit_resume_epoch": resume_epoch,
-        }
-        if resume_at is not None:
-            details["rate_limit_resume"] = resume_at
-
-        return details
 
     def _append_playlist_log_locked(self, playlist_name: str, message: str) -> None:
         logs = self._playlist_logs.setdefault(playlist_name, [])
@@ -470,7 +483,7 @@ class BuildManager:
 
     def _append_general_log_locked(self, message: str) -> None:
         entry: Dict[str, Any] = {"text": message, "timestamp": _utcnow()}
-        rate_limit_details = self._extract_rate_limit_details(message)
+        rate_limit_details = _parse_rate_limit_details(message)
         if rate_limit_details:
             entry.update(rate_limit_details)
         self._general_logs.append(entry)
@@ -1620,6 +1633,8 @@ class PopularityCacheRunner:
         self._last_message: Optional[str] = None
         self._last_state: str = "idle"
         self._recent_logs: List[str] = []
+        self._last_message_timestamp: Optional[datetime] = None
+        self._last_rate_limit: Optional[Dict[str, Any]] = None
 
     def is_running(self) -> bool:
         with self._lock:
@@ -1635,11 +1650,20 @@ class PopularityCacheRunner:
                 sanitized = raw_line.strip()
                 if not sanitized:
                     continue
+                captured_at = _utcnow()
                 with self._lock:
                     self._last_message = sanitized
+                    self._last_message_timestamp = captured_at
                     self._recent_logs.append(sanitized)
                     if len(self._recent_logs) > 100:
                         self._recent_logs = self._recent_logs[-100:]
+                    rate_limit_details = _parse_rate_limit_details(
+                        sanitized, reference_time=captured_at.timestamp()
+                    )
+                    if rate_limit_details:
+                        self._last_rate_limit = rate_limit_details
+                    else:
+                        self._last_rate_limit = None
         finally:
             try:
                 stream.close()
@@ -1712,6 +1736,8 @@ class PopularityCacheRunner:
             self._last_state = "running"
             self._last_message = "Spotify popularity cache build started."
             self._recent_logs = []
+            self._last_message_timestamp = None
+            self._last_rate_limit = None
 
             if process.stdout is not None:
                 thread = threading.Thread(
@@ -1735,6 +1761,10 @@ class PopularityCacheRunner:
             finished_at = _format_timestamp(self._last_finished_at)
             exit_code = self._last_exit_code
             logs = list(self._recent_logs[-50:])
+            last_log_at = _format_timestamp(self._last_message_timestamp)
+            rate_limit_info = (
+                dict(self._last_rate_limit) if self._last_rate_limit else None
+            )
 
         cache_state = load_popularity_cache_state()
 
@@ -1747,6 +1777,32 @@ class PopularityCacheRunner:
             "exit_code": exit_code,
             "logs": logs,
         }
+
+        if last_log_at:
+            payload["last_log_at"] = last_log_at
+
+        if rate_limit_info:
+            seconds_value = rate_limit_info.get("rate_limit_seconds")
+            try:
+                seconds_float = float(seconds_value)
+            except (TypeError, ValueError):
+                seconds_float = None
+            if seconds_float and seconds_float > 0:
+                payload["rate_limit_seconds"] = seconds_float
+
+            resume_epoch_value = rate_limit_info.get("rate_limit_resume_epoch")
+            try:
+                resume_epoch_float = float(resume_epoch_value)
+            except (TypeError, ValueError):
+                resume_epoch_float = None
+            if resume_epoch_float and resume_epoch_float > 0:
+                payload["rate_limit_resume_epoch"] = resume_epoch_float
+
+            resume_value = rate_limit_info.get("rate_limit_resume")
+            if isinstance(resume_value, datetime):
+                payload["rate_limit_resume"] = _format_timestamp(resume_value)
+            elif isinstance(resume_value, str):
+                payload["rate_limit_resume"] = resume_value
 
         payload.update(cache_state)
         return payload
