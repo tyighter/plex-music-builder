@@ -1605,6 +1605,26 @@
             (isAllRunning || otherActiveNames.length > 0)
         );
 
+        const normalizeWaitingNames = (names) =>
+          Array.isArray(names)
+            ? names
+                .map((name) =>
+                  name === null || name === undefined ? "" : String(name).trim()
+                )
+                .filter((name) => name.length > 0)
+            : [];
+
+        const waitingPlaylists = [
+          ...normalizeWaitingNames(status?.waiting_playlists),
+          ...normalizeWaitingNames(activeJob?.waiting_playlists),
+        ];
+        const waitingSet = new Set(waitingPlaylists);
+        const isWaitingThisPlaylist = Boolean(
+          playlistName &&
+            !isRunningThisPlaylist &&
+            waitingSet.has(playlistName)
+        );
+
         const playlistResults = status?.results?.playlists || {};
         const lastResult = playlistName ? playlistResults[playlistName] : undefined;
 
@@ -1626,62 +1646,19 @@
         indicator.classList.remove("running", "idle", "error", "success", "stopped");
         indicator.classList.add(indicatorState);
 
-        let statusLineText = playlistName ? "Not built yet" : "Name required to build";
+        let statusLineText = playlistName ? "Idle" : "Name required to build";
         if (isRunningThisPlaylist) {
           statusLineText = "Building now…";
-        } else if (otherJobRunning) {
-          if (otherActiveNames.length === 1) {
-            statusLineText = `Waiting – '${otherActiveNames[0]}' is building`;
-          } else if (otherActiveNames.length > 1) {
-            statusLineText = `Waiting – ${otherActiveNames.length} playlists building`;
-          } else if (isAllRunning) {
-            statusLineText = "Waiting – build in progress";
-          } else if (activePlaylistName) {
-            statusLineText = `Waiting – '${activePlaylistName}' is building`;
-          } else {
-            statusLineText = "Waiting – build in progress";
-          }
-        } else if (isAllRunning) {
-          statusLineText = "All playlists build running";
-        } else if (lastResult) {
-          if (lastResult.state === "success") {
-            statusLineText = "Last build succeeded";
-          } else if (lastResult.state === "stopped") {
-            statusLineText = "Last build stopped";
-          } else if (lastResult.state === "error") {
-            statusLineText = "Last build failed";
-          }
+        } else if (isWaitingThisPlaylist || otherJobRunning || isAllRunning) {
+          statusLineText = "Waiting";
         }
         line.textContent = statusLineText;
 
-        const detailParts = [];
-        if (isRunningThisPlaylist) {
-          if (status?.message) {
-            detailParts.push(status.message);
-          }
-          if (status?.since) {
-            detailParts.push(`Started ${formatTimestamp(status.since)}`);
-          }
-        } else if (otherJobRunning) {
-          if (otherActiveNames.length > 1) {
-            detailParts.push(`Currently building: ${otherActiveNames.join(", ")}`);
-          } else if (otherActiveNames.length === 1) {
-            detailParts.push(`Currently building '${otherActiveNames[0]}'`);
-          } else if (isAllRunning) {
-            detailParts.push("Currently building all playlists");
-          } else if (activePlaylistName) {
-            detailParts.push(`Currently building '${activePlaylistName}'`);
-          }
-          detailParts.push("Click the build button to queue this playlist");
-        } else if (lastResult) {
-          if (lastResult.message) {
-            detailParts.push(lastResult.message);
-          }
-          if (lastResult.finished_at) {
-            detailParts.push(`Finished ${formatTimestamp(lastResult.finished_at)}`);
-          }
+        let detailText = "";
+        if (isRunningThisPlaylist && status?.since) {
+          detailText = `Started ${formatTimestamp(status.since)}`;
         }
-        message.textContent = detailParts.join(" • ");
+        message.textContent = detailText;
 
         if (isRunningThisPlaylist) {
           button.textContent = "⏹ Stop Build";
