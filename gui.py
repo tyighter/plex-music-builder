@@ -122,7 +122,7 @@ def _load_config_data() -> Dict[str, Any]:
     _CONFIG_CACHE["data"] = config_data
     return config_data if isinstance(config_data, dict) else {}
 
-GENERAL_LOG_RETENTION = timedelta(minutes=60)
+GENERAL_LOG_RETENTION = timedelta(minutes=5)
 GENERAL_LOG_DISPLAY_LIMIT = 3
 PLAYLIST_ACTIVITY_RETENTION = timedelta(minutes=15)
 
