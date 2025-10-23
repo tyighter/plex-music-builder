@@ -2427,16 +2427,6 @@
 
           const extras = ensureExtras(playlist);
 
-          playlist._statusElements = {
-            indicator: statusIndicator,
-            line: statusLine,
-            message: statusMessage,
-            button: buildBtn,
-            headerTitle: title,
-            nameInput,
-          };
-          updatePlaylistBuildUi(playlist);
-
           const grid = document.createElement("div");
           grid.className = "input-grid";
 
@@ -2451,6 +2441,16 @@
             updatePlaylistBuildUi(playlist);
           });
           nameLabel.appendChild(nameInput);
+
+          playlist._statusElements = {
+            indicator: statusIndicator,
+            line: statusLine,
+            message: statusMessage,
+            button: buildBtn,
+            headerTitle: title,
+            nameInput,
+          };
+          updatePlaylistBuildUi(playlist);
 
           saveBtn.addEventListener("click", () =>
             savePlaylist(playlist, saveBtn, title, nameInput)
