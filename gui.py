@@ -2016,6 +2016,23 @@ def load_yaml_data() -> Dict[str, Any]:
     return {"defaults": defaults, "playlists": playlists}
 
 
+def _normalize_bool_flag(value: Any, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+
+    if value is None:
+        return default
+
+    return bool(value)
+
+
 def normalize_filter_entry(filter_entry: Dict[str, Any]) -> Dict[str, Any]:
     field = filter_entry.get("field", "")
     operator = filter_entry.get("operator", "equals")
@@ -2028,19 +2045,12 @@ def normalize_filter_entry(filter_entry: Dict[str, Any]) -> Dict[str, Any]:
     else:
         value_str = "" if value is None else str(value)
 
-    if isinstance(wildcard, bool):
-        wildcard_value = wildcard
-    elif wildcard is None:
-        wildcard_value = False
-    else:
-        wildcard_value = bool(wildcard)
-
     return {
         "field": field,
         "operator": operator,
         "value": value_str,
-        "match_all": bool(match_all) if match_all is not None else True,
-        "wildcard": wildcard_value,
+        "match_all": _normalize_bool_flag(match_all, default=True),
+        "wildcard": _normalize_bool_flag(wildcard, default=False),
     }
 
 
@@ -2055,6 +2065,7 @@ def normalize_boost_entry(boost_entry: Dict[str, Any]) -> Dict[str, Any]:
     operator = boost_entry.get("operator", "equals")
     value = boost_entry.get("value", "")
     boost_raw = boost_entry.get("boost", 1.0)
+    match_all_raw = boost_entry.get("match_all")
 
     try:
         boost_value = float(boost_raw)
@@ -2064,15 +2075,26 @@ def normalize_boost_entry(boost_entry: Dict[str, Any]) -> Dict[str, Any]:
     if not math.isfinite(boost_value) or boost_value < 0:
         boost_value = 1.0
 
+    has_multiple_expected_values = False
+
     if isinstance(value, list):
         value_str = ", ".join(str(item) for item in value)
+        has_multiple_expected_values = len(value) > 1
     else:
         value_str = "" if value is None else str(value)
+        if isinstance(value, str) and "," in value:
+            segments = [segment.strip() for segment in value.split(",")]
+            has_multiple_expected_values = len([segment for segment in segments if segment]) > 1
+
+    match_all_value = _normalize_bool_flag(match_all_raw, default=True)
+    if has_multiple_expected_values:
+        match_all_value = False
 
     return {
         "field": field,
         "operator": operator,
         "value": value_str,
+        "match_all": match_all_value,
         "boost": boost_value,
     }
 
@@ -2207,12 +2229,19 @@ def build_boost_for_yaml(boost_entry: Dict[str, Any]) -> Optional[Dict[str, Any]
     if boost_value < 0:
         boost_value = 1.0
 
-    return {
+    match_all_flag = _normalize_bool_flag(boost_entry.get("match_all"), default=True)
+
+    yaml_entry = {
         "field": field,
         "operator": operator,
         "value": value,
         "boost": boost_value,
     }
+
+    if not match_all_flag:
+        yaml_entry["match_all"] = False
+
+    return yaml_entry
 
 
 def to_int(value: Any, default: int = 0) -> int:

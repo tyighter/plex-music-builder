@@ -976,7 +976,25 @@ def _apply_configured_popularity_boosts(
             continue
         operator = str(rule.get("operator") or "equals").strip() or "equals"
         value = rule.get("value", "")
-        match_all = rule.get("match_all", True)
+        match_all_raw = rule.get("match_all")
+        if isinstance(match_all_raw, bool):
+            match_all_value = match_all_raw
+        elif match_all_raw is None:
+            match_all_value = True
+        else:
+            match_all_value = bool(match_all_raw)
+
+        has_multiple_expected_values = False
+        if isinstance(value, str):
+            segments = [segment.strip() for segment in value.split(",")]
+            non_empty_segments = [segment for segment in segments if segment]
+            has_multiple_expected_values = len(non_empty_segments) > 1
+        elif isinstance(value, (list, tuple, set)):
+            has_multiple_expected_values = len(value) > 1
+
+        if has_multiple_expected_values:
+            match_all_value = False
+
         boost_value = _coerce_non_negative_float(rule.get("boost"))
         if boost_value is None:
             boost_value = 1.0
@@ -985,7 +1003,7 @@ def _apply_configured_popularity_boosts(
                 "field": field,
                 "operator": operator,
                 "value": value,
-                "match_all": bool(match_all) if match_all is not None else True,
+                "match_all": match_all_value,
                 "boost": boost_value,
             }
         )
