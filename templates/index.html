@@ -381,6 +381,76 @@
         margin-bottom: 10px;
       }
 
+      .boosts-popout {
+        margin-top: 18px;
+      }
+
+      .boosts-popout summary {
+        list-style: none;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 18px;
+        border-radius: 999px;
+        background: rgba(229, 160, 13, 0.16);
+        border: 1px solid rgba(229, 160, 13, 0.35);
+        color: var(--plex-light);
+        font-size: 15px;
+        font-weight: 500;
+        box-shadow: none;
+        transition: background 0.2s ease, transform 0.2s ease;
+      }
+
+      .boosts-popout summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .boosts-popout[open] summary {
+        background: rgba(229, 160, 13, 0.28);
+        transform: translateY(-1px);
+      }
+
+      .boosts-panel {
+        margin-top: 14px;
+        padding: 18px;
+        border-radius: 12px;
+        background: rgba(14, 14, 14, 0.65);
+        border: 1px solid rgba(229, 160, 13, 0.22);
+        box-shadow: 0 12px 24px rgba(0, 0, 0, 0.45);
+      }
+
+      .boosts-panel p {
+        margin: 0 0 14px;
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 14px;
+      }
+
+      .boosts-container {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .boost-row {
+        grid-template-columns: 1.1fr 1fr 1fr 0.6fr auto;
+      }
+
+      .boost-row .boost-input {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .boost-row .boost-input label {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.7);
+      }
+
+      .boost-row .boost-input input {
+        min-width: 110px;
+      }
+
       .filter-row .value-input {
         display: flex;
         flex-direction: column;
@@ -815,6 +885,19 @@
         }
 
         .filter-row .value-input input {
+          min-width: 0;
+        }
+
+        .boosts-popout summary {
+          width: 100%;
+          justify-content: center;
+        }
+
+        .boost-row {
+          grid-template-columns: 1fr;
+        }
+
+        .boost-row .boost-input input {
           min-width: 0;
         }
       }
@@ -2522,6 +2605,100 @@
         });
       }
 
+      function renderPopularityBoosts(containerEl, boosts, onRemove) {
+        containerEl.innerHTML = "";
+
+        if (!Array.isArray(boosts) || boosts.length === 0) {
+          const emptyState = document.createElement("p");
+          emptyState.className = "no-filters";
+          emptyState.textContent = "No boost rules configured.";
+          containerEl.appendChild(emptyState);
+          return;
+        }
+
+        boosts.forEach((boost, index) => {
+          const row = document.createElement("div");
+          row.className = "filter-row boost-row";
+
+          const fieldSelect = document.createElement("select");
+          createOptionElements(fieldSelect, options.fields, boost.field || "");
+          fieldSelect.value = boost.field || "";
+          fieldSelect.addEventListener("change", (event) => {
+            boost.field = event.target.value;
+          });
+          row.appendChild(fieldSelect);
+
+          const operatorSelect = document.createElement("select");
+          createOptionElements(
+            operatorSelect,
+            options.operators,
+            boost.operator || "equals"
+          );
+          operatorSelect.value = boost.operator || "equals";
+          operatorSelect.addEventListener("change", (event) => {
+            boost.operator = event.target.value;
+          });
+          row.appendChild(operatorSelect);
+
+          const valueWrapper = document.createElement("div");
+          valueWrapper.className = "value-input";
+          const valueInput = document.createElement("input");
+          valueInput.type = "text";
+          valueInput.placeholder = "Value";
+          valueInput.value = boost.value || "";
+          valueInput.addEventListener("input", (event) => {
+            boost.value = event.target.value;
+          });
+          valueWrapper.appendChild(valueInput);
+          row.appendChild(valueWrapper);
+
+          const boostWrapper = document.createElement("div");
+          boostWrapper.className = "boost-input";
+          const boostLabel = document.createElement("label");
+          boostLabel.textContent = "Multiplier";
+          const boostInput = document.createElement("input");
+          boostInput.type = "number";
+          boostInput.min = "0";
+          boostInput.step = "0.1";
+          const normalized = normalizePopularityBoostMultiplier(
+            boost.boost !== undefined ? boost.boost : 1.0
+          );
+          boost.boost = normalized;
+          boostInput.value = normalized;
+          boostInput.placeholder = "1.0";
+          boostInput.addEventListener("input", (event) => {
+            const parsed = Number.parseFloat(event.target.value);
+            if (Number.isFinite(parsed) && parsed >= 0) {
+              boost.boost = parsed;
+            }
+          });
+          boostInput.addEventListener("blur", (event) => {
+            const parsed = Number.parseFloat(event.target.value);
+            if (!Number.isFinite(parsed) || parsed < 0) {
+              boost.boost = 1.0;
+              event.target.value = "1.0";
+            }
+          });
+          boostLabel.appendChild(boostInput);
+          boostWrapper.appendChild(boostLabel);
+          row.appendChild(boostWrapper);
+
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.className = "icon-only danger";
+          removeBtn.textContent = "✕";
+          removeBtn.title = "Remove popularity boost rule";
+          removeBtn.addEventListener("click", () => {
+            if (typeof onRemove === "function") {
+              onRemove(index);
+            }
+          });
+          row.appendChild(removeBtn);
+
+          containerEl.appendChild(row);
+        });
+      }
+
       function updatePlaylistCollapseUi(playlist) {
         if (!playlist || typeof playlist !== "object") {
           return;
@@ -2571,6 +2748,14 @@
         return parsed;
       }
 
+      function normalizePopularityBoostMultiplier(value) {
+        const parsed = Number.parseFloat(value);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          return 1.0;
+        }
+        return parsed;
+      }
+
       function createPlaylistDuplicate(sourcePlaylist) {
         const duplicate = {};
 
@@ -2599,6 +2784,23 @@
                     clonedFilter.value = JSON.parse(JSON.stringify(filter.value));
                   }
                   return clonedFilter;
+                });
+              }
+              return;
+            }
+
+            if (key === "popularity_boosts") {
+              if (Array.isArray(value)) {
+                duplicate.popularity_boosts = value.map((boost) => {
+                  const clonedBoost = { ...boost };
+                  if (
+                    boost &&
+                    typeof boost.value === "object" &&
+                    boost.value !== null
+                  ) {
+                    clonedBoost.value = JSON.parse(JSON.stringify(boost.value));
+                  }
+                  return clonedBoost;
                 });
               }
               return;
@@ -2635,6 +2837,9 @@
         if (!Array.isArray(duplicate.plex_filter)) {
           duplicate.plex_filter = [];
         }
+        if (!Array.isArray(duplicate.popularity_boosts)) {
+          duplicate.popularity_boosts = [];
+        }
         if (!duplicate.extras || typeof duplicate.extras !== "object") {
           duplicate.extras = {};
         }
@@ -2669,6 +2874,13 @@
         state.playlists.forEach((playlist, index) => {
           if (typeof playlist._collapsed !== "boolean") {
             playlist._collapsed = false;
+          }
+
+          if (!Array.isArray(playlist.popularity_boosts)) {
+            playlist.popularity_boosts = [];
+          }
+          if (typeof playlist._boostsOpen !== "boolean") {
+            playlist._boostsOpen = false;
           }
 
           const card = document.createElement("div");
@@ -2923,6 +3135,64 @@
 
           details.appendChild(addFilterBtn);
 
+          const boostsPopout = document.createElement("details");
+          boostsPopout.className = "boosts-popout";
+          if (playlist._boostsOpen) {
+            boostsPopout.open = true;
+          }
+
+          const boostsSummary = document.createElement("summary");
+          boostsSummary.textContent = "⚡ Popularity Boosts";
+          boostsSummary.setAttribute(
+            "aria-label",
+            "Toggle popularity boost rules"
+          );
+          boostsPopout.appendChild(boostsSummary);
+
+          const boostsPanel = document.createElement("div");
+          boostsPanel.className = "boosts-panel";
+
+          const boostsDescription = document.createElement("p");
+          boostsDescription.textContent =
+            "Boost multipliers adjust the popularity score of matching tracks.";
+          boostsPanel.appendChild(boostsDescription);
+
+          const boostsContainer = document.createElement("div");
+          boostsContainer.className = "boosts-container";
+          renderPopularityBoosts(
+            boostsContainer,
+            playlist.popularity_boosts,
+            (boostIndex) => {
+              playlist._boostsOpen = true;
+              playlist.popularity_boosts.splice(boostIndex, 1);
+              renderPlaylists();
+            }
+          );
+          boostsPanel.appendChild(boostsContainer);
+
+          const addBoostBtn = document.createElement("button");
+          addBoostBtn.type = "button";
+          addBoostBtn.className = "secondary";
+          addBoostBtn.textContent = "＋ Add Boost Rule";
+          addBoostBtn.addEventListener("click", () => {
+            playlist.popularity_boosts.push({
+              field: "",
+              operator: "equals",
+              value: "",
+              boost: 1.0,
+            });
+            playlist._boostsOpen = true;
+            renderPlaylists();
+          });
+          boostsPanel.appendChild(addBoostBtn);
+
+          boostsPopout.appendChild(boostsPanel);
+          boostsPopout.addEventListener("toggle", () => {
+            playlist._boostsOpen = boostsPopout.open;
+          });
+
+          details.appendChild(boostsPopout);
+
           playlist._collapseElements = {
             card,
             toggleButton: toggleBtn,
@@ -2989,10 +3259,21 @@
                   filter.match_all !== undefined ? filter.match_all : true,
                 wildcard: filter.wildcard !== undefined ? !!filter.wildcard : false,
               })),
+              popularity_boosts: (playlist.popularity_boosts || []).map(
+                (boost) => ({
+                  field: boost.field || "",
+                  operator: boost.operator || "equals",
+                  value: boost.value || "",
+                  boost: normalizePopularityBoostMultiplier(
+                    boost.boost !== undefined ? boost.boost : 1.0
+                  ),
+                })
+              ),
               extras: playlist.extras || {},
             };
             entry._originalName = playlistName;
             entry._collapsed = false;
+            entry._boostsOpen = false;
             return entry;
           });
 
@@ -3010,6 +3291,17 @@
           value: filter.value || "",
           match_all: filter.match_all !== undefined ? !!filter.match_all : true,
           wildcard: filter.wildcard !== undefined ? !!filter.wildcard : false,
+        }));
+      }
+
+      function prepareBoostsForSave(boosts) {
+        return (boosts || []).map((boost) => ({
+          field: boost.field || "",
+          operator: boost.operator || "equals",
+          value: boost.value || "",
+          boost: normalizePopularityBoostMultiplier(
+            boost.boost !== undefined ? boost.boost : 1.0
+          ),
         }));
       }
 
@@ -3040,6 +3332,9 @@
               playlist.top_5_boost ?? 1.0
             ),
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
+            popularity_boosts: prepareBoostsForSave(
+              playlist.popularity_boosts
+            ),
             extras: sanitizeExtras(playlist.extras || {}),
           })),
         };
@@ -3101,6 +3396,9 @@
               playlist.top_5_boost ?? 1.0
             ),
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
+            popularity_boosts: prepareBoostsForSave(
+              playlist.popularity_boosts
+            ),
             extras: sanitizeExtras(playlist.extras || {}),
           },
           original_name: playlist._originalName || "",
@@ -3215,9 +3513,11 @@
           sort_by: defaultSort,
           top_5_boost: 1.0,
           plex_filter: [],
+          popularity_boosts: [],
           extras: {},
           _originalName: "",
           _collapsed: false,
+          _boostsOpen: false,
         };
         state.playlists.push(newPlaylist);
         renderPlaylists();

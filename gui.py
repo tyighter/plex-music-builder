@@ -2050,6 +2050,39 @@ def serialize_filters(filters: Optional[List[Dict[str, Any]]]) -> List[Dict[str,
     return [normalize_filter_entry(filter_entry or {}) for filter_entry in filters]
 
 
+def normalize_boost_entry(boost_entry: Dict[str, Any]) -> Dict[str, Any]:
+    field = boost_entry.get("field", "")
+    operator = boost_entry.get("operator", "equals")
+    value = boost_entry.get("value", "")
+    boost_raw = boost_entry.get("boost", 1.0)
+
+    try:
+        boost_value = float(boost_raw)
+    except (TypeError, ValueError):
+        boost_value = 1.0
+
+    if not math.isfinite(boost_value) or boost_value < 0:
+        boost_value = 1.0
+
+    if isinstance(value, list):
+        value_str = ", ".join(str(item) for item in value)
+    else:
+        value_str = "" if value is None else str(value)
+
+    return {
+        "field": field,
+        "operator": operator,
+        "value": value_str,
+        "boost": boost_value,
+    }
+
+
+def serialize_boosts(boosts: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    if not boosts:
+        return []
+    return [normalize_boost_entry(boost_entry or {}) for boost_entry in boosts]
+
+
 def load_playlists() -> Dict[str, Any]:
     data = load_yaml_data()
     defaults_config = data.get("defaults", {}) or {}
@@ -2078,6 +2111,7 @@ def load_playlists() -> Dict[str, Any]:
                 "sort_by",
                 "plex_filter",
                 "top_5_boost",
+                "popularity_boosts",
             }
         }
         playlists_data.append(
@@ -2089,6 +2123,9 @@ def load_playlists() -> Dict[str, Any]:
                 "sort_by": config.get("sort_by", ""),
                 "top_5_boost": top_5_boost,
                 "plex_filter": serialize_filters(config.get("plex_filter")),
+                "popularity_boosts": serialize_boosts(
+                    config.get("popularity_boosts")
+                ),
                 "extras": extras,
             }
         )
@@ -2156,6 +2193,26 @@ def build_filter_for_yaml(filter_entry: Dict[str, Any]) -> Optional[Dict[str, An
         yaml_entry["wildcard"] = True
 
     return yaml_entry
+
+
+def build_boost_for_yaml(boost_entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    field = (boost_entry.get("field") or "").strip()
+    if not field:
+        return None
+
+    operator = (boost_entry.get("operator") or "equals").strip() or "equals"
+    value = parse_filter_value(boost_entry.get("value", ""))
+    boost_raw = boost_entry.get("boost", 1.0)
+    boost_value = to_float(boost_raw, default=1.0)
+    if boost_value < 0:
+        boost_value = 1.0
+
+    return {
+        "field": field,
+        "operator": operator,
+        "value": value,
+        "boost": boost_value,
+    }
 
 
 def to_int(value: Any, default: int = 0) -> int:
@@ -2228,6 +2285,14 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         if playlist_filters:
             playlist_config["plex_filter"] = playlist_filters
 
+        boost_entries = []
+        for boost_entry in playlist_entry.get("popularity_boosts", []):
+            yaml_boost = build_boost_for_yaml(boost_entry)
+            if yaml_boost is not None:
+                boost_entries.append(yaml_boost)
+        if boost_entries:
+            playlist_config["popularity_boosts"] = boost_entries
+
         playlists_dict[name] = playlist_config
 
     yaml_structure: Dict[str, Any] = {}
@@ -2273,6 +2338,14 @@ def save_single_playlist(
             playlist_filters.append(yaml_filter)
     if playlist_filters:
         playlist_config["plex_filter"] = playlist_filters
+
+    boost_entries = []
+    for boost_entry in playlist_payload.get("popularity_boosts", []):
+        yaml_boost = build_boost_for_yaml(boost_entry)
+        if yaml_boost is not None:
+            boost_entries.append(yaml_boost)
+    if boost_entries:
+        playlist_config["popularity_boosts"] = boost_entries
 
     yaml_data = load_yaml_data()
     defaults_config = yaml_data.get("defaults", {}) or {}
