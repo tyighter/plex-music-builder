@@ -1,3 +1,4 @@
+from datetime import timedelta
 from typing import Any, Dict
 
 import gui
@@ -47,3 +48,21 @@ def test_non_bootstrap_log_line_marks_running() -> None:
     assert status["running"] is True
     assert status["active_playlists"] == ["Gamma"]
     assert status["waiting_playlists"] == []
+
+
+def test_completed_playlist_logs_expire_after_retention() -> None:
+    manager = _TestableBuildManager()
+
+    manager._handle_log_line("[INFO] Build started for playlist 'Alpha'")
+    manager._handle_log_line("[INFO] ✅ Finished building 'Alpha' (10 tracks)")
+
+    initial_status = _build_manager_status(manager)
+    assert "Alpha" in initial_status["logs"]["playlists"]
+
+    with manager._lock:
+        manager._playlist_completed_at["Alpha"] = (
+            gui._utcnow() - gui.PLAYLIST_ACTIVITY_RETENTION - timedelta(seconds=1)
+        )
+
+    expired_status = _build_manager_status(manager)
+    assert "Alpha" not in expired_status["logs"]["playlists"]
