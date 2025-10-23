@@ -3639,6 +3639,12 @@ def check_condition(value, operator, expected, match_all=True):
             logger.warning(f"Unknown operator: {operator}")
             results.append(False)
 
+    if operator in {"does_not_equal", "does_not_contain"}:
+        # Negative operators should only succeed when *all* expected values fail to match.
+        # Treating them as OR conditions (via ``any``) would incorrectly allow matches when
+        # one of the disallowed values is present. Instead we require every check to pass.
+        return all(results)
+
     return all(results) if match_all else any(results)
 
 # ----------------------------
