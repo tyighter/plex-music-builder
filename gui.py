@@ -230,6 +230,10 @@ class BuildManager:
         r"Processing\s+(?P<count>\d+)\s+playlist\(s\):\s*(?P<names>.+)",
         re.IGNORECASE,
     )
+    _RATE_LIMIT_RETRY_PATTERN = re.compile(
+        r"Retry will occur after:\s*(?P<value>[0-9]+(?:\.[0-9]+)?)",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -319,6 +323,38 @@ class BuildManager:
 
         return None
 
+    @classmethod
+    def _extract_rate_limit_details(cls, message: str) -> Optional[Dict[str, Any]]:
+        if not message:
+            return None
+
+        match = cls._RATE_LIMIT_RETRY_PATTERN.search(message)
+        if not match:
+            return None
+
+        try:
+            retry_seconds = float(match.group("value"))
+        except (TypeError, ValueError):
+            return None
+
+        if retry_seconds <= 0:
+            return None
+
+        resume_epoch = time.time() + retry_seconds
+        try:
+            resume_at = datetime.fromtimestamp(resume_epoch, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
+            resume_at = None
+
+        details: Dict[str, Any] = {
+            "rate_limit_seconds": retry_seconds,
+            "rate_limit_resume_epoch": resume_epoch,
+        }
+        if resume_at is not None:
+            details["rate_limit_resume"] = resume_at
+
+        return details
+
     def _append_playlist_log_locked(self, playlist_name: str, message: str) -> None:
         logs = self._playlist_logs.setdefault(playlist_name, [])
         is_final = message.strip().startswith("✅")
@@ -384,10 +420,12 @@ class BuildManager:
         for entry in self._general_logs:
             text: Optional[str]
             timestamp: Optional[datetime]
+            normalized_entry: Dict[str, Any]
 
             if isinstance(entry, dict):
-                text = entry.get("text")
-                timestamp = entry.get("timestamp")
+                normalized_entry = dict(entry)
+                text = normalized_entry.get("text")
+                timestamp = normalized_entry.get("timestamp")
                 if isinstance(timestamp, str):
                     try:
                         timestamp = datetime.fromisoformat(timestamp)
@@ -395,7 +433,17 @@ class BuildManager:
                             timestamp = timestamp.replace(tzinfo=timezone.utc)
                     except ValueError:
                         timestamp = None
+                resume_value = normalized_entry.get("rate_limit_resume")
+                if isinstance(resume_value, str):
+                    try:
+                        resume_dt = datetime.fromisoformat(resume_value)
+                        if resume_dt.tzinfo is None:
+                            resume_dt = resume_dt.replace(tzinfo=timezone.utc)
+                        normalized_entry["rate_limit_resume"] = resume_dt
+                    except ValueError:
+                        normalized_entry.pop("rate_limit_resume", None)
             elif isinstance(entry, str):
+                normalized_entry = {"text": entry}
                 text = entry
                 timestamp = None
             else:
@@ -410,7 +458,10 @@ class BuildManager:
             if timestamp < cutoff:
                 continue
 
-            normalized_entries.append({"text": text, "timestamp": timestamp})
+            normalized_entry["text"] = text
+            normalized_entry["timestamp"] = timestamp
+
+            normalized_entries.append(normalized_entry)
 
         if len(normalized_entries) > 400:
             normalized_entries = normalized_entries[-400:]
@@ -418,7 +469,10 @@ class BuildManager:
         self._general_logs = normalized_entries
 
     def _append_general_log_locked(self, message: str) -> None:
-        entry = {"text": message, "timestamp": _utcnow()}
+        entry: Dict[str, Any] = {"text": message, "timestamp": _utcnow()}
+        rate_limit_details = self._extract_rate_limit_details(message)
+        if rate_limit_details:
+            entry.update(rate_limit_details)
         self._general_logs.append(entry)
         self._prune_general_logs_locked(entry["timestamp"])
         self._passive_last_message = message
@@ -1336,11 +1390,44 @@ class BuildManager:
 
         self._prune_general_logs_locked()
         general_log_entries = self._general_logs[-GENERAL_LOG_DISPLAY_LIMIT:]
-        general_logs_payload = [
-            str(entry.get("text"))
-            for entry in general_log_entries
-            if isinstance(entry, dict) and entry.get("text")
-        ]
+        general_logs_payload: List[Dict[str, Any]] = []
+        for entry in general_log_entries:
+            if isinstance(entry, dict):
+                text_value = entry.get("text")
+                if not text_value:
+                    continue
+                payload_entry: Dict[str, Any] = {"text": str(text_value)}
+                timestamp_value = entry.get("timestamp")
+                if isinstance(timestamp_value, datetime):
+                    payload_entry["timestamp"] = _format_timestamp(timestamp_value)
+                elif isinstance(timestamp_value, str):
+                    payload_entry["timestamp"] = timestamp_value
+
+                resume_value = entry.get("rate_limit_resume")
+                if isinstance(resume_value, datetime):
+                    payload_entry["rate_limit_resume"] = _format_timestamp(resume_value)
+                elif isinstance(resume_value, str):
+                    payload_entry["rate_limit_resume"] = resume_value
+
+                resume_epoch_value = entry.get("rate_limit_resume_epoch")
+                try:
+                    resume_epoch_float = float(resume_epoch_value)
+                except (TypeError, ValueError):
+                    resume_epoch_float = None
+                if resume_epoch_float and resume_epoch_float > 0:
+                    payload_entry["rate_limit_resume_epoch"] = resume_epoch_float
+
+                seconds_value = entry.get("rate_limit_seconds")
+                try:
+                    seconds_float = float(seconds_value)
+                except (TypeError, ValueError):
+                    seconds_float = None
+                if seconds_float and seconds_float > 0:
+                    payload_entry["rate_limit_seconds"] = seconds_float
+
+                general_logs_payload.append(payload_entry)
+            elif isinstance(entry, str):
+                general_logs_payload.append({"text": entry})
 
         active_playlists_payload = sorted(job_active_names)
 
