@@ -955,6 +955,106 @@ def _compute_album_popularity_boosts(
     return adjusted_by_rating_key, adjusted_by_object
 
 
+def _apply_configured_popularity_boosts(
+    tracks,
+    boost_rules,
+    dedup_popularity_cache,
+    album_popularity_cache,
+    album_popularity_cache_by_object,
+    spotify_provider=None,
+    playlist_logger=None,
+):
+    if not tracks or not boost_rules:
+        return {}, {}
+
+    normalized_rules = []
+    for rule in boost_rules:
+        if not isinstance(rule, dict):
+            continue
+        field = str(rule.get("field") or "").strip()
+        if not field:
+            continue
+        operator = str(rule.get("operator") or "equals").strip() or "equals"
+        value = rule.get("value", "")
+        match_all = rule.get("match_all", True)
+        boost_value = _coerce_non_negative_float(rule.get("boost"))
+        if boost_value is None:
+            boost_value = 1.0
+        normalized_rules.append(
+            {
+                "field": field,
+                "operator": operator,
+                "value": value,
+                "match_all": bool(match_all) if match_all is not None else True,
+                "boost": boost_value,
+            }
+        )
+
+    if not normalized_rules:
+        return {}, {}
+
+    adjustments_by_key = {}
+    adjustments_by_object = {}
+
+    for track in tracks:
+        cache_key = getattr(track, "ratingKey", None)
+        cache_key_str = str(cache_key) if cache_key is not None else None
+        object_key = id(track)
+
+        if cache_key_str and cache_key_str in album_popularity_cache:
+            base_score = album_popularity_cache[cache_key_str]
+        elif cache_key_str and cache_key_str in dedup_popularity_cache:
+            base_score = dedup_popularity_cache[cache_key_str]
+        elif object_key in album_popularity_cache_by_object:
+            base_score = album_popularity_cache_by_object[object_key]
+        else:
+            base_score = _resolve_track_popularity_value(
+                track,
+                spotify_provider=spotify_provider,
+                playlist_logger=playlist_logger,
+            )
+            if cache_key_str is not None and base_score is not None:
+                dedup_popularity_cache[cache_key_str] = base_score
+
+        if base_score is None:
+            continue
+
+        try:
+            base_numeric = float(base_score)
+        except (TypeError, ValueError):
+            continue
+
+        if not math.isfinite(base_numeric):
+            continue
+
+        multiplier = 1.0
+        for rule in normalized_rules:
+            field_value = get_field_value(track, rule["field"])
+            if check_condition(
+                field_value,
+                rule["operator"],
+                rule["value"],
+                rule.get("match_all", True),
+            ):
+                multiplier *= rule["boost"]
+
+        if multiplier == 1.0:
+            continue
+
+        adjusted_score = base_numeric * multiplier
+
+        if cache_key_str is not None:
+            dedup_popularity_cache[cache_key_str] = adjusted_score
+            adjustments_by_key[cache_key_str] = adjusted_score
+            if cache_key_str in album_popularity_cache:
+                album_popularity_cache[cache_key_str] = adjusted_score
+        else:
+            adjustments_by_object[object_key] = adjusted_score
+            album_popularity_cache_by_object[object_key] = adjusted_score
+
+    return adjustments_by_key, adjustments_by_object
+
+
 def _resolve_album_year(track):
     """Return the best-known release year for the provided track's album."""
 
@@ -3827,6 +3927,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     log.info(f"Building playlist: {name}")
     build_start = time.perf_counter()
     filters = config.get("plex_filter", [])
+    boost_rules = config.get("popularity_boosts", []) or []
     wildcard_filters = [f for f in filters if bool(f.get("wildcard"))]
     regular_filters = [f for f in filters if not bool(f.get("wildcard"))]
     library = plex.library.section(config.get("library", LIBRARY_NAME))
@@ -4061,6 +4162,26 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             spotify_provider=spotify_provider,
             playlist_logger=log,
             top_5_boost=top_5_boost_value,
+        )
+        if boost_rules:
+            _apply_configured_popularity_boosts(
+                matched_tracks,
+                boost_rules,
+                dedup_popularity_cache,
+                album_popularity_cache,
+                album_popularity_cache_by_object,
+                spotify_provider=spotify_provider,
+                playlist_logger=log,
+            )
+    elif boost_rules:
+        _apply_configured_popularity_boosts(
+            matched_tracks,
+            boost_rules,
+            dedup_popularity_cache,
+            {},
+            {},
+            spotify_provider=spotify_provider,
+            playlist_logger=log,
         )
     match_count = len(matched_tracks)
 
