@@ -196,9 +196,14 @@
         box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
       }
 
-      .status-indicator.idle {
+      .status-indicator.waiting {
         background: #f5c150;
         box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.25);
+      }
+
+      .status-indicator.idle {
+        background: #9e9e9e;
+        box-shadow: 0 0 0 3px rgba(158, 158, 158, 0.25);
       }
 
       .status-indicator.error {
@@ -1672,7 +1677,7 @@
         if (isRunningThisPlaylist) {
           indicatorState = "running";
         } else if (isWaitingThisPlaylist) {
-          indicatorState = "idle";
+          indicatorState = "waiting";
         } else if (lastResult) {
           if (lastResult.state === "success") {
             indicatorState = "success";
@@ -1685,7 +1690,14 @@
           indicatorState = "idle";
         }
 
-        indicator.classList.remove("running", "idle", "error", "success", "stopped");
+        indicator.classList.remove(
+          "running",
+          "waiting",
+          "idle",
+          "error",
+          "success",
+          "stopped"
+        );
         indicator.classList.add(indicatorState);
 
         let statusLineText = playlistName ? "Idle" : "Name required to build";
@@ -2164,6 +2176,7 @@
 
         buildStatusIndicator.classList.remove(
           "running",
+          "waiting",
           "idle",
           "error",
           "success",
