@@ -3,5 +3,8 @@ docker build -t plex-music-builder .
 docker run -d \
   --name=plex-music-builder \
   -v /mnt/appdatacache/appdata/pmb:/app \
+  -v /mnt/user/Media/Posters/Playlists:/images \
+  -p 4444:4444 \
   --restart unless-stopped \
   plex-music-builder
+
