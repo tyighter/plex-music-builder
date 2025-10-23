@@ -11,7 +11,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, IO, List, Optional, Set, Tuple
+from typing import Any, Dict, IO, Iterable, List, Optional, Set, Tuple
 
 import yaml
 from flask import Flask, jsonify, render_template, request
@@ -124,6 +124,7 @@ def _load_config_data() -> Dict[str, Any]:
 
 GENERAL_LOG_RETENTION = timedelta(minutes=60)
 GENERAL_LOG_DISPLAY_LIMIT = 3
+PLAYLIST_ACTIVITY_RETENTION = timedelta(minutes=15)
 
 # Human-friendly overrides for certain Plex field names
 FIELD_LABEL_OVERRIDES: Dict[str, str] = {
@@ -246,6 +247,7 @@ class BuildManager:
         self._last_all_result: Optional[Dict[str, Any]] = None
         self._last_playlist_results: Dict[str, Dict[str, Any]] = {}
         self._playlist_logs: Dict[str, List[Dict[str, Any]]] = {}
+        self._playlist_completed_at: Dict[str, datetime] = {}
         self._general_logs: List[Dict[str, Any]] = []
         self._log_file_path: Optional[Path] = resolve_log_file_path()
         self._log_watcher_thread: Optional[threading.Thread] = None
@@ -423,6 +425,48 @@ class BuildManager:
         if not self._processes:
             self._last_message = message
 
+    def _mark_playlist_started_locked(self, playlist_name: str) -> None:
+        normalized = self._normalize_playlist_key(playlist_name)
+        if not normalized:
+            return
+        self._playlist_completed_at.pop(normalized, None)
+
+    def _mark_playlist_completed_locked(
+        self, playlist_name: str, completed_at: Optional[datetime] = None
+    ) -> None:
+        normalized = self._normalize_playlist_key(playlist_name)
+        if not normalized:
+            return
+        self._playlist_completed_at[normalized] = completed_at or _utcnow()
+
+    def _prune_playlist_logs_locked(
+        self,
+        active_playlists: Set[str],
+        waiting_playlists: Iterable[str],
+        reference_time: Optional[datetime] = None,
+    ) -> None:
+        if reference_time is None:
+            reference_time = _utcnow()
+
+        cutoff = reference_time - PLAYLIST_ACTIVITY_RETENTION
+
+        waiting_set: Set[str] = set()
+        for name in waiting_playlists:
+            normalized = self._normalize_playlist_key(name)
+            if normalized:
+                waiting_set.add(normalized)
+
+        for name, completed_at in list(self._playlist_completed_at.items()):
+            if not isinstance(completed_at, datetime):
+                continue
+            if completed_at > cutoff:
+                continue
+            if name in active_playlists or name in waiting_set:
+                continue
+            self._playlist_completed_at.pop(name, None)
+            self._playlist_logs.pop(name, None)
+            self._last_playlist_results.pop(name, None)
+
     def _remove_waiting_playlist_locked(self, playlist_name: Optional[str]) -> None:
         normalized = self._normalize_playlist_key(playlist_name)
         if not normalized:
@@ -537,6 +581,7 @@ class BuildManager:
 
         if playlist_name:
             if normalized.startswith("building playlist:"):
+                self._mark_playlist_started_locked(playlist_name)
                 self._observed_active_playlists.add(playlist_name)
                 if not self._processes and not self._passive_running:
                     self._passive_last_started_at = now
@@ -549,6 +594,7 @@ class BuildManager:
                             "playlist": playlist_name,
                         }
             elif normalized.startswith("build started for playlist"):
+                self._mark_playlist_started_locked(playlist_name)
                 self._observed_active_playlists.add(playlist_name)
                 if not self._processes and not self._passive_running:
                     self._passive_last_started_at = now
@@ -565,6 +611,7 @@ class BuildManager:
                 or "failed" in normalized
                 or "stopped" in normalized
             ):
+                self._mark_playlist_completed_locked(playlist_name, now)
                 if "failed" in normalized:
                     self._passive_last_state = "error"
                 elif "stopped" in normalized:
@@ -915,9 +962,20 @@ class BuildManager:
             if playlist_name:
                 if handled_progress and playlist_name == progress_playlist:
                     return
+                is_start_message = lowercase_message.startswith(
+                    "building playlist:"
+                ) or lowercase_message.startswith("build started for playlist")
                 if lowercase_message.startswith("building playlist:"):
                     self._playlist_logs[playlist_name] = []
+                if is_start_message:
+                    self._mark_playlist_started_locked(playlist_name)
                 self._append_playlist_log_locked(playlist_name, info_message)
+                if (
+                    lowercase_message.startswith("✅ finished building")
+                    or "failed" in lowercase_message
+                    or "stopped" in lowercase_message
+                ):
+                    self._mark_playlist_completed_locked(playlist_name)
             elif not handled_progress:
                 self._append_general_log_locked(info_message)
 
@@ -983,11 +1041,13 @@ class BuildManager:
             job_payload["active_playlists"] = [playlist_name]
             job_message = f"Build started for playlist '{playlist_name}'."
             self._playlist_logs.pop(playlist_name, None)
+            self._mark_playlist_started_locked(playlist_name)
         else:
             job_payload = {"type": "all"}
             job_message = "Build for all playlists started."
             self._playlist_logs = {}
             self._general_logs = []
+            self._playlist_completed_at = {}
 
         try:
             process = subprocess.Popen(
@@ -1127,6 +1187,7 @@ class BuildManager:
             if playlist_name:
                 self._remove_waiting_playlist_locked(playlist_name)
                 self._observed_active_playlists.discard(playlist_name)
+                self._mark_playlist_completed_locked(playlist_name, finished_at)
 
         self._processes = active_handles
 
@@ -1245,6 +1306,8 @@ class BuildManager:
                 job["waiting_playlists"] = list(waiting_names)
             elif "waiting_playlists" in job:
                 job.pop("waiting_playlists", None)
+
+        self._prune_playlist_logs_locked(job_active_names, waiting_names)
 
         playlist_results = {
             name: result.copy()
