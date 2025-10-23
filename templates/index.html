@@ -2563,6 +2563,14 @@
         });
       }
 
+      function normalizeTop5Boost(value) {
+        const parsed = Number.parseFloat(value);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          return 1.0;
+        }
+        return parsed;
+      }
+
       function createPlaylistDuplicate(sourcePlaylist) {
         const duplicate = {};
 
@@ -2621,6 +2629,9 @@
         duplicate.artist_limit = duplicate.artist_limit ?? 0;
         duplicate.album_limit = duplicate.album_limit ?? 0;
         duplicate.sort_by = duplicate.sort_by || "";
+        duplicate.top_5_boost = normalizeTop5Boost(
+          duplicate.top_5_boost ?? 1.0
+        );
         if (!Array.isArray(duplicate.plex_filter)) {
           duplicate.plex_filter = [];
         }
@@ -2837,6 +2848,28 @@
           });
           sortLabel.appendChild(sortSelect);
 
+          const top5BoostLabel = document.createElement("label");
+          top5BoostLabel.textContent = "Top 5 Boost";
+          const top5BoostInput = document.createElement("input");
+          top5BoostInput.type = "number";
+          top5BoostInput.min = "0";
+          top5BoostInput.step = "0.1";
+          const normalizedBoost = normalizeTop5Boost(
+            playlist.top_5_boost ?? 1.0
+          );
+          playlist.top_5_boost = normalizedBoost;
+          top5BoostInput.value = normalizedBoost;
+          top5BoostInput.placeholder = "1.0";
+          top5BoostInput.addEventListener("input", (event) => {
+            const parsed = Number.parseFloat(event.target.value);
+            if (Number.isFinite(parsed) && parsed >= 0) {
+              playlist.top_5_boost = parsed;
+            } else {
+              playlist.top_5_boost = undefined;
+            }
+          });
+          top5BoostLabel.appendChild(top5BoostInput);
+
           const coverLabel = document.createElement("label");
           coverLabel.textContent = "Cover Image Path";
           const coverWrapper = document.createElement("div");
@@ -2859,6 +2892,7 @@
           grid.appendChild(artistLimitLabel);
           grid.appendChild(albumLimitLabel);
           grid.appendChild(sortLabel);
+          grid.appendChild(top5BoostLabel);
           grid.appendChild(coverLabel);
 
           details.appendChild(grid);
@@ -2944,6 +2978,9 @@
               artist_limit: playlist.artist_limit ?? 0,
               album_limit: playlist.album_limit ?? 0,
               sort_by: playlist.sort_by || "",
+              top_5_boost: normalizeTop5Boost(
+                playlist.top_5_boost ?? 1.0
+              ),
               plex_filter: (playlist.plex_filter || []).map((filter) => ({
                 field: filter.field || "",
                 operator: filter.operator || "equals",
@@ -2999,6 +3036,9 @@
             artist_limit: playlist.artist_limit ?? 0,
             album_limit: playlist.album_limit ?? 0,
             sort_by: playlist.sort_by || "",
+            top_5_boost: normalizeTop5Boost(
+              playlist.top_5_boost ?? 1.0
+            ),
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
             extras: sanitizeExtras(playlist.extras || {}),
           })),
@@ -3057,6 +3097,9 @@
             artist_limit: playlist.artist_limit ?? 0,
             album_limit: playlist.album_limit ?? 0,
             sort_by: playlist.sort_by || "",
+            top_5_boost: normalizeTop5Boost(
+              playlist.top_5_boost ?? 1.0
+            ),
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
             extras: sanitizeExtras(playlist.extras || {}),
           },
@@ -3170,6 +3213,7 @@
           artist_limit: 0,
           album_limit: 0,
           sort_by: defaultSort,
+          top_5_boost: 1.0,
           plex_filter: [],
           extras: {},
           _originalName: "",

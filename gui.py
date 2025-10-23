@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import json
 import os
+import math
 import subprocess
 import sys
 import threading
@@ -2062,10 +2063,22 @@ def load_playlists() -> Dict[str, Any]:
     playlists_data = []
     for name, config in data.get("playlists", {}).items():
         config = config or {}
+        raw_boost = config.get("top_5_boost", 1.0)
+        top_5_boost = to_float(raw_boost, default=1.0)
+        if top_5_boost < 0:
+            top_5_boost = 1.0
         extras = {
             key: value
             for key, value in config.items()
-            if key not in {"limit", "artist_limit", "album_limit", "sort_by", "plex_filter"}
+            if key
+            not in {
+                "limit",
+                "artist_limit",
+                "album_limit",
+                "sort_by",
+                "plex_filter",
+                "top_5_boost",
+            }
         }
         playlists_data.append(
             {
@@ -2074,6 +2087,7 @@ def load_playlists() -> Dict[str, Any]:
                 "artist_limit": config.get("artist_limit", 0) or 0,
                 "album_limit": config.get("album_limit", 0) or 0,
                 "sort_by": config.get("sort_by", ""),
+                "top_5_boost": top_5_boost,
                 "plex_filter": serialize_filters(config.get("plex_filter")),
                 "extras": extras,
             }
@@ -2151,6 +2165,18 @@ def to_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def to_float(value: Any, default: float = 1.0) -> float:
+    try:
+        numeric = float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+    if not math.isfinite(numeric):
+        return default
+
+    return numeric
+
+
 def save_playlists(payload: Dict[str, Any]) -> None:
     defaults_payload = payload.get("defaults", {}) or {}
     playlists_payload = payload.get("playlists", []) or []
@@ -2178,6 +2204,10 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         artist_limit = to_int(playlist_entry.get("artist_limit", 0))
         album_limit = to_int(playlist_entry.get("album_limit", 0))
         sort_by = playlist_entry.get("sort_by") or None
+        raw_top_5_boost = playlist_entry.get("top_5_boost", 1.0)
+        top_5_boost = to_float(raw_top_5_boost, default=1.0)
+        if top_5_boost < 0:
+            top_5_boost = 1.0
 
         playlist_config: Dict[str, Any] = {}
         extras = playlist_entry.get("extras")
@@ -2186,6 +2216,7 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         playlist_config["limit"] = max(limit, 0)
         playlist_config["artist_limit"] = max(artist_limit, 0)
         playlist_config["album_limit"] = max(album_limit, 0)
+        playlist_config["top_5_boost"] = top_5_boost
         if sort_by:
             playlist_config["sort_by"] = sort_by
 
@@ -2223,10 +2254,15 @@ def save_single_playlist(
     artist_limit = to_int(playlist_payload.get("artist_limit", 0))
     album_limit = to_int(playlist_payload.get("album_limit", 0))
     sort_by = (playlist_payload.get("sort_by") or "").strip() or None
+    raw_top_5_boost = playlist_payload.get("top_5_boost", 1.0)
+    top_5_boost = to_float(raw_top_5_boost, default=1.0)
+    if top_5_boost < 0:
+        top_5_boost = 1.0
 
     playlist_config["limit"] = max(limit, 0)
     playlist_config["artist_limit"] = max(artist_limit, 0)
     playlist_config["album_limit"] = max(album_limit, 0)
+    playlist_config["top_5_boost"] = top_5_boost
     if sort_by:
         playlist_config["sort_by"] = sort_by
 
