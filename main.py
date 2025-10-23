@@ -904,9 +904,18 @@ def _compute_album_popularity_boosts(
     popularity_cache,
     spotify_provider=None,
     playlist_logger=None,
+    top_5_boost=1.0,
 ):
     if not tracks:
         return {}, {}
+
+    try:
+        boost_value = float(top_5_boost)
+    except (TypeError, ValueError):
+        boost_value = 1.0
+
+    if not math.isfinite(boost_value) or boost_value < 0:
+        boost_value = 1.0
 
     album_map = defaultdict(list)
     adjusted_by_rating_key = {}
@@ -937,7 +946,7 @@ def _compute_album_popularity_boosts(
     for album_tracks in album_map.values():
         album_tracks.sort(key=lambda entry: entry[1], reverse=True)
         for index, (track, base_score, cache_key_str) in enumerate(album_tracks):
-            adjusted_score = base_score * 1.5 if index < 5 else base_score
+            adjusted_score = base_score * boost_value if index < 5 else base_score
             if cache_key_str:
                 adjusted_by_rating_key[cache_key_str] = adjusted_score
             else:
@@ -3861,6 +3870,10 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         if not sort_desc_in_config:
             sort_desc = True
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
+    top_5_boost_raw = config.get("top_5_boost", 1.0)
+    top_5_boost_value = _coerce_non_negative_float(top_5_boost_raw)
+    if top_5_boost_value is None:
+        top_5_boost_value = 1.0
     stream_requested = config.get("stream_while_filtering", False)
     stream_enabled = stream_requested and not sort_by and not limit
     if stream_enabled:
@@ -4047,6 +4060,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             dedup_popularity_cache,
             spotify_provider=spotify_provider,
             playlist_logger=log,
+            top_5_boost=top_5_boost_value,
         )
     match_count = len(matched_tracks)
 
