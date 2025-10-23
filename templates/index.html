@@ -907,12 +907,18 @@
       const rateLimitCountdownEntries = new Set();
       let rateLimitCountdownTimer = null;
 
-      function clearRateLimitCountdowns() {
-        rateLimitCountdownEntries.clear();
-        if (rateLimitCountdownTimer) {
-          clearInterval(rateLimitCountdownTimer);
-          rateLimitCountdownTimer = null;
-        }
+      function clearRateLimitCountdowns(rootElement = null) {
+        const entries = Array.from(rateLimitCountdownEntries);
+        entries.forEach((entry) => {
+          if (!entry?.element || !entry.element.isConnected) {
+            rateLimitCountdownEntries.delete(entry);
+            return;
+          }
+          if (!rootElement || rootElement.contains(entry.element)) {
+            rateLimitCountdownEntries.delete(entry);
+          }
+        });
+        scheduleRateLimitCountdownUpdates();
       }
 
       function scheduleRateLimitCountdownUpdates() {
@@ -1011,10 +1017,40 @@
         scheduleRateLimitCountdownUpdates();
       }
 
+      function unregisterRateLimitCountdown(element) {
+        if (!element) {
+          return;
+        }
+
+        const entries = Array.from(rateLimitCountdownEntries);
+        let removed = false;
+        entries.forEach((entry) => {
+          if (!entry?.element || entry.element === element) {
+            rateLimitCountdownEntries.delete(entry);
+            removed = true;
+          }
+        });
+
+        if (element.dataset) {
+          delete element.dataset.resumeAt;
+          delete element.dataset.loggedAt;
+        }
+
+        if (typeof element.removeAttribute === "function") {
+          element.removeAttribute("title");
+        }
+
+        if (removed) {
+          scheduleRateLimitCountdownUpdates();
+        }
+      }
+
       function registerRateLimitCountdown(element, entry) {
         if (!element || !entry) {
           return;
         }
+
+        unregisterRateLimitCountdown(element);
 
         let resumeMs = Number(entry.rate_limit_resume_epoch) * 1000;
         if (!Number.isFinite(resumeMs) || resumeMs <= 0) {
@@ -1162,7 +1198,23 @@
         popularityStatusText.textContent = headline;
 
         if (popularityStatusMessage) {
-          popularityStatusMessage.textContent = status?.message || "";
+          const messageText = status?.message || "";
+          popularityStatusMessage.textContent = messageText;
+          unregisterRateLimitCountdown(popularityStatusMessage);
+
+          const hasRateLimit = Boolean(
+            status &&
+              (status.rate_limit_resume_epoch || status.rate_limit_resume)
+          );
+
+          if (hasRateLimit) {
+            registerRateLimitCountdown(popularityStatusMessage, {
+              text: messageText,
+              rate_limit_resume_epoch: status.rate_limit_resume_epoch,
+              rate_limit_resume: status.rate_limit_resume,
+              timestamp: status.last_log_at,
+            });
+          }
         }
 
         if (buildPopularityBtn) {
@@ -1210,6 +1262,7 @@
           console.error(error);
           if (popularityStatusMessage) {
             popularityStatusMessage.textContent = error.message;
+            unregisterRateLimitCountdown(popularityStatusMessage);
           }
         }
       }
@@ -1555,7 +1608,7 @@
           return;
         }
 
-        clearRateLimitCountdowns();
+        clearRateLimitCountdowns(buildLogContainer);
 
         const running = Boolean(status?.running);
         const activePlaylists = getActivePlaylistNames(status);
