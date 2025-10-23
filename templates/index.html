@@ -81,6 +81,36 @@
         margin-bottom: 32px;
       }
 
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 16px;
+      }
+
+      .section-header h2 {
+        margin: 0;
+      }
+
+      .section-header .section-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .default-filters-header-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .collapsible-card.collapsed {
+        display: none;
+      }
+
       h2 {
         margin: 0 0 16px;
         font-size: 22px;
@@ -258,7 +288,8 @@
         display: none;
       }
 
-      .playlist-collapse-btn {
+      .playlist-collapse-btn,
+      .default-filters-collapse-btn {
         font-size: 18px;
         line-height: 1;
       }
@@ -835,8 +866,23 @@
       </section>
 
       <section>
-        <h2><span class="section-icon">⚙</span>Default Plex Filters</h2>
-        <div class="card">
+        <div class="section-header default-filters-header">
+          <div class="default-filters-header-title">
+            <button
+              id="toggleDefaultFilters"
+              class="icon-only secondary default-filters-collapse-btn"
+              type="button"
+              aria-expanded="true"
+              aria-controls="defaultFiltersCard"
+              aria-label="Collapse default filters"
+              title="Collapse default filters"
+            >
+              ▾
+            </button>
+            <h2><span class="section-icon">⚙</span>Default Plex Filters</h2>
+          </div>
+        </div>
+        <div id="defaultFiltersCard" class="card collapsible-card">
           <div id="defaultFilters" class="filters-container"></div>
           <button id="addDefaultFilter" class="secondary" type="button">＋ Add Default Filter</button>
         </div>
@@ -878,6 +924,8 @@
         "collapseAllPlaylists"
       );
       const defaultFiltersContainer = document.getElementById("defaultFilters");
+      const defaultFiltersCard = document.getElementById("defaultFiltersCard");
+      const toggleDefaultFiltersBtn = document.getElementById("toggleDefaultFilters");
       const buildStatusIndicator = document.getElementById("buildStatusIndicator");
       const buildStatusText = document.getElementById("buildStatusText");
       const buildStatusMessage = document.getElementById("buildStatusMessage");
@@ -896,8 +944,10 @@
       let buildStatusTimer = null;
       let popularityStatusTimer = null;
       let isActivityCollapsed = false;
+      let isDefaultFiltersCollapsed = false;
       const rateLimitCountdownEntries = new Set();
       let rateLimitCountdownTimer = null;
+      const ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
 
       function clearRateLimitCountdowns(rootElement = null) {
         const entries = Array.from(rateLimitCountdownEntries);
@@ -1135,6 +1185,61 @@
           return isoString;
         }
         return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+      }
+
+      function parseTimestampMs(value) {
+        if (!value) {
+          return null;
+        }
+        const parsed = Date.parse(value);
+        return Number.isNaN(parsed) ? null : parsed;
+      }
+
+      function resolveResumeTimestampMs(entry) {
+        if (!entry) {
+          return null;
+        }
+
+        let resumeMs = Number(entry.rate_limit_resume_epoch);
+        if (Number.isFinite(resumeMs) && resumeMs > 0) {
+          resumeMs *= 1000;
+        } else {
+          resumeMs = NaN;
+        }
+
+        if (!Number.isFinite(resumeMs) || resumeMs <= 0) {
+          const parsed = entry.rate_limit_resume
+            ? Date.parse(entry.rate_limit_resume)
+            : NaN;
+          if (!Number.isNaN(parsed)) {
+            resumeMs = parsed;
+          }
+        }
+
+        if (!Number.isFinite(resumeMs) || resumeMs <= 0) {
+          return null;
+        }
+
+        return resumeMs;
+      }
+
+      function updateDefaultFiltersCollapse() {
+        if (!defaultFiltersCard || !toggleDefaultFiltersBtn) {
+          return;
+        }
+
+        const collapsed = Boolean(isDefaultFiltersCollapsed);
+        defaultFiltersCard.classList.toggle("collapsed", collapsed);
+        toggleDefaultFiltersBtn.setAttribute(
+          "aria-expanded",
+          String(!collapsed)
+        );
+        const label = collapsed
+          ? "Expand default filters"
+          : "Collapse default filters";
+        toggleDefaultFiltersBtn.setAttribute("aria-label", label);
+        toggleDefaultFiltersBtn.setAttribute("title", label);
+        toggleDefaultFiltersBtn.textContent = collapsed ? "▸" : "▾";
       }
 
       function getSpotifyStatusHeadline(status) {
@@ -1541,6 +1646,7 @@
 
         clearRateLimitCountdowns(buildLogContainer);
 
+        const nowMs = Date.now();
         const running = Boolean(status?.running);
         const activePlaylists = getActivePlaylistNames(status);
         const activePlaylistsSet = new Set(activePlaylists);
@@ -1775,7 +1881,27 @@
           playlistBlocks.forEach((block) => blocksToRender.push(block));
         }
 
-        if (generalLogs.length) {
+        const normalizedGeneralEntries = generalLogs
+          .map((entry) => normalizeGeneralLogEntry(entry))
+          .filter((entry) => {
+            if (!entry) {
+              return false;
+            }
+            const textValue =
+              typeof entry.text === "string" ? entry.text.trim() : "";
+            if (!textValue) {
+              return false;
+            }
+            entry.text = textValue;
+            const timestampMs = parseTimestampMs(entry.timestamp);
+            if (timestampMs === null) {
+              return true;
+            }
+            return nowMs - timestampMs <= ACTIVITY_RETENTION_MS;
+          })
+          .slice(-3);
+
+        if (normalizedGeneralEntries.length) {
           const block = document.createElement("div");
           block.className = "build-log-playlist general-activity";
           const title = document.createElement("div");
@@ -1785,10 +1911,6 @@
 
           const listEl = document.createElement("div");
           listEl.className = "build-log-playlist-entries";
-
-          const normalizedGeneralEntries = generalLogs
-            .slice(-3)
-            .map((entry) => normalizeGeneralLogEntry(entry));
 
           normalizedGeneralEntries.forEach((entry) => {
             const item = document.createElement("div");
@@ -1814,14 +1936,27 @@
         const spotifyStatus = latestPopularityStatus || {};
         const spotifyHeadline = getSpotifyStatusHeadline(spotifyStatus);
         const spotifyMessage = (spotifyStatus.message || "").trim();
+        const spotifyResumeMs = resolveResumeTimestampMs(spotifyStatus);
         const hasRateLimit = Boolean(
           spotifyStatus &&
             (spotifyStatus.rate_limit_resume_epoch ||
               spotifyStatus.rate_limit_resume)
         );
         const shouldShowSpotifyMessage = Boolean(spotifyMessage || hasRateLimit);
+        const hasActiveRateLimitCountdown =
+          spotifyResumeMs !== null && spotifyResumeMs > nowMs;
+        const hasRunningSpotify = Boolean(spotifyStatus?.running);
+        const lastSpotifyActivityMs =
+          parseTimestampMs(spotifyStatus.last_log_at) ??
+          parseTimestampMs(spotifyStatus.finished_at) ??
+          parseTimestampMs(spotifyStatus.started_at);
+        const isSpotifyStale =
+          !hasRunningSpotify &&
+          !hasActiveRateLimitCountdown &&
+          lastSpotifyActivityMs !== null &&
+          nowMs - lastSpotifyActivityMs > ACTIVITY_RETENTION_MS;
 
-        if (spotifyHeadline || shouldShowSpotifyMessage) {
+        if ((spotifyHeadline || shouldShowSpotifyMessage) && !isSpotifyStale) {
           const block = document.createElement("div");
           block.className = "build-log-playlist spotify-activity";
           const title = document.createElement("div");
@@ -2974,6 +3109,15 @@
           }
         }
       }
+
+      if (toggleDefaultFiltersBtn) {
+        toggleDefaultFiltersBtn.addEventListener("click", () => {
+          isDefaultFiltersCollapsed = !isDefaultFiltersCollapsed;
+          updateDefaultFiltersCollapse();
+        });
+      }
+
+      updateDefaultFiltersCollapse();
 
       document.getElementById("addDefaultFilter").addEventListener("click", () => {
         state.defaults.plex_filter.push({
