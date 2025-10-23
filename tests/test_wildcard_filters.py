@@ -102,3 +102,38 @@ def test_no_filters_keeps_track(main_module):
 
     assert keep is True
     assert wildcard_matched is False
+
+
+def test_negative_wildcard_filters_block_when_any_expected_matches(main_module):
+    track = DummyTrack(genres=["Album Rock", "Arena Rock"])
+    wildcard_filters = [
+        {
+            "field": "genres",
+            "operator": "does_not_equal",
+            "value": ["AOR", "Arena Rock"],
+            "match_all": False,
+            "wildcard": True,
+        }
+    ]
+
+    keep, wildcard_matched = _evaluate(main_module, track, wildcard_filters, [])
+
+    assert keep is False
+    assert wildcard_matched is False
+
+
+def test_negative_regular_filters_block_when_any_expected_matches(main_module):
+    track = DummyTrack(title="My Song (Explicit Version)")
+    regular_filters = [
+        {
+            "field": "title",
+            "operator": "does_not_contain",
+            "value": ["explicit", "clean"],
+            "match_all": False,
+        }
+    ]
+
+    keep, wildcard_matched = _evaluate(main_module, track, [], regular_filters)
+
+    assert keep is False
+    assert wildcard_matched is False
