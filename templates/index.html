@@ -904,6 +904,154 @@
       let buildStatusTimer = null;
       let popularityStatusTimer = null;
       let isActivityCollapsed = false;
+      const rateLimitCountdownEntries = new Set();
+      let rateLimitCountdownTimer = null;
+
+      function clearRateLimitCountdowns() {
+        rateLimitCountdownEntries.clear();
+        if (rateLimitCountdownTimer) {
+          clearInterval(rateLimitCountdownTimer);
+          rateLimitCountdownTimer = null;
+        }
+      }
+
+      function scheduleRateLimitCountdownUpdates() {
+        if (rateLimitCountdownEntries.size > 0) {
+          if (!rateLimitCountdownTimer) {
+            rateLimitCountdownTimer = setInterval(
+              updateRateLimitCountdowns,
+              1000
+            );
+          }
+        } else if (rateLimitCountdownTimer) {
+          clearInterval(rateLimitCountdownTimer);
+          rateLimitCountdownTimer = null;
+        }
+      }
+
+      function formatDurationShort(totalSeconds) {
+        const secondsNumeric = Number(totalSeconds);
+        if (!Number.isFinite(secondsNumeric)) {
+          return "";
+        }
+        let remaining = Math.max(0, Math.floor(secondsNumeric));
+        const parts = [];
+        const units = [
+          [86400, "d"],
+          [3600, "h"],
+          [60, "m"],
+        ];
+
+        for (const [unitSeconds, label] of units) {
+          if (remaining >= unitSeconds) {
+            const value = Math.floor(remaining / unitSeconds);
+            remaining -= value * unitSeconds;
+            parts.push(`${value}${label}`);
+          }
+        }
+
+        if (remaining > 0 || parts.length === 0) {
+          parts.push(`${remaining}s`);
+        }
+
+        return parts.join(" ");
+      }
+
+      function formatRateLimitMessage(baseText, remainingSeconds) {
+        const safeText =
+          typeof baseText === "string" ? baseText : String(baseText ?? "");
+        const seconds = Math.max(0, Number.isFinite(remainingSeconds)
+          ? Math.floor(remainingSeconds)
+          : 0);
+        const displayValue = seconds <= 0 ? "now" : formatDurationShort(seconds);
+        const pattern = /(Retry will occur after:\s*)([0-9]+(?:\.[0-9]+)?)(.*)/i;
+
+        if (pattern.test(safeText)) {
+          return safeText.replace(
+            pattern,
+            (_, prefix, _value, suffix) => `${prefix}${displayValue}${suffix ?? ""}`
+          );
+        }
+
+        if (seconds <= 0) {
+          return `${safeText} (Retrying now)`;
+        }
+
+        return `${safeText} (Retry in ${formatDurationShort(seconds)})`;
+      }
+
+      function updateRateLimitCountdownEntry(entry) {
+        if (!entry || !entry.element || !entry.element.isConnected) {
+          if (entry) {
+            rateLimitCountdownEntries.delete(entry);
+          }
+          return;
+        }
+
+        const now = Date.now();
+        const remainingMs = entry.resumeMs - now;
+        const remainingSeconds = Math.ceil(remainingMs / 1000);
+        const formatted = formatRateLimitMessage(
+          entry.baseText,
+          remainingSeconds
+        );
+
+        if (entry.element.textContent !== formatted) {
+          entry.element.textContent = formatted;
+        }
+
+        if (remainingMs <= 0) {
+          rateLimitCountdownEntries.delete(entry);
+        }
+      }
+
+      function updateRateLimitCountdowns() {
+        const entries = Array.from(rateLimitCountdownEntries);
+        entries.forEach((entry) => updateRateLimitCountdownEntry(entry));
+        scheduleRateLimitCountdownUpdates();
+      }
+
+      function registerRateLimitCountdown(element, entry) {
+        if (!element || !entry) {
+          return;
+        }
+
+        let resumeMs = Number(entry.rate_limit_resume_epoch) * 1000;
+        if (!Number.isFinite(resumeMs) || resumeMs <= 0) {
+          const parsed = entry.rate_limit_resume
+            ? Date.parse(entry.rate_limit_resume)
+            : NaN;
+          if (!Number.isNaN(parsed)) {
+            resumeMs = parsed;
+          }
+        }
+
+        if (!Number.isFinite(resumeMs) || resumeMs <= 0) {
+          return;
+        }
+
+        const countdownEntry = {
+          element,
+          baseText: entry.text || "",
+          resumeMs,
+        };
+
+        if (entry.rate_limit_resume) {
+          element.dataset.resumeAt = entry.rate_limit_resume;
+        }
+        if (entry.timestamp) {
+          element.dataset.loggedAt = entry.timestamp;
+        }
+
+        const resumeDate = new Date(resumeMs);
+        if (!Number.isNaN(resumeDate.getTime())) {
+          element.title = `Retry scheduled for ${resumeDate.toLocaleString()}`;
+        }
+
+        updateRateLimitCountdownEntry(countdownEntry);
+        rateLimitCountdownEntries.add(countdownEntry);
+        scheduleRateLimitCountdownUpdates();
+      }
 
       function setActivityCollapsed(collapsed) {
         isActivityCollapsed = Boolean(collapsed);
@@ -1101,6 +1249,46 @@
         }
 
         return null;
+      }
+
+      function normalizeGeneralLogEntry(entry) {
+        if (entry === null || entry === undefined) {
+          return { text: "" };
+        }
+
+        if (typeof entry === "string") {
+          return { text: entry };
+        }
+
+        const normalized = {
+          text: "",
+        };
+
+        if (typeof entry.text === "string") {
+          normalized.text = entry.text;
+        } else if (entry.text !== null && entry.text !== undefined) {
+          normalized.text = String(entry.text);
+        }
+
+        if (entry.timestamp) {
+          normalized.timestamp = entry.timestamp;
+        }
+
+        const resumeEpoch = Number(entry.rate_limit_resume_epoch);
+        if (Number.isFinite(resumeEpoch)) {
+          normalized.rate_limit_resume_epoch = resumeEpoch;
+        }
+
+        if (entry.rate_limit_resume) {
+          normalized.rate_limit_resume = entry.rate_limit_resume;
+        }
+
+        const retrySeconds = Number(entry.rate_limit_seconds);
+        if (Number.isFinite(retrySeconds)) {
+          normalized.rate_limit_seconds = retrySeconds;
+        }
+
+        return normalized;
       }
 
       function addPlaylistName(targetSet, value) {
@@ -1367,6 +1555,8 @@
           return;
         }
 
+        clearRateLimitCountdowns();
+
         const running = Boolean(status?.running);
         const activePlaylists = getActivePlaylistNames(status);
         const activePlaylistsSet = new Set(activePlaylists);
@@ -1606,12 +1796,22 @@
           const listEl = document.createElement("div");
           listEl.className = "build-log-playlist-entries";
 
-          generalLogs.slice(-3).forEach((entry) => {
+          const normalizedGeneralEntries = generalLogs
+            .slice(-3)
+            .map((entry) => normalizeGeneralLogEntry(entry));
+
+          normalizedGeneralEntries.forEach((entry) => {
             const item = document.createElement("div");
             item.className = "playlist-log-entry general-entry";
             const text = document.createElement("div");
             text.className = "playlist-log-text";
-            text.textContent = entry;
+            text.textContent = entry.text || "";
+            if (
+              entry.rate_limit_resume_epoch !== undefined ||
+              entry.rate_limit_resume
+            ) {
+              registerRateLimitCountdown(text, entry);
+            }
             item.appendChild(text);
             listEl.appendChild(item);
           });
