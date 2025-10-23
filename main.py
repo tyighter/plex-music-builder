@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from collections import defaultdict, OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import cmp_to_key
+from functools import cmp_to_key, lru_cache
 from xml.etree import ElementTree as ET
 from html import unescape
 import unicodedata
@@ -585,6 +585,41 @@ _TRACK_FIELD_CACHE = OrderedDict()
 _TRACK_FIELD_CACHE_MAX_SIZE = 20000
 
 
+_CACHE_LOOKUP_SENTINEL = object()
+_ALBUM_YEAR_CACHE = {}
+_ALBUM_YEAR_MISS_KEYS = set()
+_ALBUM_GUID_CACHE = {}
+_ALBUM_GUID_MISS_KEYS = set()
+_TRACK_GUID_CACHE = {}
+_TRACK_GUID_MISS_KEYS = set()
+
+
+def _lookup_cached_value(cache, misses, key):
+    if key is None:
+        return _CACHE_LOOKUP_SENTINEL
+
+    key_str = str(key)
+    if key_str in cache:
+        return cache[key_str]
+    if key_str in misses:
+        return None
+
+    return _CACHE_LOOKUP_SENTINEL
+
+
+def _store_cached_value(cache, misses, key, value):
+    if key is None:
+        return
+
+    key_str = str(key)
+    if value is None:
+        misses.add(key_str)
+        cache.pop(key_str, None)
+    else:
+        cache[key_str] = value
+        misses.discard(key_str)
+
+
 def _touch_cache_entry(cache: OrderedDict, key):
     if key in cache:
         cache.move_to_end(key)
@@ -1121,6 +1156,19 @@ def _resolve_album_year(track):
         token = _extract_year_token(value)
         return token
 
+    cache_keys = []
+    parent_rating_key = getattr(track, "parentRatingKey", None)
+    if parent_rating_key is not None:
+        cache_keys.append(f"album:{parent_rating_key}")
+    track_rating_key = getattr(track, "ratingKey", None)
+    if track_rating_key is not None:
+        cache_keys.append(f"track:{track_rating_key}")
+
+    for key in cache_keys:
+        cached_year = _lookup_cached_value(_ALBUM_YEAR_CACHE, _ALBUM_YEAR_MISS_KEYS, key)
+        if cached_year is not _CACHE_LOOKUP_SENTINEL:
+            return cached_year
+
     year_candidates = [
         getattr(track, "parentYear", None),
         getattr(track, "year", None),
@@ -1131,9 +1179,13 @@ def _resolve_album_year(track):
     for candidate in year_candidates:
         normalized = _normalize_year(candidate)
         if normalized:
+            for key in cache_keys:
+                _store_cached_value(_ALBUM_YEAR_CACHE, _ALBUM_YEAR_MISS_KEYS, key, normalized)
             return normalized
 
     if CACHE_ONLY:
+        for key in cache_keys:
+            _store_cached_value(_ALBUM_YEAR_CACHE, _ALBUM_YEAR_MISS_KEYS, key, None)
         return None
 
     log = _get_active_logger()
@@ -1157,6 +1209,8 @@ def _resolve_album_year(track):
             ):
                 normalized = _normalize_year(parse_field_from_xml(track_xml, field))
                 if normalized:
+                    for key in cache_keys:
+                        _store_cached_value(_ALBUM_YEAR_CACHE, _ALBUM_YEAR_MISS_KEYS, key, normalized)
                     return normalized
 
     parent_rating_key = getattr(track, "parentRatingKey", None)
@@ -1173,24 +1227,47 @@ def _resolve_album_year(track):
             for field in ("year", "parentYear", "originallyAvailableAt"):
                 normalized = _normalize_year(parse_field_from_xml(album_xml, field))
                 if normalized:
+                    for key in cache_keys:
+                        _store_cached_value(_ALBUM_YEAR_CACHE, _ALBUM_YEAR_MISS_KEYS, key, normalized)
                     return normalized
 
+    for key in cache_keys:
+        _store_cached_value(_ALBUM_YEAR_CACHE, _ALBUM_YEAR_MISS_KEYS, key, None)
     return None
 
 
 def _get_album_guid(track):
     """Return the album GUID (``plex://album/...``) for a track, if available."""
 
+    cache_keys = []
+    parent_rating_key = getattr(track, "parentRatingKey", None)
+    if parent_rating_key is not None:
+        cache_keys.append(f"album:{parent_rating_key}")
+    track_rating_key = getattr(track, "ratingKey", None)
+    if track_rating_key is not None:
+        cache_keys.append(f"track:{track_rating_key}")
+
+    for key in cache_keys:
+        cached_guid = _lookup_cached_value(_ALBUM_GUID_CACHE, _ALBUM_GUID_MISS_KEYS, key)
+        if cached_guid is not _CACHE_LOOKUP_SENTINEL:
+            return cached_guid
+
     parent_guid = getattr(track, "parentGuid", None)
     if parent_guid:
-        return str(parent_guid)
+        guid_value = str(parent_guid)
+        for key in cache_keys:
+            _store_cached_value(_ALBUM_GUID_CACHE, _ALBUM_GUID_MISS_KEYS, key, guid_value)
+        return guid_value
 
     # Fall back to the track metadata and, if necessary, the album metadata.
     try:
         track_xml = fetch_full_metadata(track.ratingKey)
         parent_guid = parse_field_from_xml(track_xml, "parentGuid")
         if parent_guid:
-            return str(parent_guid)
+            guid_value = str(parent_guid)
+            for key in cache_keys:
+                _store_cached_value(_ALBUM_GUID_CACHE, _ALBUM_GUID_MISS_KEYS, key, guid_value)
+            return guid_value
     except Exception as exc:
         logger.debug(
             "Unable to resolve parentGuid from track metadata for ratingKey=%s: %s",
@@ -1215,17 +1292,33 @@ def _get_album_guid(track):
     for candidate in ("guid", "parentGuid"):
         candidate_guid = parse_field_from_xml(album_xml, candidate)
         if candidate_guid:
-            return str(candidate_guid)
+            guid_value = str(candidate_guid)
+            for key in cache_keys:
+                _store_cached_value(_ALBUM_GUID_CACHE, _ALBUM_GUID_MISS_KEYS, key, guid_value)
+            return guid_value
 
+    for key in cache_keys:
+        _store_cached_value(_ALBUM_GUID_CACHE, _ALBUM_GUID_MISS_KEYS, key, None)
     return None
 
 
 def _get_track_guid(track):
     """Return the track GUID (``plex://track/...``) for a track, if available."""
 
+    cache_key = None
+    rating_key = getattr(track, "ratingKey", None)
+    if rating_key is not None:
+        cache_key = f"track:{rating_key}"
+
+    cached_guid = _lookup_cached_value(_TRACK_GUID_CACHE, _TRACK_GUID_MISS_KEYS, cache_key)
+    if cached_guid is not _CACHE_LOOKUP_SENTINEL:
+        return cached_guid
+
     track_guid = getattr(track, "guid", None)
     if track_guid:
-        return str(track_guid)
+        guid_value = str(track_guid)
+        _store_cached_value(_TRACK_GUID_CACHE, _TRACK_GUID_MISS_KEYS, cache_key, guid_value)
+        return guid_value
 
     try:
         track_xml = fetch_full_metadata(track.ratingKey)
@@ -1238,7 +1331,9 @@ def _get_track_guid(track):
         return None
 
     guid = parse_field_from_xml(track_xml, "guid")
-    return str(guid) if guid else None
+    guid_value = str(guid) if guid else None
+    _store_cached_value(_TRACK_GUID_CACHE, _TRACK_GUID_MISS_KEYS, cache_key, guid_value)
+    return guid_value
 
 
 def _extract_guid_from_search_results(xml_text, album_norms, artist_norms, target_year):
@@ -3526,10 +3621,21 @@ def fetch_full_metadata(rating_key):
     metadata_cache[rating_key] = response.text
     return metadata_cache[rating_key]
 
+
+@lru_cache(maxsize=1024)
+def _cached_xml_root(xml_text: str):
+    return ET.fromstring(xml_text)
+
+
 def parse_field_from_xml(xml_text, field):
     """Extract a field (attribute or tag) from Plex XML metadata."""
     try:
-        root = ET.fromstring(xml_text)
+        if isinstance(xml_text, bytes):
+            xml_text = xml_text.decode("utf-8", errors="ignore")
+        elif not isinstance(xml_text, str):
+            xml_text = str(xml_text)
+
+        root = _cached_xml_root(xml_text)
         # Plex responses wrap metadata inside a <MediaContainer> root. Different
         # endpoints return different child node names (e.g. ``Directory`` for
         # library lookups, ``Track`` for individual items). Search a list of
