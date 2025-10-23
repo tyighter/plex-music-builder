@@ -794,8 +794,13 @@
     <header>
       <h1><span class="icon">▶</span>Plex Playlist Builder</h1>
       <div class="action-bar">
-        <button id="reloadBtn" class="secondary" type="button">⟳ Refresh from File</button>
-        <button id="saveBtn" type="button">💾 Save to playlists.yml</button>
+        <button id="buildPopularityBtn" type="button">⬇️ Pull Popularity</button>
+        <button id="clearPopularityCacheBtn" class="secondary" type="button">
+          🧹 Clear Popularity Cache
+        </button>
+        <button id="reloadBtn" class="secondary" type="button">⟳ Refresh from YML</button>
+        <button id="saveBtn" type="button">💾 Save to YML</button>
+        <button id="buildToggleBtn" type="button">▶ Build ALL</button>
         <span id="message" class="message"></span>
       </div>
     </header>
@@ -813,9 +818,6 @@
                 </div>
               </div>
               <div id="buildStatusMeta" class="status-meta"></div>
-            </div>
-            <div class="status-actions">
-              <button id="buildToggleBtn" type="button">▶ Build All</button>
             </div>
           </div>
           <div id="buildStatusLogs" class="build-status-logs">
@@ -844,10 +846,6 @@
               </div>
             </div>
             <div id="popularityStatusMeta" class="status-meta"></div>
-          </div>
-          <div class="status-actions">
-            <button id="buildPopularityBtn" type="button">⬇️ Populate Popularity</button>
-            <button id="clearPopularityCacheBtn" class="secondary" type="button">🧹 Clear Popularity Cache</button>
           </div>
         </div>
       </section>
@@ -901,6 +899,7 @@
       const buildPopularityBtn = document.getElementById("buildPopularityBtn");
       const clearPopularityCacheBtn = document.getElementById("clearPopularityCacheBtn");
       let latestBuildStatus = null;
+      let latestPopularityStatus = null;
       let buildStatusTimer = null;
       let popularityStatusTimer = null;
       let isActivityCollapsed = false;
@@ -1175,6 +1174,8 @@
       }
 
       function updatePopularityStatus(status) {
+        latestPopularityStatus = status || null;
+
         if (!popularityStatusText) {
           return;
         }
@@ -1243,6 +1244,10 @@
           }
 
           popularityStatusMeta.textContent = metaParts.filter(Boolean).join(" • ");
+        }
+
+        if (latestBuildStatus) {
+          updateBuildLogsUi(latestBuildStatus);
         }
       }
 
@@ -1712,6 +1717,116 @@
 
         let renderedGroups = 0;
 
+        if (generalLogs.length) {
+          renderedGroups += 1;
+          const block = document.createElement("div");
+          block.className = "build-log-playlist general-activity";
+          const title = document.createElement("div");
+          title.className = "build-log-playlist-title";
+          title.textContent = "General Activity";
+          block.appendChild(title);
+
+          const listEl = document.createElement("div");
+          listEl.className = "build-log-playlist-entries";
+
+          const normalizedGeneralEntries = generalLogs
+            .slice(-3)
+            .map((entry) => normalizeGeneralLogEntry(entry));
+
+          normalizedGeneralEntries.forEach((entry) => {
+            const item = document.createElement("div");
+            item.className = "playlist-log-entry general-entry";
+            const text = document.createElement("div");
+            text.className = "playlist-log-text";
+            text.textContent = entry.text || "";
+            if (
+              entry.rate_limit_resume_epoch !== undefined ||
+              entry.rate_limit_resume
+            ) {
+              registerRateLimitCountdown(text, entry);
+            }
+            item.appendChild(text);
+            listEl.appendChild(item);
+          });
+
+          block.appendChild(listEl);
+          buildLogContainer.appendChild(block);
+        }
+
+        const spotifyStatus = latestPopularityStatus || {};
+        const rawSpotifyLogs = Array.isArray(spotifyStatus.logs)
+          ? spotifyStatus.logs.slice(-5)
+          : [];
+        const normalizedSpotifyEntries = rawSpotifyLogs.map((entry) =>
+          normalizeGeneralLogEntry(entry)
+        );
+
+        const spotifyMessage = (spotifyStatus.message || "").trim();
+        if (
+          spotifyMessage &&
+          !normalizedSpotifyEntries.some(
+            (entry) => (entry.text || "").trim() === spotifyMessage
+          )
+        ) {
+          normalizedSpotifyEntries.push(
+            normalizeGeneralLogEntry({
+              text: spotifyMessage,
+              rate_limit_resume_epoch: spotifyStatus.rate_limit_resume_epoch,
+              rate_limit_resume: spotifyStatus.rate_limit_resume,
+              rate_limit_seconds: spotifyStatus.rate_limit_seconds,
+            })
+          );
+        }
+
+        const shouldShowSpotifyBlock =
+          normalizedSpotifyEntries.length > 0 ||
+          spotifyStatus.running ||
+          spotifyMessage;
+
+        if (shouldShowSpotifyBlock) {
+          renderedGroups += 1;
+          const block = document.createElement("div");
+          block.className = "build-log-playlist spotify-activity";
+          const title = document.createElement("div");
+          title.className = "build-log-playlist-title";
+          title.textContent = "Spotify Activity";
+          block.appendChild(title);
+
+          const listEl = document.createElement("div");
+          listEl.className = "build-log-playlist-entries";
+
+          if (normalizedSpotifyEntries.length) {
+            normalizedSpotifyEntries.forEach((entry) => {
+              const item = document.createElement("div");
+              item.className = "playlist-log-entry general-entry";
+              const text = document.createElement("div");
+              text.className = "playlist-log-text";
+              text.textContent = entry.text || "";
+              if (
+                entry.rate_limit_resume_epoch !== undefined ||
+                entry.rate_limit_resume
+              ) {
+                registerRateLimitCountdown(text, entry);
+              }
+              item.appendChild(text);
+              listEl.appendChild(item);
+            });
+          } else {
+            const placeholder = document.createElement("div");
+            placeholder.className = "playlist-log-entry";
+            const text = document.createElement("div");
+            text.className = "playlist-log-text";
+            text.textContent = spotifyStatus.running
+              ? "Waiting for Spotify activity…"
+              : "No Spotify activity recorded yet.";
+            placeholder.appendChild(text);
+            listEl.appendChild(placeholder);
+          }
+
+          block.appendChild(listEl);
+          buildLogContainer.appendChild(block);
+        }
+
         playlistNames.forEach((trimmedName) => {
           const entries = logsByPlaylist[trimmedName] || [];
           const isWaiting = waitingSet.has(trimmedName);
@@ -1836,42 +1951,6 @@
           block.appendChild(listEl);
           buildLogContainer.appendChild(block);
         });
-
-        if (generalLogs.length) {
-          renderedGroups += 1;
-          const block = document.createElement("div");
-          block.className = "build-log-playlist";
-          const title = document.createElement("div");
-          title.className = "build-log-playlist-title";
-          title.textContent = "General Activity";
-          block.appendChild(title);
-
-          const listEl = document.createElement("div");
-          listEl.className = "build-log-playlist-entries";
-
-          const normalizedGeneralEntries = generalLogs
-            .slice(-3)
-            .map((entry) => normalizeGeneralLogEntry(entry));
-
-          normalizedGeneralEntries.forEach((entry) => {
-            const item = document.createElement("div");
-            item.className = "playlist-log-entry general-entry";
-            const text = document.createElement("div");
-            text.className = "playlist-log-text";
-            text.textContent = entry.text || "";
-            if (
-              entry.rate_limit_resume_epoch !== undefined ||
-              entry.rate_limit_resume
-            ) {
-              registerRateLimitCountdown(text, entry);
-            }
-            item.appendChild(text);
-            listEl.appendChild(item);
-          });
-
-          block.appendChild(listEl);
-          buildLogContainer.appendChild(block);
-        }
 
         if (!renderedGroups) {
           const empty = document.createElement("div");
@@ -2005,7 +2084,7 @@
         }
         buildStatusMeta.textContent = metaParts.join(" • ");
 
-        buildToggleBtn.textContent = isAllRunning ? "⏹ Stop All" : "▶ Build All";
+        buildToggleBtn.textContent = isAllRunning ? "⏹ Stop ALL" : "▶ Build ALL";
         buildToggleBtn.classList.toggle("danger", isAllRunning);
         buildToggleBtn.disabled = Boolean(status.transitioning || (isRunning && !isAllRunning));
         buildToggleBtn.title = isRunning && !isAllRunning ? "A playlist build is currently running." : "";
@@ -2047,6 +2126,10 @@
 
         buildToggleBtn.disabled = true;
         try {
+          if (!isRunningAll) {
+            await saveData({ showSuccessMessage: false, rethrowOnError: true });
+          }
+
           const response = await fetch(endpoint, { method: "POST" });
           const result = await response.json().catch(() => ({}));
           if (!response.ok) {
@@ -2073,7 +2156,9 @@
           }, 1000);
         } catch (error) {
           console.error(error);
-          showMessage(error.message, true);
+          if (!error?._fromSaveData) {
+            showMessage(error.message, true);
+          }
         } finally {
           buildToggleBtn.disabled = false;
         }
@@ -2105,6 +2190,16 @@
         }
 
         try {
+          if (!isRunningThisPlaylist) {
+            await savePlaylist(
+              playlist,
+              undefined,
+              elements.headerTitle,
+              elements.nameInput,
+              { showSuccessMessage: false, rethrowOnError: true }
+            );
+          }
+
           const response = await fetch(endpoint, options);
           const result = await response.json().catch(() => ({}));
           if (!response.ok) {
@@ -2137,7 +2232,9 @@
           }, 1000);
         } catch (error) {
           console.error(error);
-          showMessage(error.message, true);
+          if (!error?._fromSavePlaylist) {
+            showMessage(error.message, true);
+          }
         } finally {
           if (elements.button) {
             elements.button.disabled = false;
@@ -2452,6 +2549,8 @@
             line: statusLine,
             message: statusMessage,
             button: buildBtn,
+            headerTitle: title,
+            nameInput,
           };
           updatePlaylistBuildUi(playlist);
 
@@ -2656,7 +2755,18 @@
         }));
       }
 
-      async function saveData() {
+      async function saveData(options = {}) {
+        if (options && typeof options.preventDefault === "function") {
+          options.preventDefault();
+          options = {};
+        }
+
+        if (!options || typeof options !== "object") {
+          options = {};
+        }
+
+        const { showSuccessMessage = true, rethrowOnError = false } = options;
+
         const payload = {
           defaults: {
             plex_filter: prepareFiltersForSave(state.defaults.plex_filter),
@@ -2687,19 +2797,37 @@
             throw new Error(error.error || "Failed to save playlists.");
           }
 
-          showMessage("Playlists saved successfully.");
+          if (showSuccessMessage) {
+            showMessage("Playlists saved successfully.");
+          }
         } catch (error) {
           console.error(error);
           showMessage(error.message, true);
+          if (rethrowOnError && error && typeof error === "object") {
+            error._fromSaveData = true;
+            throw error;
+          }
         }
       }
 
-      async function savePlaylist(playlist, triggerButton, titleEl, nameInputEl) {
+      async function savePlaylist(
+        playlist,
+        triggerButton,
+        titleEl,
+        nameInputEl,
+        options = {}
+      ) {
         const trimmedName = (playlist.name || "").trim();
         if (!trimmedName) {
           showMessage("Playlist name is required before saving.", true);
           return;
         }
+
+        if (!options || typeof options !== "object") {
+          options = {};
+        }
+
+        const { showSuccessMessage = true, rethrowOnError = false } = options;
 
         const payload = {
           playlist: {
@@ -2744,10 +2872,16 @@
             nameInputEl.value = trimmedName;
           }
 
-          showMessage(`Playlist '${savedName}' saved.`);
+          if (showSuccessMessage) {
+            showMessage(`Playlist '${savedName}' saved.`);
+          }
         } catch (error) {
           console.error(error);
           showMessage(error.message, true);
+          if (rethrowOnError && error && typeof error === "object") {
+            error._fromSavePlaylist = true;
+            throw error;
+          }
         } finally {
           if (triggerButton) {
             triggerButton.disabled = false;
