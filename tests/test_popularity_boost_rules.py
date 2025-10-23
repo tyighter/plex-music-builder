@@ -1,8 +1,23 @@
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
 
-from main import _apply_configured_popularity_boosts
+if "plexapi.server" not in sys.modules:
+    plexapi_module = types.ModuleType("plexapi")
+    plexapi_server_module = types.ModuleType("plexapi.server")
+
+    class _DummyPlexServer:  # pragma: no cover - trivial stub
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+    plexapi_server_module.PlexServer = _DummyPlexServer
+    plexapi_module.server = plexapi_server_module
+    sys.modules["plexapi"] = plexapi_module
+    sys.modules["plexapi.server"] = plexapi_server_module
+
+from main import _apply_configured_popularity_boosts, _resolve_popularity_for_sort
 
 
 class DummyTrack(SimpleNamespace):
@@ -96,3 +111,24 @@ def test_boost_applies_to_tracks_without_rating_key():
     )
 
     assert album_popularity_cache_by_object[id(track)] == pytest.approx(30.0)
+
+
+def test_sorting_prefers_album_boost_over_dedup_cache():
+    track = DummyTrack(rating_key="4")
+    dedup_popularity_cache = {"4": 40.0}
+    album_popularity_cache = {"4": 80.0}
+
+    value, has_value = _resolve_popularity_for_sort(
+        track,
+        "4",
+        id(track),
+        dedup_popularity_cache,
+        album_popularity_cache,
+        {},
+        playlist_logger=None,
+        sort_desc=True,
+    )
+
+    assert has_value is True
+    assert value == pytest.approx(80.0)
+    assert dedup_popularity_cache["4"] == pytest.approx(80.0)
