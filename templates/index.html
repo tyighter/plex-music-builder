@@ -316,7 +316,7 @@
 
       .filter-row {
         display: grid;
-        grid-template-columns: 1.1fr 1fr 1fr auto;
+        grid-template-columns: 1.1fr 1fr 1fr auto auto;
         gap: 12px;
         align-items: start;
         margin-bottom: 10px;
@@ -2325,11 +2325,10 @@
             filter.wildcard = event.target.checked;
           });
           wildcardLabel.appendChild(wildcardInput);
-          wildcardLabel.appendChild(document.createTextNode("🃏"));
+          wildcardLabel.appendChild(document.createTextNode("🔥"));
           flagsWrapper.appendChild(wildcardLabel);
 
           valueWrapper.appendChild(valueInput);
-          valueWrapper.appendChild(flagsWrapper);
 
           const removeBtn = document.createElement("button");
           removeBtn.type = "button";
@@ -2341,10 +2340,74 @@
           row.appendChild(fieldSelect);
           row.appendChild(operatorSelect);
           row.appendChild(valueWrapper);
+          row.appendChild(flagsWrapper);
           row.appendChild(removeBtn);
 
           containerEl.appendChild(row);
         });
+      }
+
+      function createPlaylistDuplicate(sourcePlaylist) {
+        const duplicate = {};
+
+        if (sourcePlaylist && typeof sourcePlaylist === "object") {
+          Object.entries(sourcePlaylist).forEach(([key, value]) => {
+            if (key === "name" || key === "_originalName" || key === "_statusElements") {
+              return;
+            }
+
+            if (key === "plex_filter") {
+              if (Array.isArray(value)) {
+                duplicate.plex_filter = value.map((filter) => {
+                  const clonedFilter = { ...filter };
+                  if (Array.isArray(filter?.value)) {
+                    clonedFilter.value = [...filter.value];
+                  } else if (
+                    filter &&
+                    typeof filter.value === "object" &&
+                    filter.value !== null
+                  ) {
+                    clonedFilter.value = JSON.parse(JSON.stringify(filter.value));
+                  }
+                  return clonedFilter;
+                });
+              }
+              return;
+            }
+
+            if (key === "extras") {
+              if (value && typeof value === "object") {
+                duplicate.extras = JSON.parse(JSON.stringify(value));
+              }
+              return;
+            }
+
+            if (typeof value === "object" && value !== null) {
+              try {
+                duplicate[key] = JSON.parse(JSON.stringify(value));
+              } catch (error) {
+                duplicate[key] = value;
+              }
+            } else {
+              duplicate[key] = value;
+            }
+          });
+        }
+
+        duplicate.name = "New Playlist";
+        duplicate._originalName = "";
+        duplicate.limit = duplicate.limit ?? 0;
+        duplicate.artist_limit = duplicate.artist_limit ?? 0;
+        duplicate.album_limit = duplicate.album_limit ?? 0;
+        duplicate.sort_by = duplicate.sort_by || "";
+        if (!Array.isArray(duplicate.plex_filter)) {
+          duplicate.plex_filter = [];
+        }
+        if (!duplicate.extras || typeof duplicate.extras !== "object") {
+          duplicate.extras = {};
+        }
+
+        return duplicate;
       }
 
       function renderPlaylists() {
@@ -2405,6 +2468,17 @@
           buildBtn.textContent = "▶ Build Playlist";
           buildBtn.addEventListener("click", () => togglePlaylistBuild(playlist));
 
+          const duplicateBtn = document.createElement("button");
+          duplicateBtn.type = "button";
+          duplicateBtn.className = "secondary playlist-duplicate-btn";
+          duplicateBtn.textContent = "⧉ Duplicate";
+          duplicateBtn.title = "Duplicate playlist";
+          duplicateBtn.addEventListener("click", () => {
+            const duplicate = createPlaylistDuplicate(playlist);
+            state.playlists.splice(index + 1, 0, duplicate);
+            renderPlaylists();
+          });
+
           const removeBtn = document.createElement("button");
           removeBtn.type = "button";
           removeBtn.className = "icon-only danger";
@@ -2419,6 +2493,7 @@
           headerActions.appendChild(statusGroup);
           headerActions.appendChild(saveBtn);
           headerActions.appendChild(buildBtn);
+          headerActions.appendChild(duplicateBtn);
           headerActions.appendChild(removeBtn);
 
           header.appendChild(titleWrapper);
