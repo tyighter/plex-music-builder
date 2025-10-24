@@ -2776,6 +2776,34 @@
         }
       }
 
+      function updateDefaultFiltersCollapse() {
+        if (!defaultFiltersCard || !toggleDefaultFiltersBtn) {
+          return;
+        }
+
+        const isCollapsed = !!isDefaultFiltersCollapsed;
+        const label = isCollapsed
+          ? "Expand default filters"
+          : "Collapse default filters";
+
+        defaultFiltersCard.classList.toggle("collapsed", isCollapsed);
+        if (isCollapsed) {
+          defaultFiltersCard.setAttribute("hidden", "");
+          defaultFiltersCard.setAttribute("aria-hidden", "true");
+        } else {
+          defaultFiltersCard.removeAttribute("hidden");
+          defaultFiltersCard.setAttribute("aria-hidden", "false");
+        }
+
+        toggleDefaultFiltersBtn.textContent = isCollapsed ? "▸" : "▾";
+        toggleDefaultFiltersBtn.setAttribute(
+          "aria-expanded",
+          isCollapsed ? "false" : "true"
+        );
+        toggleDefaultFiltersBtn.setAttribute("aria-label", label);
+        toggleDefaultFiltersBtn.title = label;
+      }
+
       function scrollPlaylistIntoView(playlist) {
         if (!playlist) {
           return;
