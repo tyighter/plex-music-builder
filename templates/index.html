@@ -1193,6 +1193,7 @@
       const pendingActivityStopRequests = new Map();
       let rateLimitCountdownTimer = null;
       const ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
+      const GENERAL_ACTIVITY_RETENTION_MS = 60 * 1000;
       const waitingPlaylistOrder = new Map();
       let nextWaitingOrderValue = 1;
 
@@ -2417,17 +2418,19 @@
           const listEl = document.createElement("div");
           listEl.className = "build-log-playlist-entries";
 
-          const normalizedEntries = Array.isArray(entries)
-            ? entries.map((entry) => {
-                if (entry && typeof entry === "object") {
-                  return entry;
-                }
-                return {
-                  type: "message",
-                  text: typeof entry === "string" ? entry : String(entry ?? ""),
-                };
-              })
-            : [];
+          const normalizedEntries = hasCancellationMessage
+            ? []
+            : Array.isArray(entries)
+                ? entries.map((entry) => {
+                    if (entry && typeof entry === "object") {
+                      return entry;
+                    }
+                    return {
+                      type: "message",
+                      text: typeof entry === "string" ? entry : String(entry ?? ""),
+                    };
+                  })
+                : [];
 
           let hasContent = false;
 
@@ -2580,7 +2583,7 @@
             if (timestampMs === null) {
               return true;
             }
-            return nowMs - timestampMs <= ACTIVITY_RETENTION_MS;
+            return nowMs - timestampMs <= GENERAL_ACTIVITY_RETENTION_MS;
           })
           .slice(-3);
 
@@ -2994,12 +2997,14 @@
           elements.button.disabled = true;
         }
 
-        const endpoint = isRunningThisPlaylist ? "/api/build/stop" : "/api/build/start";
-        const options = { method: "POST" };
-        if (!isRunningThisPlaylist) {
-          options.headers = { "Content-Type": "application/json" };
-          options.body = JSON.stringify({ playlist: playlistName });
-        }
+        const endpoint = isRunningThisPlaylist
+          ? "/api/build/stop_playlist"
+          : "/api/build/start";
+        const options = {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ playlist: playlistName }),
+        };
 
         try {
           if (!isRunningThisPlaylist) {
@@ -3037,6 +3042,10 @@
                 ? `Stopping '${playlistName}'...`
                 : `Starting '${playlistName}'...`
             );
+          }
+
+          if (isRunningThisPlaylist) {
+            registerPlaylistCancellation(playlistName);
           }
 
           setTimeout(() => {
