@@ -1756,12 +1756,6 @@
         const otherActiveNames = activePlaylistNames.filter(
           (name) => name !== playlistName
         );
-        const otherJobRunning = Boolean(
-          status?.running &&
-            !isRunningThisPlaylist &&
-            (isAllRunning || otherActiveNames.length > 0)
-        );
-
         const normalizeWaitingNames = (names) =>
           Array.isArray(names)
             ? names
@@ -1786,6 +1780,45 @@
         if (isWaitingThisPlaylist) {
           isRunningThisPlaylist = false;
         }
+
+        const coerceInteger = (value) => {
+          if (typeof value === "number" && Number.isFinite(value)) {
+            return value;
+          }
+          if (typeof value === "string") {
+            const trimmed = value.trim();
+            if (trimmed) {
+              const parsed = Number.parseInt(trimmed, 10);
+              if (Number.isFinite(parsed)) {
+                return parsed;
+              }
+            }
+          }
+          return null;
+        };
+
+        let runningWorkers = coerceInteger(status?.running_workers);
+        if (!Number.isFinite(runningWorkers) || runningWorkers < 0) {
+          runningWorkers = 0;
+        }
+
+        let parallelLimit = coerceInteger(status?.parallel_limit);
+        if (!Number.isFinite(parallelLimit) || parallelLimit < 1) {
+          parallelLimit = 1;
+        }
+
+        let pendingJobs = coerceInteger(status?.pending_jobs);
+        if (!Number.isFinite(pendingJobs) || pendingJobs < 0) {
+          pendingJobs = 0;
+        }
+
+        const hasWorkerCapacity = runningWorkers < parallelLimit;
+        const shouldShowQueueButton = Boolean(
+          status?.running &&
+            playlistName &&
+            !isRunningThisPlaylist &&
+            (isWaitingThisPlaylist || isAllRunning || !hasWorkerCapacity)
+        );
 
         const playlistResults = status?.results?.playlists || {};
         const lastResult = playlistName ? playlistResults[playlistName] : undefined;
@@ -1841,7 +1874,7 @@
           baseTitle = "Stop building this playlist";
           button.classList.add("danger");
           button.classList.remove("secondary");
-        } else if (status?.running && playlistName) {
+        } else if (shouldShowQueueButton) {
           buttonIcon = "⏳";
           baseTitle = "Queue this playlist to build after the current jobs finish";
           button.classList.remove("danger");
@@ -1860,7 +1893,7 @@
           const disabledTitle = "Enter a playlist name to build it individually.";
           button.title = disabledTitle;
           button.setAttribute("aria-label", disabledTitle);
-        } else if (status?.running && !isRunningThisPlaylist) {
+        } else if (shouldShowQueueButton) {
           const queueHints = [];
           if (otherActiveNames.length === 1) {
             queueHints.push(`Currently building '${otherActiveNames[0]}'`);
@@ -1870,6 +1903,20 @@
             queueHints.push("Currently building all playlists");
           } else if (activePlaylistName) {
             queueHints.push(`Currently building '${activePlaylistName}'`);
+          }
+          if (!hasWorkerCapacity) {
+            if (parallelLimit === 1) {
+              queueHints.push("Maximum simultaneous build reached");
+            } else {
+              queueHints.push(
+                `Maximum of ${parallelLimit} concurrent builds already running`
+              );
+            }
+          }
+          if (pendingJobs > 0) {
+            queueHints.push(
+              `${pendingJobs} job${pendingJobs === 1 ? "" : "s"} already queued`
+            );
           }
           queueHints.unshift(baseTitle);
           queueHints.push("Click to queue this playlist");
