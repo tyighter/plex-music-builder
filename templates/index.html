@@ -1189,7 +1189,8 @@
       let isDefaultBoostsOpen = false;
       const rateLimitCountdownEntries = new Set();
       const dismissedActivityKeys = new Set();
-      let pendingActivityStopRequest = null;
+      const playlistCancellationMessages = new Map();
+      const pendingActivityStopRequests = new Map();
       let rateLimitCountdownTimer = null;
       const ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
       const waitingPlaylistOrder = new Map();
@@ -1359,6 +1360,24 @@
         }
       }
 
+      function registerPlaylistCancellation(playlistName) {
+        const trimmedName =
+          typeof playlistName === "string"
+            ? playlistName.trim()
+            : String(playlistName ?? "").trim();
+        if (!trimmedName) {
+          return;
+        }
+
+        const expiresAt = Date.now() + 30_000;
+        const message = `${trimmedName} has been cancelled.`;
+        playlistCancellationMessages.set(trimmedName, { message, expiresAt });
+
+        if (latestBuildStatus) {
+          updateBuildLogsUi(latestBuildStatus);
+        }
+      }
+
       function cancelPlaylistBuildFromActivity(rawName) {
         const trimmedName =
           typeof rawName === "string" ? rawName.trim() : String(rawName ?? "").trim();
@@ -1371,20 +1390,30 @@
         }
 
         const activePlaylistsSet = collectActivePlaylistSet(latestBuildStatus);
-        if (!activePlaylistsSet.has(trimmedName)) {
+        const waitingPlaylistsSet = collectWaitingPlaylistSet(latestBuildStatus);
+        if (
+          !activePlaylistsSet.has(trimmedName) &&
+          !waitingPlaylistsSet.has(trimmedName)
+        ) {
           return;
         }
 
-        if (pendingActivityStopRequest) {
+        if (pendingActivityStopRequests.has(trimmedName)) {
           return;
         }
 
-        pendingActivityStopRequest = (async () => {
+        const stopPromise = (async () => {
           try {
-            const response = await fetch("/api/build/stop", { method: "POST" });
+            const response = await fetch("/api/build/stop_playlist", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ playlist: trimmedName }),
+            });
             const result = await response.json().catch(() => ({}));
             if (!response.ok) {
-              throw new Error(result.message || "Failed to stop playlist build.");
+              throw new Error(
+                result.message || `Failed to cancel build for '${trimmedName}'.`
+              );
             }
 
             if (result.status) {
@@ -1393,11 +1422,10 @@
               await refreshBuildStatus();
             }
 
-            if (result.message) {
-              showMessage(result.message);
-            } else {
-              showMessage(`Stopping '${trimmedName}'...`);
-            }
+            const successMessage =
+              result.message || `Cancelled build for '${trimmedName}'.`;
+            showMessage(successMessage);
+            registerPlaylistCancellation(trimmedName);
 
             setTimeout(() => {
               const refreshPromise = refreshBuildStatus();
@@ -1407,12 +1435,15 @@
             }, 1000);
           } catch (error) {
             console.error(error);
-            const message = error?.message || "Failed to stop playlist build.";
+            const message =
+              error?.message || `Failed to cancel build for '${trimmedName}'.`;
             showMessage(message, true);
           } finally {
-            pendingActivityStopRequest = null;
+            pendingActivityStopRequests.delete(trimmedName);
           }
         })();
+
+        pendingActivityStopRequests.set(trimmedName, stopPromise);
       }
 
       function formatDurationShort(totalSeconds) {
@@ -1899,6 +1930,28 @@
         return names;
       }
 
+      function collectWaitingPlaylistSet(status) {
+        const names = new Set();
+        if (!status || typeof status !== "object") {
+          return names;
+        }
+
+        const consider = (value) => {
+          if (!Array.isArray(value)) {
+            return;
+          }
+          value.forEach((name) => addPlaylistName(names, name));
+        };
+
+        consider(status.waiting_playlists);
+        const job = status.job;
+        if (job && typeof job === "object") {
+          consider(job.waiting_playlists);
+        }
+
+        return names;
+      }
+
       function getActivePlaylistNames(status) {
         return Array.from(collectActivePlaylistSet(status)).sort((a, b) =>
           a.localeCompare(b)
@@ -2191,6 +2244,13 @@
         clearRateLimitCountdowns(buildLogContainer);
 
         const nowMs = Date.now();
+        Array.from(playlistCancellationMessages.entries()).forEach(
+          ([name, info]) => {
+            if (!info || info.expiresAt <= nowMs) {
+              playlistCancellationMessages.delete(name);
+            }
+          }
+        );
         const running = Boolean(status?.running);
         const activePlaylists = getActivePlaylistNames(status);
         const activePlaylistsSet = new Set(activePlaylists);
@@ -2271,6 +2331,14 @@
             combinedNames.push(name);
           }
         });
+        playlistCancellationMessages.forEach((info, name) => {
+          if (typeof name === "string") {
+            const trimmedName = name.trim();
+            if (trimmedName && !combinedNames.includes(trimmedName)) {
+              combinedNames.push(trimmedName);
+            }
+          }
+        });
 
         const activeActivityKeys = new Set();
 
@@ -2322,7 +2390,9 @@
         playlistNames.forEach((trimmedName) => {
           const entries = logsByPlaylist[trimmedName] || [];
           const isWaiting = waitingSet.has(trimmedName);
-          if (!entries.length && !running && !isWaiting) {
+          const cancellationInfo = playlistCancellationMessages.get(trimmedName);
+          const hasCancellationMessage = Boolean(cancellationInfo);
+          if (!entries.length && !running && !isWaiting && !hasCancellationMessage) {
             return;
           }
 
@@ -2651,6 +2721,23 @@
                 });
               }
             }
+          }
+
+          if (hasCancellationMessage) {
+            const cancellationEntry = document.createElement("div");
+            cancellationEntry.className = "playlist-log-entry cancellation-entry";
+            const messageRow = document.createElement("div");
+            messageRow.className = "playlist-log-message";
+            const messageText = document.createElement("div");
+            messageText.className = "playlist-log-text";
+            const cancellationText =
+              (cancellationInfo && cancellationInfo.message) ||
+              `${trimmedName} has been cancelled.`;
+            messageText.textContent = cancellationText;
+            messageRow.appendChild(messageText);
+            cancellationEntry.appendChild(messageRow);
+            listEl.appendChild(cancellationEntry);
+            hasContent = true;
           }
 
           if (listEl.childElementCount > 0) {
