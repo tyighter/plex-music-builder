@@ -1270,6 +1270,67 @@
       const waitingPlaylistOrder = new Map();
       let nextWaitingOrderValue = 1;
 
+      function formatTimestamp(value) {
+        if (value === null || value === undefined) {
+          return "";
+        }
+
+        let candidateDate = null;
+        if (value instanceof Date) {
+          candidateDate = value;
+        } else if (typeof value === "number" && Number.isFinite(value)) {
+          const normalizedValue = value < 1e12 ? value * 1000 : value;
+          candidateDate = new Date(normalizedValue);
+        } else if (typeof value === "string") {
+          const trimmed = value.trim();
+          if (trimmed) {
+            const parsed = Date.parse(trimmed);
+            if (!Number.isNaN(parsed)) {
+              candidateDate = new Date(parsed);
+            }
+          }
+        }
+
+        if (!(candidateDate instanceof Date) || Number.isNaN(candidateDate.getTime())) {
+          return "";
+        }
+
+        const now = new Date();
+        const diffMs = now.getTime() - candidateDate.getTime();
+        const absDiffMs = Math.abs(diffMs);
+
+        let relativeText = "";
+        const minuteMs = 60 * 1000;
+        const hourMs = 60 * minuteMs;
+        const dayMs = 24 * hourMs;
+
+        if (absDiffMs < minuteMs) {
+          relativeText = "just now";
+        } else if (absDiffMs < hourMs) {
+          const minutes = Math.round(absDiffMs / minuteMs);
+          relativeText = `${minutes} minute${minutes === 1 ? "" : "s"} ${
+            diffMs >= 0 ? "ago" : "from now"
+          }`;
+        } else if (absDiffMs < dayMs) {
+          const hours = Math.round(absDiffMs / hourMs);
+          relativeText = `${hours} hour${hours === 1 ? "" : "s"} ${
+            diffMs >= 0 ? "ago" : "from now"
+          }`;
+        } else {
+          const days = Math.round(absDiffMs / dayMs);
+          relativeText = `${days} day${days === 1 ? "" : "s"} ${
+            diffMs >= 0 ? "ago" : "from now"
+          }`;
+        }
+
+        const formattedDate = candidateDate.toLocaleString(undefined, {
+          dateStyle: "medium",
+          timeStyle: "short",
+        });
+
+        return `${formattedDate} (${relativeText})`;
+      }
+
       function hideMessage() {
         if (!messageEl) {
           return;
