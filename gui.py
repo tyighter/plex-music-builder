@@ -1319,6 +1319,9 @@ class BuildManager:
         self._sync_waiting_from_pending_locked()
 
         running_process = bool(self._processes)
+        running_workers = len(self._processes)
+        parallel_limit = self._parallel_limit_locked()
+        pending_jobs = len(self._pending_jobs)
         passive_active = self._passive_running or bool(self._observed_active_playlists)
         running = running_process or passive_active
 
@@ -1501,6 +1504,9 @@ class BuildManager:
             "job": job,
             "active_playlists": active_playlists_payload,
             "waiting_playlists": waiting_names,
+            "parallel_limit": parallel_limit,
+            "running_workers": running_workers,
+            "pending_jobs": pending_jobs,
             "results": {
                 "all": self._last_all_result.copy() if self._last_all_result else None,
                 "playlists": playlist_results,
@@ -1539,6 +1545,9 @@ class BuildManager:
                 self._pending_jobs.append(dict(job))
                 if job.get("type") == "playlist":
                     queue_message = f"Build for playlist '{playlist_name}' queued."
+                    self._append_playlist_log_locked(
+                        playlist_name, "Queued – waiting to start…"
+                    )
                 else:
                     queue_message = "Build for all playlists queued."
                 self._last_message = queue_message
