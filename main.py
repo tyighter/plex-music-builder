@@ -14,6 +14,8 @@ import copy
 from datetime import datetime, timezone
 from pathlib import Path
 from collections import defaultdict, OrderedDict
+from dataclasses import dataclass
+from typing import Any, Iterable, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key, lru_cache
 from xml.etree import ElementTree as ET
@@ -831,7 +833,11 @@ def _apply_configured_popularity_boosts(
             condition for condition in normalized_conditions if condition["field"]
         ]
 
-        if not normalized_conditions:
+        compiled_conditions = [
+            _compile_filter_entry(condition) for condition in normalized_conditions
+        ]
+
+        if not compiled_conditions:
             continue
 
         boost_value = _coerce_non_negative_float(rule.get("boost"))
@@ -839,7 +845,7 @@ def _apply_configured_popularity_boosts(
             boost_value = 1.0
         normalized_rules.append(
             {
-                "conditions": normalized_conditions,
+                "conditions": compiled_conditions,
                 "boost": boost_value,
             }
         )
@@ -884,10 +890,11 @@ def _apply_configured_popularity_boosts(
         for rule in normalized_rules:
             if all(
                 check_condition(
-                    get_field_value(track, condition["field"]),
-                    condition["operator"],
-                    condition["value"],
-                    condition.get("match_all", True),
+                    get_field_value(track, condition.field),
+                    condition.operator,
+                    condition.expected,
+                    condition.match_all,
+                    compiled=condition,
                 )
                 for condition in rule["conditions"]
             ):
@@ -2489,45 +2496,149 @@ def get_field_value(track, field):
 # ----------------------------
 # Field Comparison
 # ----------------------------
-def check_condition(value, operator, expected, match_all=True):
+
+
+@dataclass(frozen=True)
+class CompiledFilter:
+    field: str
+    operator: str
+    expected: Any
+    match_all: bool
+    expected_values: Tuple[Any, ...]
+    expected_lowers: Tuple[str, ...]
+    expected_numeric: Optional[Tuple[Any, ...]]
+
+
+def _coerce_expected_values(raw_expected: Any) -> Tuple[Any, ...]:
+    if isinstance(raw_expected, str) and "," in raw_expected:
+        return tuple(segment.strip() for segment in raw_expected.split(","))
+    if isinstance(raw_expected, (list, tuple)):
+        return tuple(raw_expected)
+    if isinstance(raw_expected, set):
+        return tuple(raw_expected)
+    return (raw_expected,)
+
+
+def _compile_filter_entry(filter_entry: Any) -> CompiledFilter:
+    if isinstance(filter_entry, CompiledFilter):
+        return filter_entry
+
+    cached = None
+    if isinstance(filter_entry, dict):
+        cached = filter_entry.get("_compiled_runtime")
+        if isinstance(cached, CompiledFilter):
+            return cached
+
+    field = filter_entry.get("field") if isinstance(filter_entry, dict) else getattr(filter_entry, "field", "")
+    operator = (
+        filter_entry.get("operator") if isinstance(filter_entry, dict) else getattr(filter_entry, "operator", "")
+    )
+    expected = filter_entry.get("value") if isinstance(filter_entry, dict) else getattr(filter_entry, "expected", None)
+    match_all = (
+        filter_entry.get("match_all", True)
+        if isinstance(filter_entry, dict)
+        else getattr(filter_entry, "match_all", True)
+    )
+
+    expected_values = _coerce_expected_values(expected)
+    expected_lowers = tuple(str(value).lower() for value in expected_values)
+
+    numeric_values: Optional[Tuple[Any, ...]] = None
+    if operator in {"greater_than", "less_than"}:
+        temp_values = []
+        for item in expected_values:
+            try:
+                temp_values.append(float(item))
+            except (TypeError, ValueError):
+                temp_values.append(None)
+        numeric_values = tuple(temp_values)
+
+    compiled = CompiledFilter(
+        field=field,
+        operator=operator,
+        expected=expected,
+        match_all=match_all,
+        expected_values=expected_values,
+        expected_lowers=expected_lowers,
+        expected_numeric=numeric_values,
+    )
+
+    if isinstance(filter_entry, dict):
+        filter_entry["_compiled_runtime"] = compiled
+
+    return compiled
+
+
+def check_condition(value, operator, expected, match_all=True, compiled: Optional[CompiledFilter] = None):
     """Compare a field value using the given operator."""
     if value is None:
         return False
 
-    if isinstance(expected, str) and "," in expected:
-        expected_values = [v.strip() for v in expected.split(",")]
-    elif isinstance(expected, list):
-        expected_values = expected
+    if compiled is not None:
+        match_all = compiled.match_all
+        expected_values = compiled.expected_values
+        expected_lowers = compiled.expected_lowers
+        expected_numeric = compiled.expected_numeric
     else:
-        expected_values = [expected]
+        expected_values = _coerce_expected_values(expected)
+        expected_lowers = tuple(str(exp).lower() for exp in expected_values)
+        expected_numeric = None
+        if operator in {"greater_than", "less_than"}:
+            temp_values = []
+            for exp_value in expected_values:
+                try:
+                    temp_values.append(float(exp_value))
+                except (TypeError, ValueError):
+                    temp_values.append(None)
+            expected_numeric = tuple(temp_values)
 
-    values = value if isinstance(value, (list, tuple, set)) else [value]
+    values: Iterable[Any]
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = [value]
 
     results = []
-    for exp in expected_values:
-        exp_str = str(exp).lower()
 
+    if operator in {"equals", "does_not_equal", "contains", "does_not_contain"}:
+        normalized_values = [str(v).lower() for v in values]
         if operator == "equals":
-            results.append(any(str(v).lower() == exp_str for v in values))
+            for expected_lower in expected_lowers:
+                results.append(expected_lower in normalized_values)
         elif operator == "does_not_equal":
-            results.append(all(str(v).lower() != exp_str for v in values))
+            for expected_lower in expected_lowers:
+                results.append(all(val != expected_lower for val in normalized_values))
         elif operator == "contains":
-            results.append(any(exp_str in str(v).lower() for v in values))
-        elif operator == "does_not_contain":
-            results.append(all(exp_str not in str(v).lower() for v in values))
-        elif operator == "greater_than":
-            try:
-                results.append(any(float(v) > float(exp) for v in values))
-            except (ValueError, TypeError):
+            for expected_lower in expected_lowers:
+                results.append(any(expected_lower in val for val in normalized_values))
+        else:  # does_not_contain
+            for expected_lower in expected_lowers:
+                results.append(all(expected_lower not in val for val in normalized_values))
+    elif operator in {"greater_than", "less_than"}:
+        expected_numeric = expected_numeric or tuple(None for _ in expected_values)
+        for index, numeric_expected in enumerate(expected_numeric):
+            if numeric_expected is None:
                 results.append(False)
-        elif operator == "less_than":
+                continue
+
+            comparison_passed = False
             try:
-                results.append(any(float(v) < float(exp) for v in values))
-            except (ValueError, TypeError):
+                for candidate in values:
+                    candidate_value = float(candidate)
+                    if operator == "greater_than" and candidate_value > numeric_expected:
+                        comparison_passed = True
+                        break
+                    if operator == "less_than" and candidate_value < numeric_expected:
+                        comparison_passed = True
+                        break
+            except (TypeError, ValueError):
                 results.append(False)
-        else:
-            logger.warning(f"Unknown operator: {operator}")
-            results.append(False)
+                continue
+
+            results.append(comparison_passed)
+    else:
+        logger.warning(f"Unknown operator: {operator}")
+        return False
 
     if operator in {"does_not_equal", "does_not_contain"}:
         # Negative operators should only succeed when *all* expected values fail to match.
@@ -2545,13 +2656,18 @@ def check_condition(value, operator, expected, match_all=True):
 def _evaluate_track_filters(track, wildcard_filters, regular_filters, log, debug_logging):
     """Determine whether a track should be kept based on wildcard/regular filters."""
 
+    if wildcard_filters and not isinstance(wildcard_filters[0], CompiledFilter):
+        wildcard_filters = [_compile_filter_entry(f) for f in wildcard_filters]
+    if regular_filters and not isinstance(regular_filters[0], CompiledFilter):
+        regular_filters = [_compile_filter_entry(f) for f in regular_filters]
+
     wildcard_matched = False
     if wildcard_filters:
-        for f in wildcard_filters:
-            field = f["field"]
-            operator = f["operator"]
-            expected = f["value"]
-            match_all = f.get("match_all", True)
+        for compiled_filter in wildcard_filters:
+            field = compiled_filter.field
+            operator = compiled_filter.operator
+            expected = compiled_filter.expected
+            match_all = compiled_filter.match_all
 
             val = get_field_value(track, field)
             if debug_logging:
@@ -2563,7 +2679,7 @@ def _evaluate_track_filters(track, wildcard_filters, regular_filters, log, debug
                     match_all,
                 )
                 log.debug("    Extracted value: %s", val)
-            if check_condition(val, operator, expected, match_all):
+            if check_condition(val, operator, expected, match_all, compiled=compiled_filter):
                 wildcard_matched = True
                 if debug_logging:
                     log.debug(
@@ -2576,11 +2692,11 @@ def _evaluate_track_filters(track, wildcard_filters, regular_filters, log, debug
 
     regular_matched = True
     if not wildcard_matched and regular_filters:
-        for f in regular_filters:
-            field = f["field"]
-            operator = f["operator"]
-            expected = f["value"]
-            match_all = f.get("match_all", True)
+        for compiled_filter in regular_filters:
+            field = compiled_filter.field
+            operator = compiled_filter.operator
+            expected = compiled_filter.expected
+            match_all = compiled_filter.match_all
 
             val = get_field_value(track, field)
             if debug_logging:
@@ -2592,7 +2708,7 @@ def _evaluate_track_filters(track, wildcard_filters, regular_filters, log, debug
                     match_all,
                 )
                 log.debug("    Extracted value: %s", val)
-            if not check_condition(val, operator, expected, match_all):
+            if not check_condition(val, operator, expected, match_all, compiled=compiled_filter):
                 regular_matched = False
                 if debug_logging:
                     log.debug("    ❌ Condition failed for field '%s'", field)
@@ -2709,8 +2825,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     build_start = time.perf_counter()
     filters = config.get("plex_filter", [])
     boost_rules = config.get("popularity_boosts", []) or []
-    wildcard_filters = [f for f in filters if bool(f.get("wildcard"))]
-    regular_filters = [f for f in filters if not bool(f.get("wildcard"))]
+    wildcard_filters = [_compile_filter_entry(f) for f in filters if bool(f.get("wildcard"))]
+    regular_filters = [_compile_filter_entry(f) for f in filters if not bool(f.get("wildcard"))]
     library = plex.library.section(config.get("library", LIBRARY_NAME))
     limit = config.get("limit")
     sort_by = config.get("sort_by")
