@@ -1190,6 +1190,9 @@
       const rateLimitCountdownEntries = new Set();
       const dismissedActivityKeys = new Set();
       const playlistCancellationMessages = new Map();
+      const playlistCancellationCutoffs = new Map();
+      const playlistActivityOrder = new Map();
+      let nextPlaylistActivityOrder = 1;
       const pendingActivityStopRequests = new Map();
       let rateLimitCountdownTimer = null;
       const ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
@@ -1370,9 +1373,11 @@
           return;
         }
 
-        const expiresAt = Date.now() + 30_000;
+        const now = Date.now();
+        const expiresAt = now + 30_000;
         const message = `${trimmedName} has been cancelled.`;
         playlistCancellationMessages.set(trimmedName, { message, expiresAt });
+        playlistCancellationCutoffs.set(trimmedName, now);
 
         if (latestBuildStatus) {
           updateBuildLogsUi(latestBuildStatus);
@@ -2354,6 +2359,12 @@
           playlistNames.push(trimmedName);
         });
 
+        activePlaylists.forEach((name) => {
+          if (!playlistActivityOrder.has(name)) {
+            playlistActivityOrder.set(name, nextPlaylistActivityOrder++);
+          }
+        });
+
         const getGroupRank = (name) => {
           if (activeOrder.has(name)) {
             return 0;
@@ -2368,6 +2379,18 @@
           const groupDiff = getGroupRank(a) - getGroupRank(b);
           if (groupDiff !== 0) {
             return groupDiff;
+          }
+
+          const orderA = playlistActivityOrder.get(a);
+          const orderB = playlistActivityOrder.get(b);
+          if (orderA !== undefined && orderB !== undefined && orderA !== orderB) {
+            return orderA - orderB;
+          }
+          if (orderA !== undefined && orderB === undefined) {
+            return -1;
+          }
+          if (orderA === undefined && orderB !== undefined) {
+            return 1;
           }
 
           if (activeOrder.has(a) && activeOrder.has(b)) {
@@ -2387,6 +2410,7 @@
         let renderedGroups = 0;
 
         const playlistBlocks = [];
+        const renderedPlaylistNames = new Set();
 
         playlistNames.forEach((trimmedName) => {
           const entries = logsByPlaylist[trimmedName] || [];
@@ -2418,19 +2442,51 @@
           const listEl = document.createElement("div");
           listEl.className = "build-log-playlist-entries";
 
+          if (
+            (activePlaylistsSet.has(trimmedName) ||
+              logsByPlaylist[trimmedName]?.length ||
+              hasCancellationMessage) &&
+            !playlistActivityOrder.has(trimmedName)
+          ) {
+            playlistActivityOrder.set(trimmedName, nextPlaylistActivityOrder++);
+          }
+
+          const cancellationCutoff = playlistCancellationCutoffs.get(trimmedName) ?? null;
+          let hasRecentEntry = false;
           const normalizedEntries = hasCancellationMessage
             ? []
             : Array.isArray(entries)
-                ? entries.map((entry) => {
-                    if (entry && typeof entry === "object") {
-                      return entry;
-                    }
-                    return {
-                      type: "message",
-                      text: typeof entry === "string" ? entry : String(entry ?? ""),
-                    };
-                  })
+                ? entries
+                    .map((entry) => {
+                      if (entry && typeof entry === "object") {
+                        return entry;
+                      }
+                      return {
+                        type: "message",
+                        text:
+                          typeof entry === "string" ? entry : String(entry ?? ""),
+                      };
+                    })
+                    .filter((entry) => {
+                      if (!entry || typeof entry !== "object") {
+                        return false;
+                      }
+
+                      if (cancellationCutoff !== null) {
+                        const timestampMs = parseTimestampMs(entry.timestamp);
+                        if (timestampMs === null || timestampMs <= cancellationCutoff) {
+                          return false;
+                        }
+                        hasRecentEntry = true;
+                      }
+
+                      return true;
+                    })
                 : [];
+          if (hasRecentEntry) {
+            playlistCancellationCutoffs.delete(trimmedName);
+          }
+          const hadAnyRawEntries = Array.isArray(entries) && entries.length > 0;
 
           let hasContent = false;
 
@@ -2502,7 +2558,7 @@
               listEl.appendChild(item);
               hasContent = true;
             }
-          } else {
+          } else if (!hasCancellationMessage && !hadAnyRawEntries) {
             const placeholder = document.createElement("div");
             placeholder.className = "playlist-log-entry";
             const showPlaceholderSpinner = isActivePlaylist || (isWaiting && running);
@@ -2560,12 +2616,34 @@
 
           block.appendChild(listEl);
           playlistBlocks.push(block);
+          renderedPlaylistNames.add(trimmedName);
         });
 
         if (playlistBlocks.length) {
           renderedGroups += playlistBlocks.length;
           playlistBlocks.forEach((block) => blocksToRender.push(block));
         }
+
+        Array.from(playlistActivityOrder.keys()).forEach((name) => {
+          if (!renderedPlaylistNames.has(name)) {
+            playlistActivityOrder.delete(name);
+          }
+        });
+
+        Array.from(playlistCancellationCutoffs.keys()).forEach((name) => {
+          if (
+            renderedPlaylistNames.has(name) ||
+            activePlaylistsSet.has(name) ||
+            waitingSet.has(name)
+          ) {
+            return;
+          }
+          const rawEntries = logsByPlaylist[name];
+          if (Array.isArray(rawEntries) && rawEntries.length > 0) {
+            return;
+          }
+          playlistCancellationCutoffs.delete(name);
+        });
 
         const normalizedGeneralEntries = generalLogs
           .map((entry) => normalizeGeneralLogEntry(entry))
