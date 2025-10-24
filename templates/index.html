@@ -95,8 +95,8 @@
         background: var(--card-bg);
         border-radius: 20px;
         padding: 0;
-        width: min(520px, 100%);
-        max-width: 520px;
+        width: min(720px, 100%);
+        max-width: 720px;
         max-height: 85vh;
         display: flex;
         flex-direction: column;
@@ -126,7 +126,7 @@
         padding: 24px;
         display: flex;
         flex-direction: column;
-        gap: 16px;
+        gap: 12px;
         overflow-y: auto;
       }
 
@@ -138,11 +138,8 @@
 
       .config-panel-footer {
         padding: 20px 24px;
-        display: flex;
-        justify-content: flex-end;
         border-top: 1px solid rgba(229, 160, 13, 0.16);
         background: rgba(14, 14, 14, 0.6);
-        gap: 12px;
       }
 
       main {
@@ -738,6 +735,211 @@
         background: var(--plex-orange-dark);
       }
 
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+
+      button:disabled:active {
+        transform: none;
+      }
+
+      .config-status-message {
+        font-size: 14px;
+        color: rgba(229, 160, 13, 0.9);
+        min-height: 18px;
+      }
+
+      .config-status-message.error {
+        color: rgba(229, 65, 70, 0.85);
+      }
+
+      .config-status-message:not(.show) {
+        display: none;
+      }
+
+      .config-form-container {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .config-active-path {
+        background: rgba(229, 160, 13, 0.12);
+        border-radius: 12px;
+        padding: 12px 16px;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.85);
+      }
+
+      .config-active-path code {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        color: var(--plex-light);
+      }
+
+      .config-search-paths {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.6);
+      }
+
+      .config-search-paths ol {
+        margin: 8px 0 0;
+        padding-left: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .config-section {
+        padding-top: 16px;
+        border-top: 1px solid rgba(229, 160, 13, 0.16);
+      }
+
+      .config-section:first-of-type {
+        border-top: none;
+        padding-top: 0;
+      }
+
+      .config-section h3 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+
+      .config-section-description {
+        margin: 0 0 16px;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.65);
+        line-height: 1.5;
+      }
+
+      .config-section-fields {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+
+      .config-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .config-field label {
+        font-weight: 500;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.85);
+      }
+
+      .config-field input,
+      .config-field select {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid rgba(229, 160, 13, 0.25);
+        background: rgba(14, 14, 14, 0.6);
+        color: var(--plex-light);
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+
+      .config-field input:focus,
+      .config-field select:focus {
+        outline: none;
+        border-color: var(--plex-orange);
+        box-shadow: 0 0 0 2px rgba(229, 160, 13, 0.25);
+      }
+
+      .config-field-helper {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+        line-height: 1.4;
+      }
+
+      .config-field-checkbox {
+        flex-direction: row;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .config-checkbox {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        cursor: pointer;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.85);
+      }
+
+      .config-checkbox input {
+        width: 18px;
+        height: 18px;
+        border-radius: 6px;
+        border: 1px solid rgba(229, 160, 13, 0.35);
+        appearance: none;
+        background: rgba(14, 14, 14, 0.6);
+        position: relative;
+      }
+
+      .config-checkbox input:checked {
+        background: var(--plex-orange);
+        border-color: var(--plex-orange);
+      }
+
+      .config-checkbox input:checked::after {
+        content: "✓";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -55%);
+        font-size: 12px;
+        color: #111;
+      }
+
+      .config-input-with-toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .config-input-with-toggle input {
+        flex: 1;
+      }
+
+      .config-visibility-toggle {
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-size: 13px;
+        background: rgba(229, 160, 13, 0.18);
+        color: var(--plex-light);
+        border: 1px solid rgba(229, 160, 13, 0.3);
+      }
+
+      .config-visibility-toggle:hover {
+        background: rgba(229, 160, 13, 0.28);
+      }
+
+      .config-empty {
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 14px;
+        padding: 12px 0;
+      }
+
+      .config-loading {
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 14px;
+      }
+
+      .config-panel-footer .config-footer-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .config-footer-actions .spacer {
+        flex: 1;
+      }
+
       button.secondary:active {
         background: rgba(229, 160, 13, 0.28);
       }
@@ -1236,11 +1438,29 @@
             updates can surface additional controls without leaving the main
             builder screen.
           </p>
+          <div
+            id="configStatusMessage"
+            class="config-status-message"
+            role="status"
+            aria-live="polite"
+          ></div>
+          <div id="configFormContainer" class="config-form-container">
+            <div class="config-loading">Loading configuration…</div>
+          </div>
         </div>
         <div class="config-panel-footer">
-          <button id="configDismissBtn" class="secondary" type="button">
-            Close
-          </button>
+          <div class="config-footer-actions">
+            <button id="configRestartBtn" class="danger" type="button">
+              Restart Container
+            </button>
+            <div class="spacer"></div>
+            <button id="configSaveBtn" type="button" disabled>
+              Save Changes
+            </button>
+            <button id="configDismissBtn" class="secondary" type="button">
+              Close
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1360,6 +1580,10 @@
       const configOverlay = document.getElementById("configOverlay");
       const configCloseBtn = document.getElementById("configCloseBtn");
       const configDismissBtn = document.getElementById("configDismissBtn");
+      const configFormContainer = document.getElementById("configFormContainer");
+      const configStatusMessage = document.getElementById("configStatusMessage");
+      const configSaveBtn = document.getElementById("configSaveBtn");
+      const configRestartBtn = document.getElementById("configRestartBtn");
       const defaultFiltersContainer = document.getElementById("defaultFilters");
       const defaultBoostsPopout = document.getElementById("defaultBoostsPopout");
       const defaultBoostsContainer = document.getElementById(
@@ -1399,6 +1623,499 @@
       const waitingPlaylistOrder = new Map();
       let nextWaitingOrderValue = 1;
       let lastFocusedBeforeConfig = null;
+      const configFieldElements = new Map();
+      const configOriginalValues = new Map();
+      let configSectionsPayload = [];
+      let configActivePath = "";
+      let configSearchPaths = [];
+      let configSupportsRestart = true;
+      let configLoading = false;
+
+      function setConfigStatusMessage(text, isError = false) {
+        if (!configStatusMessage) {
+          return;
+        }
+
+        const normalized =
+          typeof text === "string" ? text.trim() : String(text ?? "").trim();
+        if (normalized) {
+          configStatusMessage.textContent = normalized;
+          configStatusMessage.classList.add("show");
+        } else {
+          configStatusMessage.textContent = "";
+          configStatusMessage.classList.remove("show");
+        }
+        configStatusMessage.classList.toggle("error", Boolean(normalized && isError));
+      }
+
+      function clearConfigStatusMessage() {
+        setConfigStatusMessage("");
+      }
+
+      function buildConfigFieldKey(sectionId, fieldKey) {
+        return `${sectionId}.${fieldKey}`;
+      }
+
+      function coerceBoolean(value) {
+        if (typeof value === "boolean") {
+          return value;
+        }
+        const normalized = String(value ?? "").trim().toLowerCase();
+        if (!normalized) {
+          return false;
+        }
+        return ["1", "true", "yes", "on", "y"].includes(normalized);
+      }
+
+      function normalizeConfigValueForCompare(field, value) {
+        if (!field) {
+          return "";
+        }
+        if ((field.input || "") === "checkbox") {
+          return coerceBoolean(value) ? "true" : "false";
+        }
+        if (value === null || value === undefined) {
+          return "";
+        }
+        return String(value).trim();
+      }
+
+      function getConfigFieldEntryValue(entry) {
+        if (!entry || !entry.input) {
+          return "";
+        }
+        const { input, field } = entry;
+        if ((field.input || "") === "checkbox") {
+          return input.checked ? "true" : "false";
+        }
+        if ((field.input || "") === "select") {
+          return String(input.value ?? "").trim();
+        }
+        if (field.input === "number") {
+          return String(input.value ?? "").trim();
+        }
+        return String(input.value ?? "").trim();
+      }
+
+      function updateConfigDirtyState() {
+        let dirty = false;
+        configFieldElements.forEach((entry, key) => {
+          const current = getConfigFieldEntryValue(entry);
+          const original = configOriginalValues.get(key) ?? "";
+          if (current !== original) {
+            dirty = true;
+          }
+        });
+
+        if (configSaveBtn) {
+          configSaveBtn.disabled = !dirty;
+        }
+
+        return dirty;
+      }
+
+      function createConfigField(sectionId, field) {
+        if (!field || !field.key) {
+          return null;
+        }
+
+        const container = document.createElement("div");
+        container.className = "config-field";
+        container.dataset.sectionId = sectionId;
+        container.dataset.fieldKey = field.key;
+
+        const fieldKey = buildConfigFieldKey(sectionId, field.key);
+        const inputType = field.input || field.type || "text";
+        const fieldId = `config-${sectionId}-${field.key}`;
+        let input = null;
+
+        if (inputType === "checkbox") {
+          container.classList.add("config-field-checkbox");
+          const checkboxLabel = document.createElement("label");
+          checkboxLabel.className = "config-checkbox";
+          input = document.createElement("input");
+          input.type = "checkbox";
+          input.id = fieldId;
+          input.checked = coerceBoolean(field.value);
+          checkboxLabel.appendChild(input);
+          const labelText = document.createElement("span");
+          labelText.textContent = field.label || field.key;
+          checkboxLabel.appendChild(labelText);
+          container.appendChild(checkboxLabel);
+        } else {
+          const labelEl = document.createElement("label");
+          labelEl.className = "config-field-label";
+          labelEl.htmlFor = fieldId;
+          labelEl.textContent = field.label || field.key;
+          container.appendChild(labelEl);
+
+          if (inputType === "select") {
+            input = document.createElement("select");
+            input.id = fieldId;
+            const optionsList = Array.isArray(field.options)
+              ? field.options
+              : [];
+            optionsList.forEach((option) => {
+              if (!option || option.value === undefined) {
+                return;
+              }
+              const optionEl = document.createElement("option");
+              optionEl.value = String(option.value);
+              optionEl.textContent = option.label || String(option.value);
+              input.appendChild(optionEl);
+            });
+            const normalizedValue = String(field.value ?? "");
+            input.value = normalizedValue;
+          } else {
+            input = document.createElement("input");
+            let htmlInputType = "text";
+            if (inputType === "password") {
+              htmlInputType = "password";
+            } else if (inputType === "number" || field.type === "integer" || field.type === "float") {
+              htmlInputType = "number";
+            }
+            input.type = htmlInputType;
+            input.id = fieldId;
+            if (field.placeholder) {
+              input.placeholder = field.placeholder;
+            }
+            if (field.min !== undefined) {
+              input.min = String(field.min);
+            }
+            if (field.max !== undefined) {
+              input.max = String(field.max);
+            }
+            if (field.step !== undefined) {
+              input.step = String(field.step);
+            }
+            input.value = String(field.value ?? "");
+
+            if (field.sensitive) {
+              const wrapper = document.createElement("div");
+              wrapper.className = "config-input-with-toggle";
+              wrapper.appendChild(input);
+              const toggleBtn = document.createElement("button");
+              toggleBtn.type = "button";
+              toggleBtn.className = "config-visibility-toggle";
+              toggleBtn.textContent = input.type === "password" ? "Show" : "Hide";
+              toggleBtn.addEventListener("click", () => {
+                if (input.type === "password") {
+                  input.type = "text";
+                  toggleBtn.textContent = "Hide";
+                } else {
+                  input.type = "password";
+                  toggleBtn.textContent = "Show";
+                }
+              });
+              wrapper.appendChild(toggleBtn);
+              container.appendChild(wrapper);
+            } else {
+              container.appendChild(input);
+            }
+          }
+        }
+
+        if (!input) {
+          return null;
+        }
+
+        if (inputType === "select") {
+          // Select added directly above.
+          container.appendChild(input);
+        }
+
+        if (field.helper) {
+          const helper = document.createElement("div");
+          helper.className = "config-field-helper";
+          helper.textContent = field.helper;
+          container.appendChild(helper);
+        }
+
+        const entry = { sectionId, field, input };
+        configFieldElements.set(fieldKey, entry);
+        const originalValue = normalizeConfigValueForCompare(field, field.value);
+        configOriginalValues.set(fieldKey, originalValue);
+
+        const listenEvent = inputType === "checkbox" ? "change" : inputType === "select" ? "change" : "input";
+        input.addEventListener(listenEvent, () => {
+          updateConfigDirtyState();
+        });
+
+        return container;
+      }
+
+      function renderConfigForm() {
+        if (!configFormContainer) {
+          return;
+        }
+
+        configFieldElements.clear();
+        configOriginalValues.clear();
+        configFormContainer.innerHTML = "";
+
+        if (configActivePath) {
+          const pathInfo = document.createElement("div");
+          pathInfo.className = "config-active-path";
+          const label = document.createElement("div");
+          label.textContent = "Active configuration:";
+          const code = document.createElement("code");
+          code.textContent = configActivePath;
+          pathInfo.appendChild(label);
+          pathInfo.appendChild(code);
+          configFormContainer.appendChild(pathInfo);
+        }
+
+        if (Array.isArray(configSearchPaths) && configSearchPaths.length) {
+          const searchContainer = document.createElement("div");
+          searchContainer.className = "config-search-paths";
+          const title = document.createElement("div");
+          title.textContent = "Search order:";
+          const list = document.createElement("ol");
+          configSearchPaths.forEach((path) => {
+            const item = document.createElement("li");
+            item.textContent = String(path);
+            list.appendChild(item);
+          });
+          searchContainer.appendChild(title);
+          searchContainer.appendChild(list);
+          configFormContainer.appendChild(searchContainer);
+        }
+
+        if (!Array.isArray(configSectionsPayload) || !configSectionsPayload.length) {
+          const empty = document.createElement("div");
+          empty.className = "config-empty";
+          empty.textContent = "No configurable settings available.";
+          configFormContainer.appendChild(empty);
+        } else {
+          configSectionsPayload.forEach((section) => {
+            if (!section || !section.id) {
+              return;
+            }
+            const sectionEl = document.createElement("section");
+            sectionEl.className = "config-section";
+            const heading = document.createElement("h3");
+            heading.textContent = section.label || section.id;
+            sectionEl.appendChild(heading);
+
+            if (section.description) {
+              const description = document.createElement("p");
+              description.className = "config-section-description";
+              description.textContent = section.description;
+              sectionEl.appendChild(description);
+            }
+
+            const fieldsWrapper = document.createElement("div");
+            fieldsWrapper.className = "config-section-fields";
+
+            let renderedField = false;
+            (section.fields || []).forEach((field) => {
+              const fieldEl = createConfigField(section.id, field);
+              if (fieldEl) {
+                fieldsWrapper.appendChild(fieldEl);
+                renderedField = true;
+              }
+            });
+
+            if (renderedField) {
+              sectionEl.appendChild(fieldsWrapper);
+            } else {
+              const empty = document.createElement("div");
+              empty.className = "config-empty";
+              empty.textContent = "No fields available for this section.";
+              sectionEl.appendChild(empty);
+            }
+
+            configFormContainer.appendChild(sectionEl);
+          });
+        }
+
+        if (configRestartBtn) {
+          configRestartBtn.disabled = !configSupportsRestart;
+        }
+
+        updateConfigDirtyState();
+      }
+
+      async function loadConfigSettings() {
+        if (configLoading) {
+          return;
+        }
+
+        if (!configFormContainer) {
+          return;
+        }
+
+        configLoading = true;
+        setConfigStatusMessage("Loading configuration…");
+        configFieldElements.clear();
+        configOriginalValues.clear();
+        configFormContainer.innerHTML =
+          '<div class="config-loading">Loading configuration…</div>';
+
+        if (configSaveBtn) {
+          configSaveBtn.disabled = true;
+        }
+        if (configRestartBtn) {
+          configRestartBtn.disabled = true;
+        }
+
+        try {
+          const response = await fetch("/api/config");
+          if (!response.ok) {
+            throw new Error("Unable to load configuration.");
+          }
+          const payload = await response.json();
+          configSectionsPayload = Array.isArray(payload.sections)
+            ? payload.sections
+            : [];
+          configActivePath = typeof payload.path === "string" ? payload.path : "";
+          configSearchPaths = Array.isArray(payload.search_paths)
+            ? payload.search_paths
+            : [];
+          configSupportsRestart = Boolean(payload.supports_restart);
+          renderConfigForm();
+          if (configActivePath) {
+            setConfigStatusMessage(`Editing ${configActivePath}`);
+          } else {
+            clearConfigStatusMessage();
+          }
+        } catch (error) {
+          console.error(error);
+          const message =
+            error && error.message
+              ? error.message
+              : "Unable to load configuration.";
+          setConfigStatusMessage(message, true);
+          showMessage(message, true);
+          if (configFormContainer) {
+            configFormContainer.innerHTML = "";
+            const errorEl = document.createElement("div");
+            errorEl.className = "config-empty";
+            errorEl.textContent = message;
+            configFormContainer.appendChild(errorEl);
+          }
+        } finally {
+          configLoading = false;
+          updateConfigDirtyState();
+        }
+      }
+
+      function collectConfigPayload() {
+        const sections = {};
+        configFieldElements.forEach((entry, key) => {
+          if (!entry) {
+            return;
+          }
+          const { sectionId, field, input } = entry;
+          if (!sections[sectionId]) {
+            sections[sectionId] = {};
+          }
+          if ((field.input || "") === "checkbox") {
+            sections[sectionId][field.key] = Boolean(input.checked);
+          } else {
+            sections[sectionId][field.key] = String(input.value ?? "");
+          }
+        });
+        return { sections };
+      }
+
+      async function saveConfigSettings() {
+        const payload = collectConfigPayload();
+        setConfigStatusMessage("Saving configuration…");
+        if (configSaveBtn) {
+          configSaveBtn.disabled = true;
+        }
+
+        try {
+          const response = await fetch("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(
+              (result && result.error) || "Unable to save configuration."
+            );
+          }
+
+          if (Array.isArray(result.sections)) {
+            configSectionsPayload = result.sections;
+          }
+          if (typeof result.path === "string") {
+            configActivePath = result.path;
+          }
+          if (Array.isArray(result.search_paths)) {
+            configSearchPaths = result.search_paths;
+          }
+          if (result.supports_restart !== undefined) {
+            configSupportsRestart = Boolean(result.supports_restart);
+          }
+
+          renderConfigForm();
+          const message =
+            typeof result.message === "string" && result.message.trim()
+              ? result.message.trim()
+              : "Configuration updated successfully.";
+          setConfigStatusMessage(message);
+          showMessage(message, false);
+        } catch (error) {
+          console.error(error);
+          const message =
+            error && error.message
+              ? error.message
+              : "Unable to save configuration.";
+          setConfigStatusMessage(message, true);
+          showMessage(message, true);
+        } finally {
+          updateConfigDirtyState();
+        }
+      }
+
+      async function requestContainerRestart() {
+        if (!configSupportsRestart) {
+          return;
+        }
+
+        const confirmed = window.confirm(
+          "Restarting will stop the application. Continue?"
+        );
+        if (!confirmed) {
+          return;
+        }
+
+        if (configRestartBtn) {
+          configRestartBtn.disabled = true;
+        }
+        setConfigStatusMessage("Restart requested…");
+
+        try {
+          const response = await fetch("/api/runtime/restart", { method: "POST" });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(
+              (result && result.message) || "Failed to request restart."
+            );
+          }
+          const message =
+            typeof result.message === "string" && result.message.trim()
+              ? result.message.trim()
+              : "Restart requested. The application will exit shortly.";
+          setConfigStatusMessage(message);
+          showMessage(message, false);
+        } catch (error) {
+          console.error(error);
+          const message =
+            error && error.message
+              ? error.message
+              : "Failed to request restart.";
+          setConfigStatusMessage(message, true);
+          showMessage(message, true);
+          if (configRestartBtn) {
+            configRestartBtn.disabled = false;
+          }
+        }
+      }
 
       function openConfigMenu() {
         if (!configOverlay) {
@@ -1412,6 +2129,8 @@
         if (configBtn) {
           configBtn.setAttribute("aria-expanded", "true");
         }
+
+        loadConfigSettings();
 
         const focusTarget =
           configOverlay.querySelector("[data-config-initial-focus]") ||
@@ -1446,6 +2165,7 @@
         }
 
         lastFocusedBeforeConfig = null;
+        clearConfigStatusMessage();
       }
 
       function parseTimestampMs(value) {
@@ -4375,6 +5095,18 @@
           } else {
             openConfigMenu();
           }
+        });
+      }
+
+      if (configSaveBtn) {
+        configSaveBtn.addEventListener("click", () => {
+          saveConfigSettings();
+        });
+      }
+
+      if (configRestartBtn) {
+        configRestartBtn.addEventListener("click", () => {
+          requestContainerRestart();
         });
       }
 

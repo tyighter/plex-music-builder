@@ -18,6 +18,7 @@ class _FakeProcess:
         self.killed = False
         self.wait_calls = 0
         self.stdout = None
+        self.pid = 4242
 
     def poll(self) -> Optional[int]:
         return self._returncode
@@ -113,6 +114,30 @@ def test_stop_playlist_terminates_active_process() -> None:
     assert status["running"] is False
     assert fake_process.terminated is True
     assert fake_process.wait_calls >= 1
+
+
+def test_stop_playlist_stops_all_job_when_playlist_active() -> None:
+    manager = _TestableBuildManager()
+    fake_process = _FakeProcess()
+    handle = gui._ProcessHandle(process=fake_process, job={"type": "all"})
+
+    with manager._lock:
+        manager._processes.append(handle)  # type: ignore[attr-defined]
+        manager._observed_active_playlists = {"Alpha", "Beta"}  # type: ignore[attr-defined]
+        manager._pending_jobs = [  # type: ignore[attr-defined]
+            {"type": "playlist", "playlist": "Beta"}
+        ]
+        manager._queued_playlists = ["Beta"]  # type: ignore[attr-defined]
+
+    stopped, status, message = manager.stop_playlist("Beta")
+
+    assert stopped is True
+    assert message == "Build for playlist 'Beta' cancelled."
+    assert status["running"] is False
+    assert fake_process.terminated is True
+    assert fake_process.wait_calls >= 1
+    assert manager._pending_jobs == []  # type: ignore[attr-defined]
+    assert manager._queued_playlists == []  # type: ignore[attr-defined]
 
 
 def test_stop_playlist_removes_pending_job() -> None:
