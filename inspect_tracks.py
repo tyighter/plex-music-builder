@@ -39,15 +39,15 @@ library = plex.library.section(library_name)
 
 print(f"Connected to Plex: {plex.friendlyName}")
 print(f"Using library: {library_name}")
-print("Fetching Revolver albums...\n")
+print("Fetching Stop Making Sense albums...\n")
 
-TITLE_MATCH = "revolver"
-ARTIST_NAME = "the beatles"
+TITLE_MATCH = "stop making sense"
+ARTIST_NAME = "talking heads"
 
 
-def find_revolver_albums(section):
-    candidates = section.searchAlbums(title="Revolver")
-    revolver_albums = []
+def find_stop_making_sense_albums(section):
+    candidates = section.searchAlbums(title="Stop Making Sense")
+    sms_albums = []
     for album in candidates:
         artist = album.artist().title if callable(album.artist) else album.artist
         title = album.title or ""
@@ -56,16 +56,16 @@ def find_revolver_albums(section):
             continue
 
         if artist and ARTIST_NAME in artist.lower():
-            revolver_albums.append(album)
+            sms_albums.append(album)
 
-    if not revolver_albums:
-        raise RuntimeError("Could not locate any Revolver albums by The Beatles in Plex.")
+    if not sms_albums:
+        raise RuntimeError("Could not locate any Stop Making Sense albums by Talking Heads in Plex.")
 
-    return revolver_albums
+    return sms_albums
 
 
-albums = find_revolver_albums(library)
-print(f"Found {len(albums)} Revolver album(s) by {ARTIST_NAME.title()}\n")
+albums = find_stop_making_sense_albums(library)
+print(f"Found {len(albums)} Stop Making Sense album(s) by {ARTIST_NAME.title()}\n")
 
 
 def dump_track_metadata(track):
