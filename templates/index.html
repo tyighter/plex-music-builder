@@ -68,7 +68,12 @@
       .action-bar {
         display: flex;
         gap: 12px;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+        align-items: center;
+      }
+
+      .action-bar button {
+        flex: 0 0 auto;
       }
 
       main {
@@ -244,9 +249,9 @@
       .playlist-header {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 14px;
+        gap: 16px;
         margin-bottom: 18px;
+        flex-wrap: wrap;
       }
 
       .playlist-list-controls {
@@ -281,32 +286,44 @@
         align-items: center;
         gap: 10px;
         min-width: 0;
+        flex: 1 1 220px;
       }
 
-      .playlist-header-actions {
+      .playlist-status {
         display: flex;
         align-items: center;
-        gap: 12px;
-        flex-wrap: wrap;
-        justify-content: flex-end;
+        gap: 10px;
+        min-width: 0;
+        flex: 1 1 240px;
       }
 
-      .playlist-card {
-        position: relative;
-      }
-
-      .playlist-card .playlist-header {
-        padding-right: 120px;
-      }
-
-      .playlist-card .playlist-quick-actions {
-        position: absolute;
-        top: 20px;
-        right: 20px;
+      .playlist-action-buttons {
         display: flex;
         align-items: center;
         gap: 8px;
-        z-index: 1;
+        flex: 0 0 auto;
+      }
+
+      .playlist-inline-message {
+        display: none;
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 13px;
+        background: rgba(229, 160, 13, 0.18);
+        color: var(--plex-light);
+        flex-basis: 100%;
+        margin-top: 4px;
+      }
+
+      .playlist-inline-message.show {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .playlist-inline-message.error {
+        background: rgba(229, 65, 70, 0.28);
+        color: #fff;
       }
 
       .playlist-details {
@@ -324,13 +341,6 @@
       .default-filters-collapse-btn {
         font-size: 18px;
         line-height: 1;
-      }
-
-      .playlist-status {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        min-width: 0;
       }
 
       .playlist-status-text {
@@ -581,9 +591,11 @@
       button.icon-only {
         padding: 8px;
         border-radius: 12px;
-        width: 36px;
-        height: 36px;
+        width: 40px;
+        height: 40px;
         justify-content: center;
+        font-size: 18px;
+        line-height: 1;
       }
 
       button:hover {
@@ -591,7 +603,16 @@
       }
 
       button:active {
-        transform: translateY(0);
+        transform: scale(0.97);
+        background: var(--plex-orange-dark);
+      }
+
+      button.secondary:active {
+        background: rgba(229, 160, 13, 0.28);
+      }
+
+      button.danger:active {
+        background: rgba(229, 65, 70, 0.95);
       }
 
       .filters-container {
@@ -880,6 +901,11 @@
           gap: 16px;
         }
 
+        .action-bar {
+          width: 100%;
+          flex-wrap: wrap;
+        }
+
         #addPlaylist {
           bottom: 24px;
           right: 24px;
@@ -891,12 +917,11 @@
           gap: 12px;
         }
 
-        .playlist-header-actions {
+        .playlist-status {
           width: 100%;
-          align-items: flex-start;
         }
 
-        .playlist-status {
+        .playlist-action-buttons {
           width: 100%;
         }
 
@@ -940,13 +965,51 @@
     <header>
       <h1><span class="icon">▶</span>Plex Playlist Builder</h1>
       <div class="action-bar">
-        <button id="buildPopularityBtn" type="button">⬇️ Pull Popularity</button>
-        <button id="clearPopularityCacheBtn" class="secondary" type="button">
-          🧹 Clear Popularity Cache
+        <button
+          id="buildPopularityBtn"
+          class="icon-only"
+          type="button"
+          title="Pull the latest popularity metadata"
+          aria-label="Pull the latest popularity metadata"
+        >
+          ⬇️
         </button>
-        <button id="reloadBtn" class="secondary" type="button">⟳ Refresh from YML</button>
-        <button id="saveBtn" type="button">💾 Save to YML</button>
-        <button id="buildToggleBtn" type="button">▶ Build ALL</button>
+        <button
+          id="clearPopularityCacheBtn"
+          class="icon-only secondary"
+          type="button"
+          title="Clear the cached popularity data"
+          aria-label="Clear the cached popularity data"
+        >
+          🧹
+        </button>
+        <button
+          id="reloadBtn"
+          class="icon-only secondary"
+          type="button"
+          title="Refresh playlists from playlists.yml"
+          aria-label="Refresh playlists from playlists.yml"
+        >
+          ⟳
+        </button>
+        <button
+          id="saveBtn"
+          class="icon-only"
+          type="button"
+          title="Save all playlists to playlists.yml"
+          aria-label="Save all playlists to playlists.yml"
+        >
+          💾
+        </button>
+        <button
+          id="buildToggleBtn"
+          class="icon-only"
+          type="button"
+          title="Build all playlists"
+          aria-label="Build all playlists"
+        >
+          ▶
+        </button>
         <span id="message" class="message"></span>
       </div>
     </header>
@@ -1060,6 +1123,7 @@
       const buildLogContainer = document.getElementById("buildLogContainer");
       const buildPopularityBtn = document.getElementById("buildPopularityBtn");
       const clearPopularityCacheBtn = document.getElementById("clearPopularityCacheBtn");
+      const playlistMessageTimeouts = new WeakMap();
       let latestBuildStatus = null;
       let latestPopularityStatus = null;
       let buildStatusTimer = null;
@@ -1297,6 +1361,45 @@
           : "rgba(229, 160, 13, 0.2)";
         messageEl.classList.add("show");
         setTimeout(() => messageEl.classList.remove("show"), 4000);
+      }
+
+      function showPlaylistInlineMessage(playlist, text, options = {}) {
+        if (!playlist) {
+          return;
+        }
+
+        const inlineMessageEl = playlist._inlineMessageEl;
+        if (!inlineMessageEl) {
+          return;
+        }
+
+        const { isError = false, persist = false } = options;
+        const existingTimeout = playlistMessageTimeouts.get(inlineMessageEl);
+        if (existingTimeout) {
+          clearTimeout(existingTimeout);
+          playlistMessageTimeouts.delete(inlineMessageEl);
+        }
+
+        if (!text) {
+          inlineMessageEl.textContent = "";
+          inlineMessageEl.classList.remove("show", "error");
+          return;
+        }
+
+        inlineMessageEl.textContent = text;
+        inlineMessageEl.classList.toggle("error", Boolean(isError));
+        inlineMessageEl.classList.add("show");
+
+        if (!persist) {
+          const timeout = setTimeout(() => {
+            if (inlineMessageEl.textContent === text) {
+              inlineMessageEl.classList.remove("show");
+              inlineMessageEl.textContent = "";
+            }
+            playlistMessageTimeouts.delete(inlineMessageEl);
+          }, 4000);
+          playlistMessageTimeouts.set(inlineMessageEl, timeout);
+        }
       }
 
       function formatTimestamp(isoString) {
@@ -1728,21 +1831,35 @@
         }
         message.textContent = detailText;
 
+        let buttonIcon = "▶";
+        let baseTitle = playlistName
+          ? "Build this playlist"
+          : "Enter a playlist name to build it individually";
+
         if (isRunningThisPlaylist) {
-          button.textContent = "⏹ Stop Build";
+          buttonIcon = "⏹";
+          baseTitle = "Stop building this playlist";
           button.classList.add("danger");
+          button.classList.remove("secondary");
         } else if (status?.running && playlistName) {
-          button.textContent = "⏳ Queue Build";
+          buttonIcon = "⏳";
+          baseTitle = "Queue this playlist to build after the current jobs finish";
           button.classList.remove("danger");
+          button.classList.add("secondary");
         } else {
-          button.textContent = "▶ Build Playlist";
+          buttonIcon = "▶";
           button.classList.remove("danger");
+          button.classList.remove("secondary");
         }
+
+        button.textContent = buttonIcon;
 
         const disableButton = !playlistName;
         button.disabled = Boolean(disableButton);
         if (!playlistName) {
-          button.title = "Enter a playlist name to build it individually.";
+          const disabledTitle = "Enter a playlist name to build it individually.";
+          button.title = disabledTitle;
+          button.setAttribute("aria-label", disabledTitle);
         } else if (status?.running && !isRunningThisPlaylist) {
           const queueHints = [];
           if (otherActiveNames.length === 1) {
@@ -1754,10 +1871,15 @@
           } else if (activePlaylistName) {
             queueHints.push(`Currently building '${activePlaylistName}'`);
           }
-          queueHints.push("Click to queue this playlist.");
-          button.title = queueHints.join(". ");
+          queueHints.unshift(baseTitle);
+          queueHints.push("Click to queue this playlist");
+          const queueTitle = `${queueHints.join(". ")}.`;
+          button.title = queueTitle;
+          button.setAttribute("aria-label", queueTitle);
         } else {
-          button.title = "";
+          const baseTitleText = `${baseTitle}.`;
+          button.title = baseTitleText;
+          button.setAttribute("aria-label", baseTitleText);
         }
 
       }
@@ -2290,10 +2412,17 @@
         }
         buildStatusMeta.textContent = metaParts.join(" • ");
 
-        buildToggleBtn.textContent = isAllRunning ? "⏹ Stop ALL" : "▶ Build ALL";
+        buildToggleBtn.textContent = isAllRunning ? "⏹" : "▶";
         buildToggleBtn.classList.toggle("danger", isAllRunning);
         buildToggleBtn.disabled = Boolean(status.transitioning || (isRunning && !isAllRunning));
-        buildToggleBtn.title = isRunning && !isAllRunning ? "A playlist build is currently running." : "";
+        let toggleTitle = "Build all playlists.";
+        if (isRunning && !isAllRunning) {
+          toggleTitle = "A playlist build is currently running.";
+        } else if (isAllRunning) {
+          toggleTitle = "Stop building all playlists.";
+        }
+        buildToggleBtn.title = toggleTitle;
+        buildToggleBtn.setAttribute("aria-label", toggleTitle);
 
         if (Array.isArray(state.playlists)) {
           state.playlists.forEach((playlist) => updatePlaylistBuildUi(playlist));
@@ -3004,9 +3133,6 @@
           titleWrapper.appendChild(toggleBtn);
           titleWrapper.appendChild(title);
 
-          const headerActions = document.createElement("div");
-          headerActions.className = "playlist-header-actions";
-
           const statusGroup = document.createElement("div");
           statusGroup.className = "playlist-status";
 
@@ -3030,12 +3156,17 @@
 
           const saveBtn = document.createElement("button");
           saveBtn.type = "button";
-          saveBtn.textContent = "💾 Save Playlist";
+          saveBtn.className = "icon-only";
+          saveBtn.textContent = "💾";
+          saveBtn.setAttribute("aria-label", "Save playlist");
+          saveBtn.title = "Save this playlist to playlists.yml";
 
           const buildBtn = document.createElement("button");
           buildBtn.type = "button";
-          buildBtn.className = "playlist-build-btn secondary";
-          buildBtn.textContent = "▶ Build Playlist";
+          buildBtn.className = "playlist-build-btn icon-only";
+          buildBtn.textContent = "▶";
+          buildBtn.setAttribute("aria-label", "Build this playlist");
+          buildBtn.title = "Build this playlist.";
           buildBtn.addEventListener("click", () => togglePlaylistBuild(playlist));
 
           const duplicateBtn = document.createElement("button");
@@ -3072,18 +3203,18 @@
             renderPlaylists();
           });
 
-          const quickActions = document.createElement("div");
-          quickActions.className = "playlist-quick-actions";
-          quickActions.appendChild(duplicateBtn);
-          quickActions.appendChild(removeBtn);
-
-          headerActions.appendChild(statusGroup);
-          headerActions.appendChild(saveBtn);
-          headerActions.appendChild(buildBtn);
-
           header.appendChild(titleWrapper);
-          header.appendChild(headerActions);
-          header.appendChild(quickActions);
+          header.appendChild(statusGroup);
+          const actionButtons = document.createElement("div");
+          actionButtons.className = "playlist-action-buttons";
+          actionButtons.appendChild(saveBtn);
+          actionButtons.appendChild(buildBtn);
+          actionButtons.appendChild(duplicateBtn);
+          actionButtons.appendChild(removeBtn);
+          header.appendChild(actionButtons);
+          const inlineMessage = document.createElement("div");
+          inlineMessage.className = "playlist-inline-message";
+          header.appendChild(inlineMessage);
           card.appendChild(header);
 
           const details = document.createElement("div");
@@ -3114,7 +3245,9 @@
             button: buildBtn,
             headerTitle: title,
             nameInput,
+            inlineMessage,
           };
+          playlist._inlineMessageEl = inlineMessage;
           updatePlaylistBuildUi(playlist);
 
           saveBtn.addEventListener("click", () =>
@@ -3527,6 +3660,10 @@
           triggerButton.disabled = true;
         }
 
+        if (showSuccessMessage) {
+          showPlaylistInlineMessage(playlist, "Saving…", { persist: true });
+        }
+
         try {
           const response = await fetch("/api/playlists/save_single", {
             method: "POST",
@@ -3554,11 +3691,18 @@
           }
 
           if (showSuccessMessage) {
+            showPlaylistInlineMessage(
+              playlist,
+              `Playlist '${savedName}' saved.`,
+              { isError: false }
+            );
             showMessage(`Playlist '${savedName}' saved.`);
           }
         } catch (error) {
           console.error(error);
-          showMessage(error.message, true);
+          const errorMessage = error?.message || "Failed to save playlist.";
+          showPlaylistInlineMessage(playlist, errorMessage, true);
+          showMessage(errorMessage, true);
           if (rethrowOnError && error && typeof error === "object") {
             error._fromSavePlaylist = true;
             throw error;
