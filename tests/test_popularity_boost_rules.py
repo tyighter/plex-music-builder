@@ -128,6 +128,65 @@ def test_multiple_rules_stack_multiplier_and_update_album_cache():
     assert album_popularity_cache["2"] == pytest.approx(30.0)
 
 
+def test_boost_rule_with_multiple_conditions_requires_all_matches():
+    track = DummyTrack(rating_key="7", genre="Rock", artist="Example Artist")
+    dedup_popularity_cache = {"7": 20.0}
+    boosts = [
+        {
+            "conditions": [
+                {"field": "genre", "operator": "equals", "value": "Rock"},
+                {
+                    "field": "grandparentTitle",
+                    "operator": "contains",
+                    "value": "example",
+                },
+            ],
+            "boost": 1.5,
+        }
+    ]
+
+    _apply_configured_popularity_boosts(
+        [track],
+        boosts,
+        dedup_popularity_cache,
+        {},
+        {},
+        playlist_logger=None,
+    )
+
+    assert dedup_popularity_cache["7"] == pytest.approx(30.0)
+
+
+def test_boost_rule_does_not_apply_when_any_condition_fails():
+    track = DummyTrack(rating_key="8", genre="Rock", artist="Example Artist")
+    track.grandparentTitle = "Different Artist"
+    dedup_popularity_cache = {"8": 12.0}
+    boosts = [
+        {
+            "conditions": [
+                {"field": "genre", "operator": "equals", "value": "Rock"},
+                {
+                    "field": "grandparentTitle",
+                    "operator": "contains",
+                    "value": "example",
+                },
+            ],
+            "boost": 2.0,
+        }
+    ]
+
+    _apply_configured_popularity_boosts(
+        [track],
+        boosts,
+        dedup_popularity_cache,
+        {},
+        {},
+        playlist_logger=None,
+    )
+
+    assert dedup_popularity_cache["8"] == pytest.approx(12.0)
+
+
 def test_invalid_multiplier_defaults_to_one():
     track = DummyTrack(rating_key="3")
     dedup_popularity_cache = {"3": 25.0}

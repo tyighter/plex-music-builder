@@ -475,7 +475,12 @@
       }
 
       .boost-row {
-        grid-template-columns: 1.1fr 1fr 1fr auto 0.6fr auto;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 16px;
+        border-radius: 12px;
+        background: rgba(229, 160, 13, 0.08);
       }
 
       .boost-row .boost-input {
@@ -485,7 +490,54 @@
 
       .boost-row .boost-input input {
         width: 100%;
-        min-width: 110px;
+        min-width: 0;
+      }
+
+      .boost-conditions {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .boost-condition {
+        display: grid;
+        grid-template-columns: 1.1fr 1fr minmax(200px, 1fr) auto auto;
+        gap: 12px;
+        align-items: start;
+      }
+
+      .boost-condition .value-input {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+      }
+
+      .boost-condition .value-input input {
+        width: 100%;
+        min-width: 0;
+      }
+
+      .boost-condition .filter-flags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        justify-content: flex-start;
+      }
+
+      .boost-row-footer {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .boost-row-footer .boost-input {
+        flex: 0 0 160px;
+      }
+
+      .boost-row-footer .spacer {
+        flex: 1 1 auto;
       }
 
       .filter-row .value-input {
@@ -1003,11 +1055,28 @@
         }
 
         .boost-row {
+          padding: 14px;
+        }
+
+        .boost-condition {
           grid-template-columns: 1fr;
         }
 
-        .boost-row .boost-input input {
-          min-width: 0;
+        .boost-condition .filter-flags {
+          width: 100%;
+        }
+
+        .boost-row-footer {
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .boost-row-footer .boost-input {
+          flex: 1 1 auto;
+        }
+
+        .boost-row-footer .spacer {
+          display: none;
         }
       }
     </style>
@@ -2621,6 +2690,79 @@
         });
       }
 
+      function createEmptyBoostCondition() {
+        return {
+          field: "",
+          operator: "equals",
+          value: "",
+          match_all: true,
+        };
+      }
+
+      function createEmptyBoostRule() {
+        return {
+          conditions: [createEmptyBoostCondition()],
+          boost: undefined,
+        };
+      }
+
+      function normalizeBoostConditionForClient(condition) {
+        if (!condition || typeof condition !== "object") {
+          return createEmptyBoostCondition();
+        }
+
+        const normalized = createEmptyBoostCondition();
+        if (typeof condition.field === "string") {
+          normalized.field = condition.field;
+        }
+        if (typeof condition.operator === "string" && condition.operator.trim()) {
+          normalized.operator = condition.operator;
+        }
+
+        if (condition.value === null || condition.value === undefined) {
+          normalized.value = "";
+        } else if (Array.isArray(condition.value)) {
+          normalized.value = condition.value.map((item) => String(item)).join(", ");
+        } else {
+          normalized.value = String(condition.value);
+        }
+
+        if (condition.match_all !== undefined) {
+          normalized.match_all = !!condition.match_all;
+        }
+
+        return normalized;
+      }
+
+      function normalizeBoostForClient(boost) {
+        const normalized = {
+          boost: normalizePopularityBoostMultiplier(
+            boost?.boost !== undefined ? boost.boost : 1.0
+          ),
+        };
+
+        const rawConditions = Array.isArray(boost?.conditions)
+          ? boost.conditions
+          : [boost];
+
+        const conditions = rawConditions
+          .map((condition) => normalizeBoostConditionForClient(condition))
+          .filter((condition, index) => {
+            if (index === 0) {
+              return true;
+            }
+            return Boolean(
+              (condition.field && condition.field.trim()) ||
+                (condition.value && String(condition.value).trim())
+            );
+          });
+
+        normalized.conditions =
+          conditions.length > 0 ? conditions : [createEmptyBoostCondition()];
+
+        return normalized;
+      }
+
       function renderPopularityBoosts(containerEl, boosts, onRemove) {
         containerEl.innerHTML = "";
 
@@ -2633,62 +2775,117 @@
         }
 
         boosts.forEach((boost, index) => {
+          if (!Array.isArray(boost.conditions) || boost.conditions.length === 0) {
+            boost.conditions = [createEmptyBoostCondition()];
+          }
+
           const row = document.createElement("div");
-          row.className = "filter-row boost-row";
+          row.className = "boost-row";
 
-          const fieldSelect = document.createElement("select");
-          createOptionElements(fieldSelect, options.fields, boost.field || "");
-          fieldSelect.value = boost.field || "";
-          fieldSelect.addEventListener("change", (event) => {
-            boost.field = event.target.value;
-          });
-          row.appendChild(fieldSelect);
+          const conditionsContainer = document.createElement("div");
+          conditionsContainer.className = "boost-conditions";
 
-          const operatorSelect = document.createElement("select");
-          createOptionElements(
-            operatorSelect,
-            options.operators,
-            boost.operator || "equals"
-          );
-          operatorSelect.value = boost.operator || "equals";
-          operatorSelect.addEventListener("change", (event) => {
-            boost.operator = event.target.value;
-          });
-          row.appendChild(operatorSelect);
+          function renderConditions() {
+            conditionsContainer.innerHTML = "";
 
-          const valueWrapper = document.createElement("div");
-          valueWrapper.className = "value-input";
-          const valueInput = document.createElement("input");
-          valueInput.type = "text";
-          valueInput.placeholder = "Value";
-          valueInput.value = boost.value || "";
-          valueInput.addEventListener("input", (event) => {
-            boost.value = event.target.value;
-          });
-          valueWrapper.appendChild(valueInput);
-          row.appendChild(valueWrapper);
+            boost.conditions.forEach((condition, conditionIndex) => {
+              const current = normalizeBoostConditionForClient(condition);
+              boost.conditions[conditionIndex] = current;
 
-          const flagsWrapper = document.createElement("div");
-          flagsWrapper.className = "filter-flags";
-          const matchAllLabel = document.createElement("label");
-          matchAllLabel.className = "filter-flag";
-          const matchAllInput = document.createElement("input");
-          matchAllInput.type = "checkbox";
-          const normalizedMatchAll =
-            boost.match_all !== undefined ? !!boost.match_all : true;
-          matchAllInput.checked = normalizedMatchAll;
-          matchAllInput.setAttribute(
-            "aria-label",
-            "Require a track to match every listed value"
-          );
-          boost.match_all = normalizedMatchAll;
-          matchAllInput.addEventListener("change", (event) => {
-            boost.match_all = event.target.checked;
+              const conditionRow = document.createElement("div");
+              conditionRow.className = "boost-condition";
+
+              const fieldSelect = document.createElement("select");
+              createOptionElements(fieldSelect, options.fields, current.field || "");
+              fieldSelect.value = current.field || "";
+              fieldSelect.addEventListener("change", (event) => {
+                current.field = event.target.value;
+              });
+              conditionRow.appendChild(fieldSelect);
+
+              const operatorSelect = document.createElement("select");
+              createOptionElements(
+                operatorSelect,
+                options.operators,
+                current.operator || "equals"
+              );
+              operatorSelect.value = current.operator || "equals";
+              operatorSelect.addEventListener("change", (event) => {
+                current.operator = event.target.value;
+              });
+              conditionRow.appendChild(operatorSelect);
+
+              const valueWrapper = document.createElement("div");
+              valueWrapper.className = "value-input";
+              const valueInput = document.createElement("input");
+              valueInput.type = "text";
+              valueInput.placeholder = "Value (comma separated for multiple)";
+              valueInput.value = current.value || "";
+              valueInput.addEventListener("input", (event) => {
+                current.value = event.target.value;
+              });
+              valueWrapper.appendChild(valueInput);
+              conditionRow.appendChild(valueWrapper);
+
+              const flagsWrapper = document.createElement("div");
+              flagsWrapper.className = "filter-flags";
+              const matchAllLabel = document.createElement("label");
+              matchAllLabel.className = "filter-flag";
+              const matchAllInput = document.createElement("input");
+              matchAllInput.type = "checkbox";
+              const normalizedMatchAll =
+                current.match_all !== undefined ? !!current.match_all : true;
+              matchAllInput.checked = normalizedMatchAll;
+              matchAllInput.setAttribute(
+                "aria-label",
+                "Require a track to match every listed value"
+              );
+              current.match_all = normalizedMatchAll;
+              matchAllInput.addEventListener("change", (event) => {
+                current.match_all = event.target.checked;
+              });
+              matchAllLabel.appendChild(matchAllInput);
+              matchAllLabel.appendChild(document.createTextNode("Match All"));
+              flagsWrapper.appendChild(matchAllLabel);
+              conditionRow.appendChild(flagsWrapper);
+
+              const removeConditionBtn = document.createElement("button");
+              removeConditionBtn.type = "button";
+              removeConditionBtn.className = "icon-only danger";
+              removeConditionBtn.textContent = "✕";
+              removeConditionBtn.title = "Remove condition";
+              removeConditionBtn.disabled = boost.conditions.length <= 1;
+              removeConditionBtn.addEventListener("click", () => {
+                if (boost.conditions.length > 1) {
+                  boost.conditions.splice(conditionIndex, 1);
+                } else {
+                  boost.conditions[0] = createEmptyBoostCondition();
+                }
+                renderConditions();
+              });
+              conditionRow.appendChild(removeConditionBtn);
+
+              conditionsContainer.appendChild(conditionRow);
+            });
+          }
+
+          renderConditions();
+
+          row.appendChild(conditionsContainer);
+
+          const addConditionBtn = document.createElement("button");
+          addConditionBtn.type = "button";
+          addConditionBtn.className = "secondary";
+          addConditionBtn.textContent = "Add Condition";
+          addConditionBtn.addEventListener("click", () => {
+            boost.conditions.push(createEmptyBoostCondition());
+            renderConditions();
           });
-          matchAllLabel.appendChild(matchAllInput);
-          matchAllLabel.appendChild(document.createTextNode("Match All"));
-          flagsWrapper.appendChild(matchAllLabel);
-          row.appendChild(flagsWrapper);
+
+          row.appendChild(addConditionBtn);
+
+          const footer = document.createElement("div");
+          footer.className = "boost-row-footer";
 
           const boostWrapper = document.createElement("div");
           boostWrapper.className = "boost-input";
@@ -2734,7 +2931,11 @@
             }
           });
           boostWrapper.appendChild(boostInput);
-          row.appendChild(boostWrapper);
+          footer.appendChild(boostWrapper);
+
+          const footerSpacer = document.createElement("div");
+          footerSpacer.className = "spacer";
+          footer.appendChild(footerSpacer);
 
           const removeBtn = document.createElement("button");
           removeBtn.type = "button";
@@ -2746,7 +2947,9 @@
               onRemove(index);
             }
           });
-          row.appendChild(removeBtn);
+          footer.appendChild(removeBtn);
+
+          row.appendChild(footer);
 
           containerEl.appendChild(row);
         });
@@ -2874,12 +3077,10 @@
               if (Array.isArray(value)) {
                 duplicate.popularity_boosts = value.map((boost) => {
                   const clonedBoost = { ...boost };
-                  if (
-                    boost &&
-                    typeof boost.value === "object" &&
-                    boost.value !== null
-                  ) {
-                    clonedBoost.value = JSON.parse(JSON.stringify(boost.value));
+                  if (Array.isArray(boost?.conditions)) {
+                    clonedBoost.conditions = boost.conditions.map((condition) => ({
+                      ...condition,
+                    }));
                   }
                   return clonedBoost;
                 });
@@ -3274,12 +3475,7 @@
           addBoostBtn.className = "secondary";
           addBoostBtn.textContent = "＋ Add Boost Rule";
           addBoostBtn.addEventListener("click", () => {
-            playlist.popularity_boosts.push({
-              field: "",
-              operator: "equals",
-              value: "",
-              match_all: true,
-            });
+            playlist.popularity_boosts.push(createEmptyBoostRule());
             playlist._boostsOpen = true;
             renderPlaylists();
           });
@@ -3372,16 +3568,7 @@
           state.defaults.extras = data.defaults?.extras || {};
           state.defaults.popularity_boosts = (
             data.defaults?.popularity_boosts || []
-          ).map((boost) => ({
-            field: boost.field || "",
-            operator: boost.operator || "equals",
-            value: boost.value || "",
-            match_all:
-              boost.match_all !== undefined ? !!boost.match_all : true,
-            boost: normalizePopularityBoostMultiplier(
-              boost.boost !== undefined ? boost.boost : 1.0
-            ),
-          }));
+          ).map((boost) => normalizeBoostForClient(boost || {}));
 
           isDefaultBoostsOpen = state.defaults.popularity_boosts.length > 0;
 
@@ -3404,17 +3591,8 @@
                   filter.match_all !== undefined ? filter.match_all : true,
                 wildcard: filter.wildcard !== undefined ? !!filter.wildcard : false,
               })),
-              popularity_boosts: (playlist.popularity_boosts || []).map(
-                (boost) => ({
-                  field: boost.field || "",
-                  operator: boost.operator || "equals",
-                  value: boost.value || "",
-                  match_all:
-                    boost.match_all !== undefined ? !!boost.match_all : true,
-                  boost: normalizePopularityBoostMultiplier(
-                    boost.boost !== undefined ? boost.boost : 1.0
-                  ),
-                })
+              popularity_boosts: (playlist.popularity_boosts || []).map((boost) =>
+                normalizeBoostForClient(boost || {})
               ),
               extras: playlist.extras || {},
             };
@@ -3442,15 +3620,35 @@
       }
 
       function prepareBoostsForSave(boosts) {
-        return (boosts || []).map((boost) => ({
-          field: boost.field || "",
-          operator: boost.operator || "equals",
-          value: boost.value || "",
-          match_all: boost.match_all !== undefined ? !!boost.match_all : true,
-          boost: normalizePopularityBoostMultiplier(
-            boost.boost !== undefined ? boost.boost : 1.0
-          ),
-        }));
+        return (boosts || []).map((boost) => {
+          const rawConditions = Array.isArray(boost?.conditions)
+            ? boost.conditions
+            : [boost];
+
+          const preparedConditions = rawConditions
+            .map((condition) => normalizeBoostConditionForClient(condition))
+            .map((condition) => ({
+              field: condition.field || "",
+              operator: condition.operator || "equals",
+              value: condition.value || "",
+              match_all:
+                condition.match_all !== undefined
+                  ? !!condition.match_all
+                  : true,
+            }));
+
+          const conditionsToSave =
+            preparedConditions.length > 0
+              ? preparedConditions
+              : [createEmptyBoostCondition()];
+
+          return {
+            conditions: conditionsToSave,
+            boost: normalizePopularityBoostMultiplier(
+              boost?.boost !== undefined ? boost.boost : 1.0
+            ),
+          };
+        });
       }
 
       async function saveData(options = {}) {
@@ -3640,12 +3838,7 @@
             state.defaults.popularity_boosts = [];
           }
 
-          state.defaults.popularity_boosts.push({
-            field: "",
-            operator: "equals",
-            value: "",
-            match_all: true,
-          });
+          state.defaults.popularity_boosts.push(createEmptyBoostRule());
           isDefaultBoostsOpen = true;
           renderDefaultFilters();
         });
