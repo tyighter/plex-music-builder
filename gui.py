@@ -200,6 +200,21 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _alphabetize_playlist_configs(
+    playlists: Iterable[Tuple[str, Dict[str, Any]]]
+) -> "OrderedDict[str, Dict[str, Any]]":
+    """Return an ``OrderedDict`` sorted alphabetically by playlist title.
+
+    Sorting is case-insensitive to ensure titles like "a" and "A" are
+    treated equivalently while preserving the original casing in the
+    output.
+    """
+
+    return OrderedDict(
+        sorted(playlists, key=lambda item: (item[0].casefold(), item[0]))
+    )
+
+
 def _format_timestamp(value: Optional[datetime]) -> Optional[str]:
     if value is None:
         return None
@@ -2046,7 +2061,9 @@ def save_playlists(payload: Dict[str, Any]) -> None:
 
     yaml_structure: Dict[str, Any] = {}
     yaml_structure["defaults"] = defaults_config
-    yaml_structure["playlists"] = playlists_dict
+    yaml_structure["playlists"] = _alphabetize_playlist_configs(
+        playlists_dict.items()
+    )
 
     with PLAYLISTS_PATH.open("w", encoding="utf-8") as playlist_file:
         yaml.safe_dump(yaml_structure, playlist_file, sort_keys=False, allow_unicode=True)
@@ -2134,7 +2151,7 @@ def save_single_playlist(
 
     yaml_structure: Dict[str, Any] = {
         "defaults": defaults_config,
-        "playlists": updated_playlists,
+        "playlists": _alphabetize_playlist_configs(updated_playlists.items()),
     }
 
     with PLAYLISTS_PATH.open("w", encoding="utf-8") as playlist_file:
