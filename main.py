@@ -536,6 +536,7 @@ def _merge_playlist_defaults(raw_payload):
 
     default_cfg = copy.deepcopy(defaults) if isinstance(defaults, dict) else {}
     default_filters = default_cfg.pop("plex_filter", []) or []
+    default_boosts = default_cfg.pop("popularity_boosts", []) or []
 
     merged_playlists = {}
     for playlist_name, playlist_cfg in playlists.items():
@@ -545,6 +546,7 @@ def _merge_playlist_defaults(raw_payload):
         combined.update(cfg)
 
         playlist_filters = cfg.get("plex_filter", []) or []
+        playlist_boosts = cfg.get("popularity_boosts", []) or []
         combined_filters = []
         if default_filters:
             combined_filters.extend(copy.deepcopy(default_filters))
@@ -553,6 +555,15 @@ def _merge_playlist_defaults(raw_payload):
 
         if default_filters or playlist_filters or "plex_filter" in combined:
             combined["plex_filter"] = combined_filters
+
+        combined_boosts = []
+        if default_boosts:
+            combined_boosts.extend(copy.deepcopy(default_boosts))
+        if playlist_boosts:
+            combined_boosts.extend(copy.deepcopy(playlist_boosts))
+
+        if default_boosts or playlist_boosts or "popularity_boosts" in combined:
+            combined["popularity_boosts"] = combined_boosts
 
         merged_playlists[playlist_name] = combined
 

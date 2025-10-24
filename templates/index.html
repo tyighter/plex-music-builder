@@ -1103,6 +1103,24 @@
         >
           <div id="defaultFilters" class="filters-container"></div>
           <button id="addDefaultFilter" class="secondary" type="button">＋ Add Default Filter</button>
+          <details id="defaultBoostsPopout" class="boosts-popout">
+            <summary aria-label="Toggle default popularity boost rules">
+              ⚡ Popularity Boosts
+            </summary>
+            <div class="boosts-panel">
+              <p>
+                Boost multipliers adjust the popularity score of matching tracks. Uncheck
+                Match All to treat comma-separated values as match-any.
+              </p>
+              <div
+                id="defaultPopularityBoosts"
+                class="boosts-container"
+              ></div>
+              <button id="addDefaultBoost" class="secondary" type="button">
+                ＋ Add Boost Rule
+              </button>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -1125,7 +1143,7 @@
 
     <script>
       const state = {
-        defaults: { plex_filter: [], extras: {} },
+        defaults: { plex_filter: [], popularity_boosts: [], extras: {} },
         playlists: [],
       };
 
@@ -1142,6 +1160,10 @@
         "collapseAllPlaylists"
       );
       const defaultFiltersContainer = document.getElementById("defaultFilters");
+      const defaultBoostsPopout = document.getElementById("defaultBoostsPopout");
+      const defaultBoostsContainer = document.getElementById(
+        "defaultPopularityBoosts"
+      );
       const defaultFiltersCard = document.getElementById("defaultFiltersCard");
       const toggleDefaultFiltersBtn = document.getElementById("toggleDefaultFilters");
       const buildStatusIndicator = document.getElementById("buildStatusIndicator");
@@ -1164,6 +1186,7 @@
       let popularityStatusTimer = null;
       let isActivityCollapsed = false;
       let isDefaultFiltersCollapsed = true;
+      let isDefaultBoostsOpen = false;
       const rateLimitCountdownEntries = new Set();
       const dismissedActivityKeys = new Set();
       let pendingActivityStopRequest = null;
@@ -3828,10 +3851,42 @@
       }
 
       function renderDefaultFilters() {
-        renderFilters(defaultFiltersContainer, state.defaults.plex_filter, (index) => {
-          state.defaults.plex_filter.splice(index, 1);
-          renderDefaultFilters();
-        });
+        if (!Array.isArray(state.defaults.plex_filter)) {
+          state.defaults.plex_filter = [];
+        }
+
+        if (defaultFiltersContainer) {
+          renderFilters(
+            defaultFiltersContainer,
+            state.defaults.plex_filter,
+            (index) => {
+              state.defaults.plex_filter.splice(index, 1);
+              renderDefaultFilters();
+            }
+          );
+        }
+
+        if (!Array.isArray(state.defaults.popularity_boosts)) {
+          state.defaults.popularity_boosts = [];
+        }
+
+        if (defaultBoostsContainer) {
+          renderPopularityBoosts(
+            defaultBoostsContainer,
+            state.defaults.popularity_boosts,
+            (index) => {
+              isDefaultBoostsOpen = true;
+              state.defaults.popularity_boosts.splice(index, 1);
+              renderDefaultFilters();
+            }
+          );
+        }
+
+        if (defaultBoostsPopout) {
+          if (defaultBoostsPopout.open !== isDefaultBoostsOpen) {
+            defaultBoostsPopout.open = isDefaultBoostsOpen;
+          }
+        }
       }
 
       function renderAll() {
@@ -3856,6 +3911,20 @@
             wildcard: filter.wildcard !== undefined ? !!filter.wildcard : false,
           }));
           state.defaults.extras = data.defaults?.extras || {};
+          state.defaults.popularity_boosts = (
+            data.defaults?.popularity_boosts || []
+          ).map((boost) => ({
+            field: boost.field || "",
+            operator: boost.operator || "equals",
+            value: boost.value || "",
+            match_all:
+              boost.match_all !== undefined ? !!boost.match_all : true,
+            boost: normalizePopularityBoostMultiplier(
+              boost.boost !== undefined ? boost.boost : 1.0
+            ),
+          }));
+
+          isDefaultBoostsOpen = state.defaults.popularity_boosts.length > 0;
 
           state.playlists = (data.playlists || []).map((playlist) => {
             const playlistName = playlist.name || "";
@@ -3940,6 +4009,9 @@
         const payload = {
           defaults: {
             plex_filter: prepareFiltersForSave(state.defaults.plex_filter),
+            popularity_boosts: prepareBoostsForSave(
+              state.defaults.popularity_boosts
+            ),
             extras: sanitizeExtras(state.defaults.extras || {}),
           },
           playlists: state.playlists.map((playlist) => ({
@@ -4101,6 +4173,30 @@
         });
         renderDefaultFilters();
       });
+
+      const addDefaultBoostBtn = document.getElementById("addDefaultBoost");
+      if (addDefaultBoostBtn) {
+        addDefaultBoostBtn.addEventListener("click", () => {
+          if (!Array.isArray(state.defaults.popularity_boosts)) {
+            state.defaults.popularity_boosts = [];
+          }
+
+          state.defaults.popularity_boosts.push({
+            field: "",
+            operator: "equals",
+            value: "",
+            match_all: true,
+          });
+          isDefaultBoostsOpen = true;
+          renderDefaultFilters();
+        });
+      }
+
+      if (defaultBoostsPopout) {
+        defaultBoostsPopout.addEventListener("toggle", () => {
+          isDefaultBoostsOpen = defaultBoostsPopout.open;
+        });
+      }
 
       if (expandAllPlaylistsBtn) {
         expandAllPlaylistsBtn.addEventListener("click", () => {
