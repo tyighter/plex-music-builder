@@ -22,9 +22,6 @@ import unicodedata
 from urllib.parse import unquote, quote
 
 from plexapi.server import PlexServer
-from spotipy import Spotify
-from spotipy.exceptions import SpotifyException
-from spotipy.oauth2 import SpotifyClientCredentials
 from tqdm import tqdm
 
 # ----------------------------
@@ -144,78 +141,6 @@ def _coerce_positive_int(value):
     return numeric
 
 
-spotify_cfg = cfg.get("spotify", {}) or {}
-SPOTIFY_CLIENT_ID = spotify_cfg.get("client_id")
-SPOTIFY_CLIENT_SECRET = spotify_cfg.get("client_secret")
-SPOTIFY_MARKET = spotify_cfg.get("market")
-SPOTIFY_SEARCH_LIMIT = spotify_cfg.get("search_limit", 10)
-
-_spotify_min_interval = _coerce_positive_float(
-    spotify_cfg.get("request_min_interval_seconds")
-)
-if _spotify_min_interval is None:
-    SPOTIFY_REQUEST_MIN_INTERVAL = 0.25
-else:
-    SPOTIFY_REQUEST_MIN_INTERVAL = _spotify_min_interval
-
-_spotify_retry_backoff = _coerce_positive_float(
-    spotify_cfg.get("request_retry_backoff_seconds")
-)
-if _spotify_retry_backoff is None:
-    SPOTIFY_REQUEST_RETRY_BACKOFF = 5.0
-else:
-    SPOTIFY_REQUEST_RETRY_BACKOFF = _spotify_retry_backoff
-
-
-_spotify_chunk_setting = spotify_cfg.get("population_chunk_size")
-if isinstance(_spotify_chunk_setting, bool) and not _spotify_chunk_setting:
-    SPOTIFY_POPULATION_CHUNK_SIZE = None
-else:
-    _spotify_chunk_size = _coerce_positive_int(_spotify_chunk_setting)
-    if _spotify_chunk_size is None:
-        SPOTIFY_POPULATION_CHUNK_SIZE = 10
-    else:
-        SPOTIFY_POPULATION_CHUNK_SIZE = _spotify_chunk_size
-
-_spotify_chunk_delay_setting = spotify_cfg.get("population_chunk_delay_seconds")
-if isinstance(_spotify_chunk_delay_setting, bool) and not _spotify_chunk_delay_setting:
-    SPOTIFY_POPULATION_CHUNK_DELAY = 0.0
-else:
-    _spotify_chunk_delay = _coerce_positive_float(_spotify_chunk_delay_setting)
-    if _spotify_chunk_delay is None:
-        SPOTIFY_POPULATION_CHUNK_DELAY = SPOTIFY_REQUEST_RETRY_BACKOFF
-    else:
-        SPOTIFY_POPULATION_CHUNK_DELAY = _spotify_chunk_delay
-
-
-_spotify_cache_file_setting = spotify_cfg.get("cache_file")
-if isinstance(_spotify_cache_file_setting, bool) and not _spotify_cache_file_setting:
-    SPOTIFY_CACHE_FILE = None
-else:
-    SPOTIFY_CACHE_FILE = _resolve_path_setting(
-        _spotify_cache_file_setting,
-        RUNTIME_DIR / "spotify_popularity.json",
-        CONFIG_DIR,
-    )
-
-_spotify_state_file_setting = spotify_cfg.get("popularity_state_file")
-if isinstance(_spotify_state_file_setting, bool) and not _spotify_state_file_setting:
-    SPOTIFY_POPULARITY_STATE_FILE = None
-else:
-    SPOTIFY_POPULARITY_STATE_FILE = _resolve_path_setting(
-        _spotify_state_file_setting,
-        RUNTIME_DIR / "spotify_popularity_state.json",
-        CONFIG_DIR,
-    )
-
-_spotify_cache_max_age_days = _coerce_positive_float(spotify_cfg.get("cache_max_age_days"))
-if _spotify_cache_max_age_days is not None:
-    SPOTIFY_CACHE_MAX_AGE_SECONDS = _spotify_cache_max_age_days * 86400.0
-else:
-    SPOTIFY_CACHE_MAX_AGE_SECONDS = None
-
-SPOTIFY_CACHE_VERSION = 1
-
 allmusic_cfg = cfg.get("allmusic", {}) or {}
 ALLMUSIC_ENABLED = allmusic_cfg.get("enabled", True)
 ALLMUSIC_CACHE_FILE = _resolve_path_setting(
@@ -240,22 +165,10 @@ LOG_FILE = _resolve_path_setting(
     CONFIG_DIR,
 )
 ACTIVE_LOG_FILE = None
-ACTIVE_SPOTIFY_LOG_FILE = None
 
 _default_log_dir = os.path.dirname(LOG_FILE) if LOG_FILE else ""
 if not _default_log_dir:
     _default_log_dir = str((RUNTIME_DIR / "logs").resolve())
-
-_spotify_activity_setting = logging_cfg.get("spotify_activity_file")
-if isinstance(_spotify_activity_setting, bool) and not _spotify_activity_setting:
-    SPOTIFY_ACTIVITY_LOG_FILE = None
-else:
-    default_spotify_log_path = (Path(_default_log_dir) / "spotify_activity.log").resolve()
-    SPOTIFY_ACTIVITY_LOG_FILE = _resolve_path_setting(
-        _spotify_activity_setting,
-        default_spotify_log_path,
-        CONFIG_DIR,
-    )
 
 PLAYLIST_LOG_DIR = logging_cfg.get("playlist_debug_dir")
 if isinstance(PLAYLIST_LOG_DIR, str) and not PLAYLIST_LOG_DIR.strip():
@@ -267,13 +180,6 @@ if not PLEX_URL or not PLEX_TOKEN:
     raise EnvironmentError("PLEX_URL and PLEX_TOKEN must be set in config.yml")
 
 
-class SpotifyActivityFilter(logging.Filter):
-    """Filter log records so only Spotify-tagged entries are captured."""
-
-    def filter(self, record):
-        return bool(getattr(record, "spotify_activity", False))
-
-
 def setup_logging():
     """Configure logging to stream to stdout and a persistent log file."""
     logger_name = "plex_music_builder"
@@ -283,7 +189,7 @@ def setup_logging():
     if logger_obj.handlers:
         return logger_obj
 
-    global ACTIVE_LOG_FILE, ACTIVE_SPOTIFY_LOG_FILE
+    global ACTIVE_LOG_FILE
 
     log_level = getattr(logging, LOG_LEVEL, logging.INFO)
     logger_obj.setLevel(log_level)
@@ -330,60 +236,12 @@ def setup_logging():
                 logger_obj.addHandler(file_handler)
                 ACTIVE_LOG_FILE = LOG_FILE
 
-    spotify_logger_obj = logging.getLogger(f"{logger_name}.spotify")
-    spotify_logger_obj.setLevel(logging.DEBUG)
-    spotify_logger_obj.propagate = True
-
-    if SPOTIFY_ACTIVITY_LOG_FILE:
-        spotify_log_dir = os.path.dirname(SPOTIFY_ACTIVITY_LOG_FILE)
-        if spotify_log_dir and not os.path.exists(spotify_log_dir):
-            os.makedirs(spotify_log_dir, exist_ok=True)
-
-        truncate_error = False
-        try:
-            with open(SPOTIFY_ACTIVITY_LOG_FILE, "w", encoding="utf-8"):
-                pass
-        except OSError as exc:
-            truncate_error = True
-            logger_obj.error(
-                f"Unable to initialise Spotify log file '{SPOTIFY_ACTIVITY_LOG_FILE}' for writing: {exc}"
-            )
-
-        if not truncate_error:
-            try:
-                spotify_handler = TimedRotatingFileHandler(
-                    SPOTIFY_ACTIVITY_LOG_FILE,
-                    when="midnight",
-                    backupCount=7,
-                    encoding="utf-8",
-                    utc=False,
-                    delay=False,
-                    interval=1,
-                )
-            except OSError as exc:
-                logger_obj.error(
-                    f"Unable to open Spotify log file '{SPOTIFY_ACTIVITY_LOG_FILE}': {exc}"
-                )
-            else:
-                spotify_handler.setFormatter(formatter)
-                spotify_handler.setLevel(logging.DEBUG)
-                spotify_handler.addFilter(SpotifyActivityFilter())
-                spotify_logger_obj.addHandler(spotify_handler)
-                ACTIVE_SPOTIFY_LOG_FILE = SPOTIFY_ACTIVITY_LOG_FILE
-
     return logger_obj
 
 
 logger = setup_logging()
-spotify_logger = logging.LoggerAdapter(
-    logging.getLogger(f"{logger.name}.spotify"), {"spotify_activity": True}
-)
 if ACTIVE_LOG_FILE:
     logger.info(f"Detailed logs will be written to: {ACTIVE_LOG_FILE}")
-if ACTIVE_SPOTIFY_LOG_FILE:
-    spotify_logger.info(
-        f"Spotify activity logs will be written to: {ACTIVE_SPOTIFY_LOG_FILE}"
-    )
 
 
 _thread_local_logger = threading.local()
@@ -757,96 +615,8 @@ def _build_album_identity_key(track):
     )
 
 
-def _compute_spotify_popularity_score(track, spotify_provider=None, playlist_logger=None):
-    if not (spotify_provider and getattr(spotify_provider, "is_enabled", False)):
-        return None
-
-    profile = spotify_provider.get_track_profile(track)
-    if profile is None:
-        return None
-
-    if isinstance(profile, dict):
-        popularity = _coerce_non_negative_float(profile.get("popularity"))
-    else:
-        popularity = _coerce_non_negative_float(profile)
-
-    if popularity is None:
-        return None
-
-    score = popularity
-
-    metrics_container = profile if isinstance(profile, dict) else {}
-
-    play_count = None
-    like_count = None
-
-    candidates = []
-    if isinstance(metrics_container, dict):
-        candidates.append(metrics_container)
-        for nested_key in ("metrics", "statistics", "insights"):
-            nested = metrics_container.get(nested_key)
-            if isinstance(nested, dict):
-                candidates.append(nested)
-        album_metrics = metrics_container.get("album") if isinstance(metrics_container.get("album"), dict) else None
-        if isinstance(album_metrics, dict):
-            candidates.append(album_metrics)
-
-    for container in candidates:
-        if play_count is None:
-            play_count = _extract_numeric_from_candidates(
-                container,
-                ("play_count", "plays", "playcount", "streams"),
-            )
-        if like_count is None:
-            like_count = _extract_numeric_from_candidates(
-                container,
-                ("like_count", "likes", "favourites", "favorites", "hearts"),
-            )
-
-    if play_count is not None:
-        play_bonus = min(10.0, math.log1p(play_count))
-        score += play_bonus
-
-    if like_count is not None:
-        like_bonus = min(10.0, math.log1p(like_count))
-        score += like_bonus
-
-    return round(score, 3)
-
-
-def _resolve_track_popularity_value(track, spotify_provider=None, playlist_logger=None):
-    should_query_spotify = True
-
-    if spotify_provider and hasattr(spotify_provider, "inspect_track_cache"):
-        try:
-            _, cache_found, _ = spotify_provider.inspect_track_cache(track)
-        except Exception:  # pragma: no cover - defensive guard
-            cache_found = True
-        else:
-            if not cache_found:
-                should_query_spotify = False
-                if playlist_logger and hasattr(playlist_logger, "debug"):
-                    try:
-                        track_title = getattr(track, "title", "<unknown>")
-                        album_title = getattr(track, "parentTitle", "<unknown>")
-                        playlist_logger.debug(
-                            "Spotify popularity cache miss for track '%s' (album='%s'); using Plex ratingCount fallback",
-                            track_title,
-                            album_title,
-                        )
-                    except Exception:  # pragma: no cover - defensive logging guard
-                        pass
-
-    popularity = None
-    if should_query_spotify:
-        popularity = _compute_spotify_popularity_score(
-            track,
-            spotify_provider=spotify_provider,
-            playlist_logger=playlist_logger,
-        )
-
-    if popularity is not None:
-        return popularity
+def _resolve_track_popularity_value(track, playlist_logger=None):
+    """Return the Plex rating count for a track, if available."""
 
     fallback = None
     for attr_name in ("ratingCount", "parentRatingCount"):
@@ -860,7 +630,7 @@ def _resolve_track_popularity_value(track, spotify_provider=None, playlist_logge
             track_title = getattr(track, "title", "<unknown>")
             album_title = getattr(track, "parentTitle", "<unknown>")
             playlist_logger.debug(
-                "Falling back to Plex ratingCount (%s) for track '%s' (album='%s')",
+                "Using Plex ratingCount (%s) for track '%s' (album='%s')",
                 fallback,
                 track_title,
                 album_title,
@@ -871,7 +641,7 @@ def _resolve_track_popularity_value(track, spotify_provider=None, playlist_logge
     return fallback
 
 
-def _deduplicate_tracks(tracks, log, spotify_provider=None):
+def _deduplicate_tracks(tracks, log):
     if not tracks:
         return tracks, {}, 0
 
@@ -887,7 +657,6 @@ def _deduplicate_tracks(tracks, log, spotify_provider=None):
 
         popularity = _resolve_track_popularity_value(
             track,
-            spotify_provider=spotify_provider,
             playlist_logger=log,
         )
 
@@ -948,7 +717,6 @@ def _deduplicate_tracks(tracks, log, spotify_provider=None):
 def _compute_album_popularity_boosts(
     tracks,
     popularity_cache,
-    spotify_provider=None,
     playlist_logger=None,
     top_5_boost=1.0,
 ):
@@ -977,7 +745,6 @@ def _compute_album_popularity_boosts(
         else:
             popularity = _resolve_track_popularity_value(
                 track,
-                spotify_provider=spotify_provider,
                 playlist_logger=playlist_logger,
             )
             if cache_key_str:
@@ -1007,7 +774,6 @@ def _apply_configured_popularity_boosts(
     dedup_popularity_cache,
     album_popularity_cache,
     album_popularity_cache_by_object,
-    spotify_provider=None,
     playlist_logger=None,
 ):
     if not tracks or not boost_rules:
@@ -1074,7 +840,6 @@ def _apply_configured_popularity_boosts(
         else:
             base_score = _resolve_track_popularity_value(
                 track,
-                spotify_provider=spotify_provider,
                 playlist_logger=playlist_logger,
             )
             if cache_key_str is not None and base_score is not None:
@@ -1126,7 +891,6 @@ def _resolve_popularity_for_sort(
     dedup_popularity_cache,
     album_popularity_cache,
     album_popularity_cache_by_object,
-    spotify_provider=None,
     playlist_logger=None,
     sort_desc=True,
 ):
@@ -1143,7 +907,6 @@ def _resolve_popularity_for_sort(
     else:
         popularity_value = _resolve_track_popularity_value(
             track,
-            spotify_provider=spotify_provider,
             playlist_logger=playlist_logger,
         )
 
@@ -1408,1080 +1171,6 @@ def _extract_guid_from_search_results(xml_text, album_norms, artist_norms, targe
     return None
 
 
-class SpotifyPopularityProvider:
-    """Shared Spotify client that resolves track popularity for sorting."""
-
-    _instance = None
-    _instance_lock = threading.Lock()
-
-    def __init__(self):
-        self._log = spotify_logger
-        self._client = None
-        self._client_lock = threading.Lock()
-        self._track_cache = {}
-        self._id_cache = {}
-        self._query_cache = {}
-        self._enabled = False
-        self._error = None
-        self._cache_file = SPOTIFY_CACHE_FILE
-        self._cache_ttl = SPOTIFY_CACHE_MAX_AGE_SECONDS
-        self._persistent_cache = {}
-        self._cache_lock = threading.Lock()
-        self._cache_dirty = False
-        self._save_counter = 0
-        self._state_file = SPOTIFY_POPULARITY_STATE_FILE
-        self._last_populated_at = None
-        self._last_populated_summary = None
-        self.market = self._normalize_market(SPOTIFY_MARKET)
-        self.search_limit = self._coerce_search_limit(SPOTIFY_SEARCH_LIMIT)
-        self._rate_lock = threading.Lock()
-        self._next_allowed_request = 0.0
-        self._backoff_until = 0.0
-        self._rate_limit_resume_wall = 0.0
-        self._min_request_interval = max(0.0, SPOTIFY_REQUEST_MIN_INTERVAL or 0.0)
-        self._retry_backoff_seconds = max(0.0, SPOTIFY_REQUEST_RETRY_BACKOFF or 0.0)
-        self._population_state_lock = threading.Lock()
-        self._population_state = None
-
-        self._load_cache()
-        self._load_state()
-
-        if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET):
-            self._error = "Missing Spotify client credentials."
-            return
-
-        try:
-            auth_manager = SpotifyClientCredentials(
-                client_id=SPOTIFY_CLIENT_ID,
-                client_secret=SPOTIFY_CLIENT_SECRET,
-            )
-            self._client = Spotify(
-                auth_manager=auth_manager,
-                requests_timeout=10,
-                retries=3,
-            )
-            self._enabled = True
-        except Exception as exc:
-            self._log.warning("Failed to initialize Spotify client: %s", exc)
-            self._error = str(exc)
-            self._client = None
-
-    @staticmethod
-    def _normalize_market(market):
-        if not market:
-            return None
-        normalized = str(market).strip().upper()
-        return normalized or None
-
-    @staticmethod
-    def _coerce_search_limit(value):
-        try:
-            numeric = int(value)
-        except (TypeError, ValueError):
-            numeric = 10
-        return max(1, numeric)
-
-    def _throttle_spotify_request(self):
-        min_interval = self._min_request_interval
-
-        if min_interval <= 0 and self._backoff_until <= 0:
-            return
-
-        should_persist = False
-        acquired = False
-        while True:
-            with self._rate_lock:
-                now = time.monotonic()
-                wait_until = max(self._next_allowed_request, self._backoff_until)
-                if now >= wait_until:
-                    if self._backoff_until > 0 and now >= self._backoff_until:
-                        self._backoff_until = 0.0
-                        if self._rate_limit_resume_wall > 0:
-                            self._rate_limit_resume_wall = 0.0
-                            should_persist = True
-                    next_time = now + min_interval if min_interval > 0 else now
-                    self._next_allowed_request = next_time
-                    acquired = True
-                    break
-
-                sleep_for = wait_until - now
-
-            if sleep_for <= 0:
-                break
-
-            time.sleep(min(sleep_for, 5.0))
-
-        if acquired and should_persist:
-            self._write_state_file()
-        return
-
-    def _register_rate_limit_backoff(self, retry_after=None, minimum=None):
-        delay = 0.0
-
-        for candidate in (retry_after, minimum, self._retry_backoff_seconds):
-            if candidate is None:
-                continue
-            try:
-                delay = max(delay, float(candidate))
-            except (TypeError, ValueError):
-                continue
-
-        if delay <= 0:
-            return
-
-        monotonic_now = time.monotonic()
-        wall_now = time.time()
-        resume_at = monotonic_now + delay
-        resume_wall = wall_now + delay
-
-        should_persist = False
-        with self._rate_lock:
-            if resume_at > self._backoff_until:
-                self._backoff_until = resume_at
-                should_persist = True
-            if resume_wall > self._rate_limit_resume_wall:
-                self._rate_limit_resume_wall = resume_wall
-                should_persist = True
-
-            resume_for_next = resume_at
-            if self._min_request_interval > 0:
-                resume_for_next += self._min_request_interval
-            if resume_for_next > self._next_allowed_request:
-                self._next_allowed_request = resume_for_next
-
-        if should_persist:
-            self._write_state_file()
-
-    @staticmethod
-    def _extract_retry_after(exc):
-        if exc is None:
-            return None
-
-        def _normalize_retry_value(value, allow_milliseconds=False):
-            try:
-                numeric = float(value)
-            except (TypeError, ValueError):
-                return None
-
-            # Some Spotify error responses report retry windows in milliseconds.
-            # Treat very large values as milliseconds and convert to seconds.
-            if allow_milliseconds and numeric > 1000:
-                numeric /= 1000.0
-
-            return numeric if numeric > 0 else None
-
-        header_value = None
-
-        for attr_name in ("headers", "http_headers"):
-            header_dict = getattr(exc, attr_name, None)
-            if isinstance(header_dict, dict):
-                header_value = header_dict.get("Retry-After") or header_dict.get("retry-after")
-                if header_value is not None:
-                    break
-
-        if header_value is None:
-            header_value = getattr(exc, "retry_after", None)
-
-        message = str(exc) if exc is not None else ""
-        message_retry = None
-        if message:
-            match = re.search(r"Retry will occur after:\s*(?P<value>[0-9]+(?:\.[0-9]+)?)", message)
-            if match:
-                message_retry = _normalize_retry_value(
-                    match.group("value"), allow_milliseconds=True
-                )
-
-        retry_after = _normalize_retry_value(header_value, allow_milliseconds=False)
-        if retry_after is None:
-            return message_retry
-
-        if message_retry is not None and retry_after > message_retry * 10:
-            return message_retry
-
-        return retry_after
-
-    def get_population_resume_state(self):
-        with self._population_state_lock:
-            if not self._population_state:
-                return None
-            return copy.deepcopy(self._population_state)
-
-    def begin_population_run(self, pending_keys, total_tracks, cached_profiles=0):
-        if not isinstance(pending_keys, (list, tuple, set)):
-            pending_iterable = list(pending_keys or [])
-        else:
-            pending_iterable = list(pending_keys)
-
-        normalized_keys = [
-            str(key)
-            for key in pending_iterable
-            if key not in (None, "")
-        ]
-
-        try:
-            total_tracks_value = int(total_tracks) if total_tracks is not None else None
-        except (TypeError, ValueError):
-            total_tracks_value = None
-
-        try:
-            cached_profiles_value = int(cached_profiles)
-        except (TypeError, ValueError):
-            cached_profiles_value = 0
-
-        state = {
-            "pending_keys": normalized_keys,
-            "total_tracks": total_tracks_value,
-            "processed": 0,
-            "new_profiles": 0,
-            "refreshed_profiles": 0,
-            "cached_profiles": cached_profiles_value,
-            "missing_profiles": 0,
-            "errors": 0,
-            "started_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-        with self._population_state_lock:
-            self._population_state = state
-
-        self._write_state_file()
-        return copy.deepcopy(state)
-
-    def update_population_resume(self, rating_key, outcome=None):
-        rating_key_str = None if rating_key in (None, "") else str(rating_key)
-
-        with self._population_state_lock:
-            if not self._population_state:
-                return
-
-            state = self._population_state
-            pending = state.get("pending_keys", [])
-
-            if rating_key_str is not None and isinstance(pending, list):
-                if pending and pending[0] == rating_key_str:
-                    pending.pop(0)
-                else:
-                    try:
-                        pending.remove(rating_key_str)
-                    except ValueError:
-                        pass
-
-            state["processed"] = state.get("processed", 0) + 1
-
-            if outcome == "new":
-                state["new_profiles"] = state.get("new_profiles", 0) + 1
-            elif outcome == "refreshed":
-                state["refreshed_profiles"] = state.get("refreshed_profiles", 0) + 1
-            elif outcome == "cached":
-                state["cached_profiles"] = state.get("cached_profiles", 0) + 1
-            elif outcome == "missing":
-                state["missing_profiles"] = state.get("missing_profiles", 0) + 1
-            elif outcome == "error":
-                state["errors"] = state.get("errors", 0) + 1
-
-        self._write_state_file()
-
-    def clear_population_resume(self):
-        with self._population_state_lock:
-            self._population_state = None
-
-        self._write_state_file()
-
-    def _load_cache(self):
-        if not self._cache_file:
-            return
-        if not os.path.exists(self._cache_file):
-            return
-
-        try:
-            with open(self._cache_file, "r", encoding="utf-8") as fh:
-                payload = json.load(fh)
-        except Exception as exc:
-            self._log.warning(
-                "Unable to load Spotify cache from '%s': %s",
-                self._cache_file,
-                exc,
-            )
-            return
-
-        if not isinstance(payload, dict):
-            return
-
-        if payload.get("version") != SPOTIFY_CACHE_VERSION:
-            self._log.debug(
-                "Ignoring Spotify cache with mismatched version (%s)",
-                payload.get("version"),
-            )
-            return
-
-        tracks = payload.get("tracks", {})
-        if not isinstance(tracks, dict):
-            return
-
-        for spotify_id, entry in tracks.items():
-            if not spotify_id:
-                continue
-            if isinstance(entry, dict):
-                profile = entry.get("profile")
-                fetched_at = entry.get("fetched_at")
-            else:
-                profile = entry
-                fetched_at = None
-
-            self._persistent_cache[str(spotify_id)] = {
-                "profile": profile,
-                "fetched_at": fetched_at,
-            }
-
-        last_populated = payload.get("last_populated_at")
-        if last_populated:
-            self._last_populated_at = last_populated
-
-        summary = payload.get("last_populated_summary")
-        if isinstance(summary, dict):
-            self._last_populated_summary = summary
-
-    def _load_state(self):
-        if not self._state_file:
-            return
-        if not os.path.exists(self._state_file):
-            return
-
-        try:
-            with open(self._state_file, "r", encoding="utf-8") as fh:
-                payload = json.load(fh)
-        except Exception as exc:
-            self._log.debug(
-                "Unable to load Spotify popularity state file '%s': %s",
-                self._state_file,
-                exc,
-            )
-            return
-
-        if not isinstance(payload, dict):
-            return
-
-        last_populated = payload.get("last_populated_at")
-        summary = payload.get("summary")
-        resume = payload.get("in_progress")
-        rate_limit_payload = payload.get("rate_limit")
-
-        if last_populated:
-            self._last_populated_at = last_populated
-        if isinstance(summary, dict):
-            self._last_populated_summary = summary
-
-        if isinstance(resume, dict):
-            pending = resume.get("pending_keys")
-            if isinstance(pending, list):
-                normalized_pending = [
-                    str(key)
-                    for key in pending
-                    if key not in (None, "")
-                ]
-            else:
-                normalized_pending = []
-
-            def _coerce_int(value, default=0):
-                try:
-                    return int(value)
-                except (TypeError, ValueError):
-                    return default
-
-            total_tracks = resume.get("total_tracks")
-            try:
-                total_tracks = int(total_tracks) if total_tracks is not None else None
-            except (TypeError, ValueError):
-                total_tracks = None
-
-            normalized_state = {
-                "pending_keys": normalized_pending,
-                "total_tracks": total_tracks,
-                "processed": _coerce_int(resume.get("processed"), 0),
-                "new_profiles": _coerce_int(resume.get("new_profiles"), 0),
-                "refreshed_profiles": _coerce_int(resume.get("refreshed_profiles"), 0),
-                "cached_profiles": _coerce_int(resume.get("cached_profiles"), 0),
-                "missing_profiles": _coerce_int(resume.get("missing_profiles"), 0),
-                "errors": _coerce_int(resume.get("errors"), 0),
-                "started_at": resume.get("started_at"),
-            }
-
-            with self._population_state_lock:
-                self._population_state = normalized_state
-
-        resume_epoch = None
-        if isinstance(rate_limit_payload, dict):
-            resume_epoch = rate_limit_payload.get("resume_epoch")
-            if resume_epoch is None:
-                resume_epoch = rate_limit_payload.get("resume_at")
-        elif rate_limit_payload is not None:
-            resume_epoch = rate_limit_payload
-
-        try:
-            resume_epoch = float(resume_epoch) if resume_epoch is not None else None
-        except (TypeError, ValueError):
-            resume_epoch = None
-
-        if resume_epoch:
-            wall_now = time.time()
-            remaining = resume_epoch - wall_now
-            if remaining > 0:
-                resume_at = time.monotonic() + remaining
-                with self._rate_lock:
-                    if resume_at > self._backoff_until:
-                        self._backoff_until = resume_at
-                    if resume_epoch > self._rate_limit_resume_wall:
-                        self._rate_limit_resume_wall = resume_epoch
-                    next_allowed = resume_at
-                    if self._min_request_interval > 0:
-                        next_allowed += self._min_request_interval
-                    if next_allowed > self._next_allowed_request:
-                        self._next_allowed_request = next_allowed
-
-    def _remember_profile(self, spotify_id, profile):
-        if not spotify_id:
-            return
-
-        spotify_id = str(spotify_id)
-        self._id_cache[spotify_id] = profile
-
-        entry = {
-            "profile": profile,
-            "fetched_at": time.time(),
-        }
-
-        with self._cache_lock:
-            self._persistent_cache[spotify_id] = entry
-            if self._cache_file:
-                self._cache_dirty = True
-                self._save_counter += 1
-                if SAVE_INTERVAL and self._save_counter >= SAVE_INTERVAL:
-                    self.save_cache()
-
-    def _get_profile_from_cache(self, spotify_id, allow_stale=False):
-        if not spotify_id:
-            return None, False, False
-
-        spotify_id = str(spotify_id)
-
-        if spotify_id in self._id_cache and spotify_id not in self._persistent_cache:
-            return self._id_cache[spotify_id], True, False
-
-        entry = self._persistent_cache.get(spotify_id)
-        if entry is None:
-            return None, False, False
-
-        profile = entry.get("profile") if isinstance(entry, dict) else entry
-        fetched_at = entry.get("fetched_at") if isinstance(entry, dict) else None
-
-        is_stale = False
-        if self._cache_ttl and fetched_at:
-            try:
-                age = time.time() - float(fetched_at)
-            except (TypeError, ValueError):
-                age = 0.0
-            if age > self._cache_ttl:
-                is_stale = True
-                if not allow_stale:
-                    return None, False, True
-
-        self._id_cache[spotify_id] = profile
-        return profile, True, is_stale
-
-    def _fetch_profile_from_api(self, spotify_id, fallback_profile=None, fallback_found=False):
-        if not spotify_id:
-            return fallback_profile if fallback_found else None
-
-        spotify_id = str(spotify_id)
-
-        if not self._client:
-            return fallback_profile if fallback_found else None
-
-        attempts = 0
-        max_attempts = 3
-
-        while attempts < max_attempts:
-            attempts += 1
-
-            self._throttle_spotify_request()
-
-            try:
-                with self._client_lock:
-                    data = self._client.track(spotify_id)
-            except SpotifyException as exc:
-                status = getattr(exc, "http_status", None)
-
-                if status == 404:
-                    self._remember_profile(spotify_id, None)
-                    return None
-
-                retry_after = self._extract_retry_after(exc)
-
-                if status == 429:
-                    backoff_seconds = retry_after or self._retry_backoff_seconds or 1.0
-                    self._log.warning(
-                        "Spotify rate limit encountered for %s; backing off for %.2fs",
-                        spotify_id,
-                        backoff_seconds,
-                    )
-                    self._register_rate_limit_backoff(retry_after)
-                    if attempts < max_attempts:
-                        continue
-                elif status in {500, 502, 503, 504}:
-                    self._log.debug(
-                        "Transient Spotify error (%s) during track lookup for %s; retrying",
-                        status,
-                        spotify_id,
-                    )
-                    self._register_rate_limit_backoff(
-                        max(
-                            retry_after or 0.0,
-                            (self._retry_backoff_seconds or 1.0) * attempts,
-                        )
-                    )
-                    if attempts < max_attempts:
-                        continue
-                else:
-                    self._log.debug(
-                        "Spotify track lookup failed for %s: %s",
-                        spotify_id,
-                        exc,
-                    )
-                    if retry_after:
-                        self._register_rate_limit_backoff(retry_after)
-
-                if fallback_found:
-                    return fallback_profile
-                return None
-            except Exception as exc:
-                self._log.debug(
-                    "Unexpected Spotify error during track lookup for %s: %s",
-                    spotify_id,
-                    exc,
-                )
-                self._register_rate_limit_backoff(self._retry_backoff_seconds)
-                if attempts < max_attempts:
-                    continue
-                if fallback_found:
-                    return fallback_profile
-                return None
-
-            profile = self._extract_track_profile(data)
-            self._remember_profile(spotify_id, profile)
-            return profile
-
-        return fallback_profile if fallback_found else None
-
-    def _resolve_profile_by_id(self, spotify_id):
-        profile, found, is_stale = self._get_profile_from_cache(spotify_id)
-        if found:
-            if profile is None:
-                return None, "missing_cache" if not is_stale else "stale"
-            return profile, "hit"
-
-        fallback_profile, fallback_found, fallback_stale = self._get_profile_from_cache(
-            spotify_id,
-            allow_stale=True,
-        )
-
-        profile = self._fetch_profile_from_api(
-            spotify_id,
-            fallback_profile,
-            fallback_found,
-        )
-
-        if profile is not None:
-            return profile, "hit"
-
-        if fallback_found:
-            if fallback_profile is None:
-                return None, "missing_cache" if not fallback_stale else "stale"
-            return fallback_profile, "hit"
-
-        return None, "miss"
-
-    def save_cache(self):
-        should_persist_cache = bool(self._cache_file and self._cache_dirty)
-        should_write_state = bool(self._state_file and self._last_populated_at)
-
-        if not should_persist_cache and not should_write_state:
-            return
-
-        payload = None
-        if should_persist_cache:
-            cache_dir = os.path.dirname(self._cache_file)
-            if cache_dir and not os.path.exists(cache_dir):
-                os.makedirs(cache_dir, exist_ok=True)
-
-            with self._cache_lock:
-                tracks_payload = {}
-                for spotify_id, entry in self._persistent_cache.items():
-                    if isinstance(entry, dict):
-                        tracks_payload[spotify_id] = {
-                            "profile": entry.get("profile"),
-                            "fetched_at": entry.get("fetched_at"),
-                        }
-                    else:
-                        tracks_payload[spotify_id] = {
-                            "profile": entry,
-                            "fetched_at": None,
-                        }
-
-                payload = {
-                    "version": SPOTIFY_CACHE_VERSION,
-                    "tracks": tracks_payload,
-                }
-                if self._last_populated_at:
-                    payload["last_populated_at"] = self._last_populated_at
-                if isinstance(self._last_populated_summary, dict):
-                    payload["last_populated_summary"] = self._last_populated_summary
-
-            try:
-                with open(self._cache_file, "w", encoding="utf-8") as fh:
-                    json.dump(payload, fh, ensure_ascii=False, indent=2)
-            except Exception as exc:
-                self._log.warning(
-                    "Unable to persist Spotify cache to '%s': %s",
-                    self._cache_file,
-                    exc,
-                )
-            else:
-                self._cache_dirty = False
-                self._save_counter = 0
-
-        if should_write_state:
-            self._write_state_file()
-
-    def _write_state_file(self):
-        if not self._state_file:
-            return
-
-        with self._cache_lock:
-            last_populated = self._last_populated_at
-            summary = copy.deepcopy(self._last_populated_summary)
-            if not isinstance(summary, dict):
-                summary = {}
-
-        with self._population_state_lock:
-            in_progress = copy.deepcopy(self._population_state)
-
-        with self._rate_lock:
-            resume_epoch = self._rate_limit_resume_wall
-
-        payload = {
-            "version": SPOTIFY_CACHE_VERSION,
-            "cache_file": self._cache_file,
-            "last_populated_at": last_populated,
-            "summary": summary or {},
-        }
-
-        if in_progress:
-            payload["in_progress"] = in_progress
-
-        if resume_epoch and resume_epoch > 0:
-            now_wall = time.time()
-            if resume_epoch > now_wall:
-                payload["rate_limit"] = {"resume_epoch": resume_epoch}
-
-        state_dir = os.path.dirname(self._state_file)
-        if state_dir and not os.path.exists(state_dir):
-            os.makedirs(state_dir, exist_ok=True)
-
-        try:
-            with open(self._state_file, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, ensure_ascii=False, indent=2)
-        except Exception as exc:
-            self._log.debug(
-                "Unable to persist Spotify popularity state to '%s': %s",
-                self._state_file,
-                exc,
-            )
-
-    def record_population_run(self, summary=None):
-        timestamp = datetime.now(timezone.utc).isoformat()
-        summary_payload = summary or {}
-
-        with self._cache_lock:
-            self._last_populated_at = timestamp
-            self._last_populated_summary = summary_payload
-            if self._cache_file:
-                self._cache_dirty = True
-
-        with self._population_state_lock:
-            self._population_state = None
-
-        self._write_state_file()
-        return timestamp
-
-    def get_population_state(self):
-        with self._cache_lock:
-            summary_copy = copy.deepcopy(self._last_populated_summary)
-            return self._last_populated_at, summary_copy if isinstance(summary_copy, dict) else None
-
-    def inspect_track_cache(self, track):
-        track_key = getattr(track, "ratingKey", None)
-        if track_key is not None and track_key in self._track_cache:
-            cached_profile = self._track_cache[track_key]
-            return cached_profile, True, False
-
-        for spotify_id in self._iter_spotify_track_ids(track):
-            profile, found, is_stale = self._get_profile_from_cache(
-                spotify_id,
-                allow_stale=True,
-            )
-            if found:
-                return profile, True, is_stale
-
-        return None, False, False
-
-    @classmethod
-    def save_shared_cache(cls):
-        instance = cls._instance
-        if instance is not None:
-            instance.save_cache()
-
-    @classmethod
-    def get_shared(cls):
-        with cls._instance_lock:
-            if cls._instance is None:
-                cls._instance = cls()
-            return cls._instance
-
-    @property
-    def is_enabled(self):
-        return (self._enabled and self._client is not None) or bool(self._persistent_cache)
-
-    def describe_error(self):
-        return self._error
-
-    def get_popularity(self, track):
-        return _compute_spotify_popularity_score(track, spotify_provider=self)
-
-    def get_track_profile(self, track):
-        if not self.is_enabled:
-            return None
-
-        track_key = getattr(track, "ratingKey", None)
-        cached_profile = self._track_cache.get(track_key) if track_key else None
-        if cached_profile is not None:
-            # Backwards compatibility for caches populated before profile support.
-            if isinstance(cached_profile, dict):
-                return cached_profile
-            return {"popularity": cached_profile}
-
-        resolved_profile = None
-        saw_missing_cache = False
-
-        for spotify_id in self._iter_spotify_track_ids(track):
-            profile_candidate, status = self._resolve_profile_by_id(spotify_id)
-            if status == "hit":
-                resolved_profile = profile_candidate
-                break
-            if status == "missing_cache":
-                saw_missing_cache = True
-
-        if resolved_profile is None and self._client and not saw_missing_cache:
-            resolved_profile = self._search_for_track_profile(track)
-            if isinstance(resolved_profile, dict):
-                track_id = resolved_profile.get("id")
-                if track_id:
-                    self._remember_profile(track_id, resolved_profile)
-
-        if track_key is not None:
-            self._track_cache[track_key] = resolved_profile
-
-        return resolved_profile
-
-    def _iter_spotify_track_ids(self, track):
-        seen = set()
-        for guid in self._iter_guid_strings(track):
-            spotify_id = self._extract_spotify_track_id(guid)
-            if spotify_id and spotify_id not in seen:
-                seen.add(spotify_id)
-                yield spotify_id
-
-    @staticmethod
-    def _iter_guid_strings(track):
-        candidates = []
-        direct_guid = getattr(track, "guid", None)
-        if direct_guid:
-            candidates.append(direct_guid)
-
-        for attr_name in ("guids", "providerGuids"):
-            attr = getattr(track, attr_name, None)
-            if not attr:
-                continue
-            for item in attr:
-                if isinstance(item, str):
-                    candidates.append(item)
-                else:
-                    value = getattr(item, "id", None) or getattr(item, "idUri", None)
-                    if value:
-                        candidates.append(value)
-
-        for candidate in candidates:
-            if candidate:
-                yield str(candidate)
-
-    @staticmethod
-    def _extract_spotify_track_id(guid):
-        if not guid:
-            return None
-        guid_str = str(guid)
-        match = re.search(r"spotify[:/]+track[:/](?P<id>[A-Za-z0-9]+)", guid_str)
-        if not match:
-            match = re.search(r"spotify:track:(?P<id>[A-Za-z0-9]+)", guid_str)
-        if not match:
-            return None
-        track_id = match.group("id")
-        if not track_id:
-            return None
-        return track_id.split("?")[0]
-
-    def _search_for_track_profile(self, track):
-        query = self._build_search_query(track)
-        if not query:
-            return None
-
-        cache_key = (query, self.market)
-        if cache_key in self._query_cache:
-            candidates = self._query_cache[cache_key]
-        else:
-            attempts = 0
-            max_attempts = 3
-
-            while attempts < max_attempts:
-                attempts += 1
-
-                self._throttle_spotify_request()
-
-                try:
-                    with self._client_lock:
-                        response = self._client.search(
-                            q=query,
-                            type="track",
-                            market=self.market,
-                            limit=self.search_limit,
-                        )
-                except SpotifyException as exc:
-                    status = getattr(exc, "http_status", None)
-                    retry_after = self._extract_retry_after(exc)
-
-                    if status == 429:
-                        backoff_seconds = retry_after or self._retry_backoff_seconds or 1.0
-                        self._log.warning(
-                            "Spotify rate limit encountered during search for '%s'; backing off for %.2fs",
-                            query,
-                            backoff_seconds,
-                        )
-                        self._register_rate_limit_backoff(retry_after)
-                        if attempts < max_attempts:
-                            continue
-                    elif status in {500, 502, 503, 504}:
-                        self._log.debug(
-                            "Transient Spotify search error (%s) for '%s'; retrying",
-                            status,
-                            query,
-                        )
-                        self._register_rate_limit_backoff(
-                            max(
-                                retry_after or 0.0,
-                                (self._retry_backoff_seconds or 1.0) * attempts,
-                            )
-                        )
-                        if attempts < max_attempts:
-                            continue
-                    else:
-                        self._log.debug("Spotify search failed for '%s': %s", query, exc)
-                        if retry_after:
-                            self._register_rate_limit_backoff(retry_after)
-
-                    self._query_cache[cache_key] = []
-                    return None
-                except Exception as exc:
-                    self._log.debug("Unexpected Spotify error during search for '%s': %s", query, exc)
-                    self._register_rate_limit_backoff(self._retry_backoff_seconds)
-                    if attempts < max_attempts:
-                        continue
-                    self._query_cache[cache_key] = []
-                    return None
-                else:
-                    break
-            else:
-                self._query_cache[cache_key] = []
-                return None
-
-            candidates = response.get("tracks", {}).get("items", []) if isinstance(response, dict) else []
-            self._query_cache[cache_key] = candidates
-
-        if not candidates:
-            return None
-
-        best_candidate = self._select_best_candidate(track, candidates)
-        if not best_candidate and candidates:
-            best_candidate = max(
-                candidates,
-                key=lambda item: (item or {}).get("popularity") or -1,
-            )
-
-        if not best_candidate:
-            return None
-        return self._extract_track_profile(best_candidate)
-
-    def _build_search_query(self, track):
-        title = getattr(track, "title", None)
-        if not title:
-            return None
-
-        stripped_title = _strip_parenthetical(title)
-        if stripped_title:
-            title = stripped_title
-
-        def sanitize(value):
-            if value is None:
-                return None
-            return str(value).replace('"', "").strip()
-
-        parts = [f'track:"{sanitize(title)}"']
-
-        artist = getattr(track, "grandparentTitle", None) or getattr(track, "originalTitle", None)
-        if artist:
-            parts.append(f'artist:"{sanitize(artist)}"')
-
-        album = getattr(track, "parentTitle", None)
-        if album:
-            parts.append(f'album:"{sanitize(album)}"')
-
-        return " ".join(part for part in parts if part)
-
-    def _select_best_candidate(self, track, candidates):
-        track_title_norm = _normalize_compare_value(getattr(track, "title", ""))
-        track_artist_norms = _collect_normalized_candidates(
-            [
-                getattr(track, "grandparentTitle", None),
-                getattr(track, "originalTitle", None),
-            ]
-        )
-        track_album_norms = _collect_normalized_candidates([getattr(track, "parentTitle", None)])
-
-        best_candidate = None
-        best_score = float("-inf")
-
-        for item in candidates:
-            if not isinstance(item, dict):
-                continue
-
-            popularity = item.get("popularity") or 0
-            try:
-                popularity_score = float(popularity) / 100.0
-            except (TypeError, ValueError):
-                popularity_score = 0.0
-
-            item_title_norm = _normalize_compare_value(item.get("name"))
-            item_artist_norms = _collect_normalized_candidates(
-                artist.get("name") for artist in item.get("artists", []) if isinstance(artist, dict)
-            )
-            album_info = item.get("album") if isinstance(item.get("album"), dict) else item.get("album")
-            album_name = album_info.get("name") if isinstance(album_info, dict) else None
-            item_album_norms = _collect_normalized_candidates([album_name])
-
-            score = popularity_score
-
-            if track_title_norm and item_title_norm == track_title_norm:
-                score += 5
-            elif track_title_norm and item_title_norm and track_title_norm in item_title_norm:
-                score += 2
-
-            if track_artist_norms and item_artist_norms & track_artist_norms:
-                score += 3
-
-            if track_album_norms and item_album_norms & track_album_norms:
-                score += 1
-
-            if score > best_score:
-                best_score = score
-                best_candidate = item
-
-        return best_candidate
-
-    @staticmethod
-    def _extract_track_profile(data):
-        if not isinstance(data, dict):
-            return None
-
-        popularity = data.get("popularity")
-        try:
-            popularity = float(popularity) if popularity is not None else None
-        except (TypeError, ValueError):
-            popularity = None
-
-        track_id = data.get("id")
-        uri = data.get("uri")
-        name = data.get("name")
-        track_number = data.get("track_number")
-
-        album_info = data.get("album") if isinstance(data.get("album"), dict) else {}
-        album_type = str(album_info.get("album_type") or album_info.get("type") or "").lower()
-        album_group = str(album_info.get("album_group") or "").lower()
-        album_name = album_info.get("name")
-        release_date = album_info.get("release_date")
-        release_date_precision = album_info.get("release_date_precision")
-
-        is_single = False
-        if album_type == "single" or album_group == "single":
-            is_single = True
-        elif isinstance(data.get("single"), bool):
-            is_single = data.get("single")
-
-        metrics_candidates = [data]
-        statistics_info = data.get("statistics")
-        if isinstance(statistics_info, dict):
-            metrics_candidates.append(statistics_info)
-        insights_info = data.get("insights")
-        if isinstance(insights_info, dict):
-            metrics_candidates.append(insights_info)
-        if isinstance(album_info, dict):
-            metrics_candidates.append(album_info)
-
-        play_count = None
-        like_count = None
-        for candidate in metrics_candidates:
-            if play_count is None:
-                play_count = _extract_numeric_from_candidates(
-                    candidate,
-                    ("play_count", "plays", "playcount", "streams"),
-                )
-            if like_count is None:
-                like_count = _extract_numeric_from_candidates(
-                    candidate,
-                    ("like_count", "likes", "favourites", "favorites", "hearts"),
-                )
-
-        metrics = {}
-        if play_count is not None:
-            metrics["play_count"] = play_count
-        if like_count is not None:
-            metrics["like_count"] = like_count
-
-        return {
-            "id": track_id,
-            "uri": uri,
-            "name": name,
-            "popularity": popularity,
-            "album": {
-                "name": album_name,
-                "album_type": album_type or None,
-                "album_group": album_group or None,
-                "release_date": release_date,
-                "release_date_precision": release_date_precision,
-            },
-            "is_single": bool(is_single),
-            "track_number": track_number,
-            "play_count": play_count,
-            "like_count": like_count,
-            "metrics": metrics,
-        }
-
-
 class AllMusicPopularityProvider:
     """Resolve track popularity using AllMusic search results."""
 
@@ -2503,7 +1192,6 @@ class AllMusicPopularityProvider:
         self._cache_lock = threading.Lock()
         self._album_scores_lock = threading.Lock()
         self._cache_dirty = False
-        self._default_spotify_baseline = 50.0
         self._google_min_interval = max(0.0, ALLMUSIC_GOOGLE_MIN_INTERVAL)
         self._google_backoff = max(0.0, ALLMUSIC_GOOGLE_BACKOFF)
         self._google_rate_lock = threading.Lock()
@@ -2589,85 +1277,37 @@ class AllMusicPopularityProvider:
         self._query_cache = payload.get("queries", {}) or {}
         self._album_cache = payload.get("albums", {}) or {}
 
-    def get_popularity(self, track, spotify_provider=None, playlist_logger=None):
-        if not self.is_enabled:
-            return None
-
+    def get_popularity(self, track, playlist_logger=None):
         title = getattr(track, "title", None)
         artist = getattr(track, "grandparentTitle", None)
         album = getattr(track, "parentTitle", None)
 
         track_key = self._build_track_key(title, artist, album)
-        with self._cache_lock:
-            cached_entry = self._track_cache.get(track_key) if track_key else None
 
-        if cached_entry is not None:
-            cached_details = cached_entry.get("details") or {}
-            if playlist_logger:
-                playlist_logger.debug(
-                    "AllMusic cache hit for '%s' by '%s' → details=%s",
-                    title or "<unknown>",
-                    artist or "<unknown>",
-                    {k: v for k, v in cached_details.items() if k != "components"},
-                )
-            details = dict(cached_details)
-        else:
-            details = None
-
-        if details is None:
-            query = self._build_query(title, artist, album)
-            if not query:
-                if playlist_logger:
-                    playlist_logger.debug(
-                        "Skipping AllMusic popularity lookup for '%s' – insufficient metadata.",
-                        title or "<unknown>",
-                    )
-                if track_key:
-                    with self._cache_lock:
-                        self._track_cache[track_key] = {
-                            "popularity": None,
-                            "timestamp": time.time(),
-                            "details": {},
-                        }
-                        self._cache_dirty = True
-                return None
-
-            if playlist_logger:
-                playlist_logger.debug(
-                    "Fetching AllMusic popularity for '%s' by '%s' (query='%s')",
-                    title or "<unknown>",
-                    artist or "<unknown>",
-                    query,
-                )
-
-            with self._cache_lock:
-                cached_query = self._query_cache.get(query)
-
-            if cached_query is not None:
-                details = dict(cached_query)
-                if playlist_logger:
-                    playlist_logger.debug(
-                        "AllMusic query cache hit for '%s': matched=%s",
-                        query,
-                        details.get("title"),
-                    )
-            else:
-                details = self._execute_search(query, title, artist, album, playlist_logger)
-                if details is None:
-                    details = {}
-
-        base_score, computed_details = self._compute_composite_popularity(
+        base_score = _resolve_track_popularity_value(
             track,
-            details,
-            spotify_provider=spotify_provider,
             playlist_logger=playlist_logger,
         )
+
+        components = {
+            "rating_count": base_score,
+            "base_score": base_score,
+            "fallback": None if base_score is not None else "no_data",
+        }
+
+        details = {
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "rating_count": base_score,
+            "components": components,
+        }
 
         final_score, finalized_details = self._apply_single_boost(
             track,
             track_key,
             base_score,
-            computed_details,
+            details,
         )
 
         self._remember_track_cache(track_key, final_score, finalized_details)
@@ -3387,67 +2027,6 @@ class AllMusicPopularityProvider:
         return None
 
 
-    def _compute_composite_popularity(self, track, details, spotify_provider=None, playlist_logger=None):
-        details = details or {}
-        album_rating_count = details.get("album_rating_count")
-        rating_count = details.get("rating_count")
-
-        if album_rating_count is None:
-            album_rating_count = rating_count
-
-        normalized_rating = None
-        if album_rating_count is not None:
-            try:
-                numeric = float(album_rating_count)
-            except (TypeError, ValueError):
-                numeric = None
-            if numeric is not None and numeric > 0:
-                normalized_rating = math.log1p(numeric)
-
-        spotify_profile = None
-        if spotify_provider is None:
-            spotify_provider = SpotifyPopularityProvider.get_shared()
-        if spotify_provider and getattr(spotify_provider, "is_enabled", False):
-            spotify_profile = spotify_provider.get_track_profile(track)
-
-        spotify_popularity = None
-        if isinstance(spotify_profile, dict):
-            spotify_popularity = spotify_profile.get("popularity")
-
-        fallback_reason = None
-        base_score = None
-
-        if normalized_rating is not None and spotify_popularity is not None:
-            base_score = normalized_rating * spotify_popularity
-        elif spotify_popularity is not None:
-            base_score = spotify_popularity
-            fallback_reason = "spotify_only"
-        elif normalized_rating is not None:
-            base_score = normalized_rating * self._default_spotify_baseline
-            fallback_reason = "album_only"
-        else:
-            fallback_reason = "no_data"
-
-        components = {
-            "album_rating_count": album_rating_count,
-            "normalized_album_rating": normalized_rating,
-            "spotify_popularity": spotify_popularity,
-            "base_score": base_score,
-            "fallback": fallback_reason,
-        }
-
-        updated_details = dict(details)
-        updated_details["components"] = components
-
-        if playlist_logger:
-            playlist_logger.debug(
-                "AllMusic composite for '%s' → components=%s",
-                getattr(track, "title", "<unknown>"),
-                components,
-            )
-
-        return base_score, updated_details
-
     @staticmethod
     def _fallback_track_identifier(track):
         rating_key = getattr(track, "ratingKey", None)
@@ -4113,22 +2692,10 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     resolved_sort_by = sort_by
     sort_desc_in_config = "sort_desc" in config
     sort_desc = config.get("sort_desc", True)
-    spotify_provider = SpotifyPopularityProvider.get_shared()
     if sort_by == "popularity":
-        if spotify_provider and spotify_provider.is_enabled:
-            resolved_sort_by = "spotifyPopularity"
-            if log.isEnabledFor(logging.DEBUG):
-                log.debug(
-                    "Sort field '%s' will use Spotify popularity metrics",
-                    sort_by,
-                )
-        else:
-            error_detail = spotify_provider.describe_error() if spotify_provider else None
-            log.warning(
-                "Popularity sorting requested but Spotify is unavailable%s",
-                f" ({error_detail})" if error_detail else "",
-            )
-            resolved_sort_by = None
+        resolved_sort_by = "__rating_count__"
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug("Sort field '%s' will use Plex rating counts", sort_by)
 
     if sort_by == "alphabetical":
         resolved_sort_by = "__alphabetical__"
@@ -4316,7 +2883,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         matched_tracks, dedup_popularity_cache, duplicates_removed = _deduplicate_tracks(
             matched_tracks,
             log,
-            spotify_provider=spotify_provider,
         )
         dedup_duration = time.perf_counter() - dedup_start
         if duplicates_removed:
@@ -4328,14 +2894,13 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
 
     album_popularity_cache = {}
     album_popularity_cache_by_object = {}
-    if resolved_sort_by == "spotifyPopularity":
+    if resolved_sort_by == "__rating_count__":
         (
             album_popularity_cache,
             album_popularity_cache_by_object,
         ) = _compute_album_popularity_boosts(
             matched_tracks,
             dedup_popularity_cache,
-            spotify_provider=spotify_provider,
             playlist_logger=log,
             top_5_boost=top_5_boost_value,
         )
@@ -4346,7 +2911,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 dedup_popularity_cache,
                 album_popularity_cache,
                 album_popularity_cache_by_object,
-                spotify_provider=spotify_provider,
                 playlist_logger=log,
             )
     elif boost_rules:
@@ -4356,7 +2920,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             dedup_popularity_cache,
             {},
             {},
-            spotify_provider=spotify_provider,
             playlist_logger=log,
         )
     match_count = len(matched_tracks)
@@ -4376,7 +2939,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             if cache_key_str is None and object_cache_key in sort_value_cache_by_object:
                 return sort_value_cache_by_object[object_cache_key]
 
-            if resolved_sort_by == "spotifyPopularity":
+            if resolved_sort_by == "__rating_count__":
                 popularity_value, _ = _resolve_popularity_for_sort(
                     track,
                     cache_key_str,
@@ -4384,7 +2947,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                     dedup_popularity_cache,
                     album_popularity_cache,
                     album_popularity_cache_by_object,
-                    spotify_provider=spotify_provider,
                     playlist_logger=log,
                     sort_desc=sort_desc,
                 )
@@ -4768,7 +3330,6 @@ def process_playlist(name, config):
             else:
                 _thread_local_logger.current = previous_thread_logger
     finally:
-        SpotifyPopularityProvider.save_shared_cache()
         AllMusicPopularityProvider.save_shared_cache()
         if playlist_handler:
             log.debug(
@@ -4777,341 +3338,6 @@ def process_playlist(name, config):
             )
             playlist_handler.close()
 
-# ----------------------------
-# Spotify Popularity Cache Builder
-# ----------------------------
-def build_spotify_popularity_cache():
-    provider = SpotifyPopularityProvider.get_shared()
-
-    if not SPOTIFY_CACHE_FILE:
-        spotify_logger.warning(
-            "Spotify popularity cache file is disabled via configuration; skipping population run.",
-        )
-        return {
-            "status": "disabled",
-            "reason": "cache_disabled",
-        }
-
-    if not provider.is_enabled:
-        reason = provider.describe_error() or "Spotify integration is not configured."
-        spotify_logger.warning("Spotify popularity cache build skipped: %s", reason)
-        return {
-            "status": "skipped",
-            "reason": reason,
-        }
-
-    try:
-        library = plex.library.section(LIBRARY_NAME)
-    except Exception as exc:
-        spotify_logger.exception("Unable to access Plex library for Spotify cache build: %s", exc)
-        return {
-            "status": "error",
-            "reason": str(exc),
-        }
-
-    def _coerce_int(value, default=0):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
-    resume_state = provider.get_population_resume_state() or {}
-    pending_rating_keys = []
-    pending_entries = []
-    resuming = False
-
-    cached_profiles = 0
-    new_profiles = 0
-    refreshed_profiles = 0
-    missing_profiles = 0
-    errors = 0
-    processed_pending = 0
-    total_tracks = None
-
-    if resume_state and resume_state.get("pending_keys"):
-        resuming = True
-        pending_rating_keys = [
-            str(key)
-            for key in resume_state.get("pending_keys", [])
-            if key not in (None, "")
-        ]
-        cached_profiles = _coerce_int(resume_state.get("cached_profiles"), 0)
-        new_profiles = _coerce_int(resume_state.get("new_profiles"), 0)
-        refreshed_profiles = _coerce_int(resume_state.get("refreshed_profiles"), 0)
-        missing_profiles = _coerce_int(resume_state.get("missing_profiles"), 0)
-        errors = _coerce_int(resume_state.get("errors"), 0)
-        processed_pending = _coerce_int(resume_state.get("processed"), 0)
-        total_tracks = resume_state.get("total_tracks")
-        try:
-            total_tracks = int(total_tracks) if total_tracks is not None else None
-        except (TypeError, ValueError):
-            total_tracks = None
-
-        if total_tracks is None:
-            total_tracks = len(pending_rating_keys) + processed_pending + cached_profiles
-
-        spotify_logger.info(
-            "Resuming Spotify popularity cache build with %d pending track(s)",
-            len(pending_rating_keys),
-        )
-    else:
-        try:
-            all_tracks = library.searchTracks()
-        except Exception as exc:
-            spotify_logger.exception("Unable to enumerate library tracks for Spotify cache build: %s", exc)
-            return {
-                "status": "error",
-                "reason": str(exc),
-            }
-
-        total_tracks = len(all_tracks)
-        spotify_logger.info("Starting Spotify popularity cache build for %d track(s)", total_tracks)
-
-        for track in all_tracks:
-            rating_key = getattr(track, "ratingKey", None)
-            if rating_key is None:
-                errors += 1
-                spotify_logger.debug(
-                    "Skipping track without rating key during Spotify cache build: %s",
-                    getattr(track, "title", "<unknown>"),
-                )
-                continue
-
-            _, had_cache, was_stale = provider.inspect_track_cache(track)
-            if had_cache and not was_stale:
-                cached_profiles += 1
-                continue
-
-            pending_entries.append((str(rating_key), track))
-
-        pending_rating_keys = [key for key, _ in pending_entries]
-        provider.begin_population_run(pending_rating_keys, total_tracks, cached_profiles)
-
-        if pending_rating_keys:
-            spotify_logger.info(
-                "Spotify popularity cache build will fetch %d uncached track(s); %d cached value(s) reused.",
-                len(pending_rating_keys),
-                cached_profiles,
-            )
-        else:
-            spotify_logger.info(
-                "Spotify popularity cache build found %d cached track(s); nothing to fetch.",
-                cached_profiles,
-            )
-
-    total_pending_entries = len(pending_rating_keys)
-
-    chunk_size = SPOTIFY_POPULATION_CHUNK_SIZE or 0
-    chunk_delay = SPOTIFY_POPULATION_CHUNK_DELAY or 0.0
-    if chunk_size and total_pending_entries:
-        if chunk_delay > 0:
-            spotify_logger.info(
-                "Spotify popularity cache build will pause for %.2fs after every %d track(s) to reduce Spotify load.",
-                chunk_delay,
-                chunk_size,
-            )
-        else:
-            spotify_logger.info(
-                "Spotify popularity cache build will process tracks in chunks of %d before continuing immediately.",
-                chunk_size,
-            )
-
-    initial_cached_progress = cached_profiles
-    initial_progress = initial_cached_progress + processed_pending
-
-    if total_tracks is None:
-        total_tracks = len(pending_rating_keys) + initial_cached_progress
-    if total_tracks < initial_progress:
-        total_tracks = initial_progress
-
-    progress_bar = tqdm(
-        total=total_tracks,
-        desc="Caching Spotify popularity",
-        unit="track",
-        dynamic_ncols=True,
-        initial=initial_progress,
-    )
-
-    if initial_progress:
-        progress_bar.refresh()
-
-    if SAVE_INTERVAL and initial_progress and initial_progress % SAVE_INTERVAL == 0:
-        provider.save_cache()
-
-    start_time = time.perf_counter()
-
-    initial_processed_counter = processed_pending
-
-    if resuming:
-        def _iter_pending():
-            for rating_key in pending_rating_keys:
-                track_obj = None
-                try:
-                    fetch_key = int(rating_key)
-                except (TypeError, ValueError):
-                    fetch_key = rating_key
-                try:
-                    track_obj = plex.fetchItem(fetch_key)
-                except Exception as exc:
-                    spotify_logger.debug(
-                        "Unable to fetch track %s from Plex while resuming Spotify cache build: %s",
-                        rating_key,
-                        exc,
-                    )
-                yield rating_key, track_obj
-
-        pending_iterator = _iter_pending()
-    else:
-        pending_iterator = iter(pending_entries)
-
-    try:
-        for rating_key, track in pending_iterator:
-            rating_key_str = None if rating_key in (None, "") else str(rating_key)
-            outcome = None
-
-            try:
-                if track is None:
-                    errors += 1
-                    outcome = "error"
-                else:
-                    _, had_cache, was_stale = provider.inspect_track_cache(track)
-                    if had_cache and not was_stale:
-                        cached_profiles += 1
-                        outcome = "cached"
-                    else:
-                        profile = provider.get_track_profile(track)
-                        if profile is None:
-                            missing_profiles += 1
-                            outcome = "missing"
-                        else:
-                            if had_cache:
-                                refreshed_profiles += 1
-                                outcome = "refreshed"
-                            else:
-                                new_profiles += 1
-                                outcome = "new"
-            except Exception as exc:
-                errors += 1
-                track_title = getattr(track, "title", "<unknown>") if track else "<missing>"
-                track_artist = getattr(track, "grandparentTitle", "<unknown>") if track else "<missing>"
-                spotify_logger.debug(
-                    "Failed to populate Spotify popularity for '%s' by '%s': %s",
-                    track_title,
-                    track_artist,
-                    exc,
-                )
-                outcome = "error"
-            finally:
-                processed_pending += 1
-                if rating_key_str is not None:
-                    provider.update_population_resume(rating_key_str, outcome or "error")
-
-                total_progress = initial_cached_progress + processed_pending
-                if SAVE_INTERVAL and total_progress % SAVE_INTERVAL == 0:
-                    provider.save_cache()
-
-                progress_bar.update(1)
-
-                if chunk_size:
-                    processed_in_run = processed_pending - initial_processed_counter
-                    remaining_in_run = max(total_pending_entries - processed_in_run, 0)
-                    if processed_pending % chunk_size == 0 and remaining_in_run > 0:
-                        provider.save_cache()
-                        chunk_processed_run = processed_in_run
-                        chunk_processed_total = processed_pending
-                        if chunk_delay > 0:
-                            spotify_logger.info(
-                                "Chunk boundary reached (%d processed this run, %d total); %d track(s) remain. "
-                                "Sleeping for %.2fs to respect Spotify rate limits.",
-                                chunk_processed_run,
-                                chunk_processed_total,
-                                remaining_in_run,
-                                chunk_delay,
-                            )
-                            time.sleep(chunk_delay)
-                        else:
-                            spotify_logger.info(
-                                "Chunk boundary reached (%d processed this run, %d total); %d track(s) remain.",
-                                chunk_processed_run,
-                                chunk_processed_total,
-                                remaining_in_run,
-                            )
-    finally:
-        progress_bar.close()
-
-    provider.save_cache()
-
-    duration = time.perf_counter() - start_time
-    processed_tracks = initial_cached_progress + processed_pending
-
-    summary = {
-        "status": "completed",
-        "total_tracks": total_tracks,
-        "processed_tracks": processed_tracks,
-        "new_profiles": new_profiles,
-        "refreshed_profiles": refreshed_profiles,
-        "cached_profiles": cached_profiles,
-        "missing_profiles": missing_profiles,
-        "errors": errors,
-        "duration_seconds": round(duration, 2),
-    }
-
-    timestamp = provider.record_population_run(summary)
-    provider.save_cache()
-
-    spotify_logger.info(
-        "Spotify popularity cache build complete: new=%d refreshed=%d cached=%d missing=%d errors=%d (%.2fs)",
-        new_profiles,
-        refreshed_profiles,
-        cached_profiles,
-        missing_profiles,
-        errors,
-        duration,
-    )
-    spotify_logger.info("Spotify popularity cache metadata updated at %s", timestamp)
-
-    return summary
-
-
-# ----------------------------
-# Cache-only Mode with Resume
-# ----------------------------
-def build_metadata_cache():
-    logger.info("Starting cache-only metadata build (resumable)...")
-    library = plex.library.section(LIBRARY_NAME)
-    all_tracks = library.searchTracks()
-    total_tracks = len(all_tracks)
-    logger.info(f"Found {total_tracks} tracks in library '{LIBRARY_NAME}'")
-
-    processed = 0
-    with tqdm(total=total_tracks, desc="Caching metadata", unit="track", dynamic_ncols=True) as pbar:
-        for track in all_tracks:
-            # Skip already-cached items
-            keys_to_fetch = [track.ratingKey]
-            if hasattr(track, "parentRatingKey"):
-                keys_to_fetch.append(track.parentRatingKey)
-            if hasattr(track, "grandparentRatingKey"):
-                keys_to_fetch.append(track.grandparentRatingKey)
-
-            new_keys = [k for k in keys_to_fetch if k not in metadata_cache]
-            if not new_keys:
-                pbar.update(1)
-                continue
-
-            for key in new_keys:
-                try:
-                    fetch_full_metadata(key)
-                except Exception as e:
-                    logger.warning(f"Failed to fetch {key}: {e}")
-            processed += 1
-            if processed % SAVE_INTERVAL == 0:
-                save_cache()
-            pbar.update(1)
-
-    save_cache()
-    logger.info("✅ Metadata caching complete and saved to disk.")
-
-# ----------------------------
 # Main Runtime Logic
 # ----------------------------
 def _run_playlists(playlists_subset, completion_message=""):
@@ -5177,45 +3403,12 @@ def run_selected_playlists(playlist_names):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plex playlist builder")
     parser.add_argument(
-        "--build-popularity-cache",
-        action="store_true",
-        help="Populate the Spotify popularity cache and exit.",
-    )
-    parser.add_argument(
         "--playlist",
         dest="playlists",
         action="append",
         help="Name of a playlist to build. Can be provided multiple times.",
     )
     args = parser.parse_args()
-
-    if args.build_popularity_cache:
-        try:
-            summary = build_spotify_popularity_cache()
-        except Exception as exc:
-            spotify_logger.exception("Spotify popularity cache build failed: %s", exc)
-            sys.exit(1)
-
-        status = (summary or {}).get("status")
-        reason = (summary or {}).get("reason")
-
-        if status == "completed":
-            spotify_logger.info("Spotify popularity cache build finished successfully.")
-            sys.exit(0)
-        elif status in {"disabled", "skipped"}:
-            if reason:
-                spotify_logger.info("Spotify popularity cache build %s: %s", status, reason)
-            else:
-                spotify_logger.info("Spotify popularity cache build %s.", status)
-            sys.exit(0)
-        else:
-            if reason:
-                spotify_logger.error(
-                    "Spotify popularity cache build %s: %s", status or "failed", reason
-                )
-            else:
-                spotify_logger.error("Spotify popularity cache build failed.")
-            sys.exit(1)
 
     if CACHE_ONLY:
         build_metadata_cache()
