@@ -1270,6 +1270,172 @@
       const waitingPlaylistOrder = new Map();
       let nextWaitingOrderValue = 1;
 
+      function parseTimestampMs(value) {
+        if (value === null || value === undefined) {
+          return null;
+        }
+
+        if (value instanceof Date) {
+          const msValue = value.getTime();
+          return Number.isNaN(msValue) ? null : msValue;
+        }
+
+        if (typeof value === "number") {
+          if (!Number.isFinite(value)) {
+            return null;
+          }
+          const normalized = value < 1e12 ? value * 1000 : value;
+          return Number.isFinite(normalized) ? normalized : null;
+        }
+
+        if (typeof value === "string") {
+          const trimmed = value.trim();
+          if (!trimmed) {
+            return null;
+          }
+
+          if (/^\d+$/.test(trimmed)) {
+            const numeric = Number(trimmed);
+            if (Number.isFinite(numeric)) {
+              const normalized = trimmed.length <= 10 ? numeric * 1000 : numeric;
+              return normalized;
+            }
+          }
+
+          const parsed = Date.parse(trimmed);
+          if (!Number.isNaN(parsed)) {
+            return parsed;
+          }
+        }
+
+        return null;
+      }
+
+      function getPlaylistActivityKey(playlistName, entry) {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+
+        const trimmedName =
+          typeof playlistName === "string" ? playlistName.trim() : "";
+        if (!trimmedName) {
+          return null;
+        }
+
+        const type = typeof entry.type === "string" ? entry.type : "message";
+        const timestampMs = parseTimestampMs(entry.timestamp);
+        const textValue =
+          typeof entry.text === "string" ? entry.text.trim() : "";
+        const percentValue = normalizeProgressPercent(entry);
+
+        const parts = [
+          "playlist",
+          encodeURIComponent(trimmedName),
+          type,
+        ];
+
+        if (timestampMs !== null) {
+          parts.push(`ts:${timestampMs}`);
+        }
+
+        if (textValue) {
+          parts.push(`msg:${encodeURIComponent(textValue)}`);
+        }
+
+        if (percentValue !== null) {
+          const normalizedPercent = Math.round(percentValue * 10) / 10;
+          parts.push(`pct:${normalizedPercent}`);
+        }
+
+        if (timestampMs === null && !textValue) {
+          const currentCandidate = Number(entry.current);
+          const totalCandidate = Number(entry.total);
+          if (
+            Number.isFinite(currentCandidate) ||
+            Number.isFinite(totalCandidate)
+          ) {
+            const currentValue = Number.isFinite(currentCandidate)
+              ? Math.max(0, Math.floor(currentCandidate))
+              : "";
+            const totalValue = Number.isFinite(totalCandidate)
+              ? Math.max(0, Math.floor(totalCandidate))
+              : "";
+            parts.push(`counts:${currentValue}/${totalValue}`);
+          }
+
+          if (entry.details) {
+            parts.push(`details:${encodeURIComponent(String(entry.details))}`);
+          }
+        }
+
+        const key = parts.filter(Boolean).join("|");
+        return key || null;
+      }
+
+      function getGeneralActivityKey(entry) {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+
+        const textValue =
+          typeof entry.text === "string" ? entry.text.trim() : "";
+        if (!textValue) {
+          return null;
+        }
+
+        const timestampMs = parseTimestampMs(entry.timestamp);
+        const parts = ["general"];
+        if (timestampMs !== null) {
+          parts.push(`ts:${timestampMs}`);
+        }
+        parts.push(`msg:${encodeURIComponent(textValue)}`);
+
+        return parts.join("|");
+      }
+
+      function createDismissButton(activityKey, options = {}) {
+        if (!activityKey) {
+          return document.createComment("dismiss-unavailable");
+        }
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "playlist-log-dismiss";
+        button.textContent = "×";
+
+        const playlistLabel =
+          typeof options.playlistName === "string"
+            ? options.playlistName.trim()
+            : "";
+        const labelParts = ["Dismiss this message"];
+        if (playlistLabel) {
+          labelParts.push(`for '${playlistLabel}'`);
+        }
+        const label = labelParts.join(" ");
+        button.title = label;
+        button.setAttribute("aria-label", label);
+
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          dismissedActivityKeys.add(activityKey);
+
+          const entryEl = button.closest(".playlist-log-entry");
+          if (entryEl && entryEl.parentElement) {
+            entryEl.parentElement.removeChild(entryEl);
+          }
+
+          if (options && typeof options.onDismiss === "function") {
+            try {
+              options.onDismiss(activityKey, playlistLabel);
+            } catch (error) {
+              console.error(error);
+            }
+          }
+        });
+
+        return button;
+      }
+
       function formatTimestamp(value) {
         if (value === null || value === undefined) {
           return "";
@@ -3990,7 +4156,7 @@
         } catch (error) {
           console.error(error);
           const errorMessage = error?.message || "Failed to save playlist.";
-          showPlaylistInlineMessage(playlist, errorMessage, true);
+          showPlaylistInlineMessage(playlist, errorMessage, { isError: true });
           showMessage(errorMessage, true);
           if (rethrowOnError && error && typeof error === "object") {
             error._fromSavePlaylist = true;
