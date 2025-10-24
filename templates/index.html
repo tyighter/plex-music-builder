@@ -959,6 +959,23 @@
           width: 100%;
         }
 
+        .playlist-card.is-collapsed .playlist-header {
+          flex-direction: row;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .playlist-card.is-collapsed .playlist-status,
+        .playlist-card.is-collapsed .playlist-action-buttons {
+          width: auto;
+          flex: 0 0 auto;
+        }
+
+        .playlist-card.is-collapsed .playlist-status {
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+
         .playlist-status-line,
         .playlist-status-message {
           white-space: normal;
