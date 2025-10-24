@@ -1629,6 +1629,87 @@ class BuildManager:
             status = self._status_snapshot_locked()
             return True, status, message
 
+    def stop_playlist(
+        self, playlist: Optional[str], timeout: float = 10.0
+    ) -> Tuple[bool, Dict[str, Any], Optional[str]]:
+        normalized = self._normalize_playlist_key(playlist)
+        if not normalized:
+            with self._lock:
+                message = "Playlist name is required to stop a build."
+                self._last_message = message
+                status = self._status_snapshot_locked()
+                return False, status, message
+
+        handles_to_stop: List[_ProcessHandle] = []
+        removed_from_pending = False
+        removed_from_queue = False
+
+        with self._lock:
+            self._normalize_process_state_locked()
+
+            remaining_jobs: List[Dict[str, Any]] = []
+            for job in self._pending_jobs:
+                if job.get("type") == "playlist":
+                    candidate = self._normalize_playlist_key(job.get("playlist"))
+                    if candidate == normalized:
+                        removed_from_pending = True
+                        continue
+                remaining_jobs.append(job)
+            self._pending_jobs = remaining_jobs
+
+            queued_snapshot = list(self._queued_playlists)
+            self._remove_waiting_playlist_locked(normalized)
+            removed_from_queue = queued_snapshot != self._queued_playlists
+
+            handle = self._find_handle_for_playlist_locked(normalized)
+            if handle is None:
+                self._sync_waiting_from_pending_locked()
+                if removed_from_pending or removed_from_queue:
+                    message = f"Build for playlist '{normalized}' cancelled."
+                    self._last_message = message
+                    status = self._status_snapshot_locked()
+                    return True, status, message
+
+                message = f"No active build found for playlist '{normalized}'."
+                self._last_message = message
+                status = self._status_snapshot_locked()
+                return False, status, message
+
+            handle.stop_requested = True
+            handles_to_stop.append(handle)
+            stopping_message = f"Stopping build for playlist '{normalized}'."
+            self._last_message = stopping_message
+            self._sync_waiting_from_pending_locked()
+
+        encountered_error: Optional[Exception] = None
+        for handle in handles_to_stop:
+            try:
+                handle.process.terminate()
+                try:
+                    handle.process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    handle.process.kill()
+                    handle.process.wait(timeout=5)
+            except Exception as exc:  # pragma: no cover - defensive
+                encountered_error = exc
+                break
+
+        with self._lock:
+            if encountered_error is not None:
+                error_message = (
+                    f"Unable to stop build for playlist '{normalized}': {encountered_error}"
+                )
+                self._last_message = error_message
+                status = self._status_snapshot_locked()
+                status["status"] = "error"
+                return False, status, error_message
+
+            self._normalize_process_state_locked()
+            completion_message = f"Build for playlist '{normalized}' cancelled."
+            self._last_message = completion_message
+            status = self._status_snapshot_locked()
+            return True, status, completion_message
+
 
 class PopularityCacheRunner:
     def __init__(self, command: Optional[List[str]] = None, work_dir: Optional[Path] = None) -> None:
@@ -2571,6 +2652,44 @@ def create_app() -> Flask:
             http_status = 200
         else:
             http_status = 409 if message == "Builder is not running." else 500
+        return jsonify(response), http_status
+
+    @app.route("/api/build/stop_playlist", methods=["POST"])
+    def stop_playlist_build() -> Any:
+        payload = request.get_json(force=True, silent=True)
+        if not isinstance(payload, dict):
+            return (
+                jsonify({"message": "Playlist name is required to cancel a build."}),
+                400,
+            )
+
+        raw_value = payload.get("playlist")
+        playlist_name = str(raw_value).strip() if raw_value is not None else ""
+        if not playlist_name:
+            status = build_manager.get_status()
+            return (
+                jsonify(
+                    {
+                        "status": status,
+                        "message": "Playlist name is required to cancel a build.",
+                    }
+                ),
+                400,
+            )
+
+        stopped, status, message = build_manager.stop_playlist(playlist_name)
+        response: Dict[str, Any] = {"status": status}
+        if message:
+            response["message"] = message
+        if stopped:
+            http_status = 200
+        else:
+            if message == "Playlist name is required to stop a build.":
+                http_status = 400
+            elif message and message.startswith("No active build found for playlist"):
+                http_status = 404
+            else:
+                http_status = 500
         return jsonify(response), http_status
 
     @app.route("/api/playlists", methods=["GET"])
