@@ -1051,11 +1051,15 @@ class BuildManager:
         if progress is not None:
             progress_playlist = progress.get("playlist")
             if progress_playlist:
-                with self._lock:
-                    self._record_filtering_progress_locked(progress_playlist, progress)
-                    if not is_bootstrap:
+                if is_bootstrap:
+                    handled_progress = True
+                else:
+                    with self._lock:
+                        self._record_filtering_progress_locked(
+                            progress_playlist, progress
+                        )
                         self._observed_active_playlists.add(progress_playlist)
-                handled_progress = True
+                    handled_progress = True
 
         info_message = self._extract_info_message(line)
         if info_message is None:
