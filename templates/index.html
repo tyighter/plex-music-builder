@@ -766,6 +766,40 @@
         color: rgba(255, 255, 255, 0.85);
         position: relative;
         z-index: 1;
+        flex: 1;
+      }
+
+      .playlist-log-dismiss {
+        margin-left: auto;
+        background: transparent;
+        border: none;
+        color: #ff6b6b;
+        font-size: 16px;
+        cursor: pointer;
+        border-radius: 999px;
+        width: 24px;
+        height: 24px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        padding: 0;
+        transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+      }
+
+      .playlist-log-dismiss:hover,
+      .playlist-log-dismiss:focus-visible {
+        background: rgba(255, 107, 107, 0.18);
+        color: #ff8f8f;
+      }
+
+      .playlist-log-dismiss:focus-visible {
+        outline: 2px solid rgba(255, 107, 107, 0.3);
+        outline-offset: 2px;
+      }
+
+      .playlist-log-dismiss:active {
+        transform: scale(0.92);
       }
 
       .playlist-log-empty {
@@ -1131,6 +1165,8 @@
       let isActivityCollapsed = false;
       let isDefaultFiltersCollapsed = true;
       const rateLimitCountdownEntries = new Set();
+      const dismissedActivityKeys = new Set();
+      let pendingActivityStopRequest = null;
       let rateLimitCountdownTimer = null;
       const ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
       const waitingPlaylistOrder = new Map();
@@ -1162,6 +1198,198 @@
           clearInterval(rateLimitCountdownTimer);
           rateLimitCountdownTimer = null;
         }
+      }
+
+      function makeActivityKey(parts) {
+        if (!Array.isArray(parts)) {
+          return null;
+        }
+        const normalized = parts.map((part) => {
+          if (part === null || part === undefined) {
+            return "";
+          }
+          if (typeof part === "number") {
+            if (!Number.isFinite(part)) {
+              return "";
+            }
+            return String(part);
+          }
+          return String(part).trim();
+        });
+        if (normalized.every((part) => part.length === 0)) {
+          return null;
+        }
+        return normalized.join("|");
+      }
+
+      function getPlaylistActivityKey(name, entry) {
+        const trimmedName = typeof name === "string" ? name.trim() : "";
+        if (!trimmedName) {
+          return null;
+        }
+        const parts = [
+          "playlist",
+          trimmedName,
+          entry?.type || "message",
+          entry?.text || "",
+        ];
+        if (entry?.timestamp) {
+          parts.push(entry.timestamp);
+        }
+        if (entry?.percent !== undefined) {
+          parts.push(entry.percent);
+        }
+        if (entry?.current !== undefined || entry?.total !== undefined) {
+          parts.push(entry?.current ?? "");
+          parts.push(entry?.total ?? "");
+        }
+        const normalizedPercent = normalizeProgressPercent(entry);
+        if (normalizedPercent !== null) {
+          parts.push(normalizedPercent.toFixed(2));
+        }
+        return makeActivityKey(parts);
+      }
+
+      function getGeneralActivityKey(entry) {
+        if (!entry) {
+          return null;
+        }
+        return makeActivityKey([
+          "general",
+          entry.text || "",
+          entry.timestamp || "",
+        ]);
+      }
+
+      function getSpotifyActivityKey(type, value, extraParts = []) {
+        if (!type) {
+          return null;
+        }
+        const extras = Array.isArray(extraParts)
+          ? extraParts.filter((part) => part !== undefined && part !== null)
+          : [extraParts];
+        return makeActivityKey(["spotify", type, value || "", ...extras]);
+      }
+
+      function markAndRemoveActivityEntry(entryEl) {
+        if (!entryEl) {
+          return null;
+        }
+
+        const activityKey = entryEl.dataset?.activityKey;
+        if (activityKey) {
+          dismissedActivityKeys.add(activityKey);
+        }
+
+        clearRateLimitCountdowns(entryEl);
+
+        const listEl = entryEl.parentElement;
+        entryEl.remove();
+
+        const playlistBlock = listEl?.closest(".build-log-playlist");
+        if (listEl && listEl.children.length === 0 && playlistBlock) {
+          playlistBlock.remove();
+        }
+
+        return activityKey;
+      }
+
+      function createDismissButton(activityKey, options = {}) {
+        const { playlistName } = options || {};
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "playlist-log-dismiss";
+        button.setAttribute("aria-label", "Dismiss activity");
+        button.innerHTML = "&times;";
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const entryEl = button.closest(".playlist-log-entry");
+          if (activityKey) {
+            dismissedActivityKeys.add(activityKey);
+          }
+          if (entryEl) {
+            markAndRemoveActivityEntry(entryEl);
+          }
+          if (playlistName) {
+            cancelPlaylistBuildFromActivity(playlistName);
+          }
+        });
+        return button;
+      }
+
+      function dismissAllActivityEntries() {
+        if (!buildLogContainer) {
+          return;
+        }
+
+        const entries = Array.from(
+          buildLogContainer.querySelectorAll(".playlist-log-entry")
+        );
+
+        entries.forEach((entryEl) => {
+          markAndRemoveActivityEntry(entryEl);
+        });
+
+        if (!buildLogContainer.firstChild) {
+          buildLogContainer.innerHTML = "";
+        }
+      }
+
+      function cancelPlaylistBuildFromActivity(rawName) {
+        const trimmedName =
+          typeof rawName === "string" ? rawName.trim() : String(rawName ?? "").trim();
+        if (!trimmedName) {
+          return;
+        }
+
+        if (!latestBuildStatus?.running) {
+          return;
+        }
+
+        const activePlaylistsSet = collectActivePlaylistSet(latestBuildStatus);
+        if (!activePlaylistsSet.has(trimmedName)) {
+          return;
+        }
+
+        if (pendingActivityStopRequest) {
+          return;
+        }
+
+        pendingActivityStopRequest = (async () => {
+          try {
+            const response = await fetch("/api/build/stop", { method: "POST" });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(result.message || "Failed to stop playlist build.");
+            }
+
+            if (result.status) {
+              updateBuildStatusUi(result.status);
+            } else {
+              await refreshBuildStatus();
+            }
+
+            if (result.message) {
+              showMessage(result.message);
+            } else {
+              showMessage(`Stopping '${trimmedName}'...`);
+            }
+
+            setTimeout(() => {
+              const refreshPromise = refreshBuildStatus();
+              if (refreshPromise && typeof refreshPromise.catch === "function") {
+                refreshPromise.catch(() => {});
+              }
+            }, 1000);
+          } catch (error) {
+            console.error(error);
+            const message = error?.message || "Failed to stop playlist build.";
+            showMessage(message, true);
+          } finally {
+            pendingActivityStopRequest = null;
+          }
+        })();
       }
 
       function formatDurationShort(totalSeconds) {
@@ -1331,6 +1559,7 @@
         }
         if (buildLogContainer) {
           if (isActivityCollapsed) {
+            dismissAllActivityEntries();
             buildLogContainer.setAttribute("hidden", "");
           } else {
             buildLogContainer.removeAttribute("hidden");
@@ -2020,6 +2249,8 @@
           }
         });
 
+        const activeActivityKeys = new Set();
+
         const playlistNames = [];
         const seenNames = new Set();
         combinedNames.forEach((name) => {
@@ -2105,55 +2336,76 @@
               })
             : [];
 
+          let hasContent = false;
+
           if (normalizedEntries.length) {
             const entry = normalizedEntries[normalizedEntries.length - 1];
-            const item = document.createElement("div");
-            item.className = "playlist-log-entry";
-
-            const percentValue = normalizeProgressPercent(entry);
-            const isProgressEntry =
-              entry && entry.type === "progress" && percentValue !== null;
-            const showSpinner =
-              (isActivePlaylist || (isWaiting && running)) &&
-              !isProgressEntry &&
-              entry?.is_final !== true;
-
-            if (isProgressEntry) {
-              item.classList.add("progress-entry");
-              const progressWrapper = document.createElement("div");
-              progressWrapper.className = "playlist-log-bar";
-              progressWrapper.setAttribute("role", "progressbar");
-              progressWrapper.setAttribute("aria-valuemin", "0");
-              progressWrapper.setAttribute("aria-valuemax", "100");
-              const progressFill = document.createElement("span");
-              const sanitizedPercent = Math.max(0, Math.min(100, percentValue));
-              progressWrapper.setAttribute(
-                "aria-valuenow",
-                String(Math.round(sanitizedPercent))
-              );
-              progressFill.style.setProperty("--progress", `${sanitizedPercent}%`);
-              progressFill.style.width = `${sanitizedPercent}%`;
-              progressWrapper.appendChild(progressFill);
-              item.appendChild(progressWrapper);
+            const entryKey = getPlaylistActivityKey(trimmedName, entry);
+            if (entryKey) {
+              activeActivityKeys.add(entryKey);
             }
+            if (!entryKey || !dismissedActivityKeys.has(entryKey)) {
+              const item = document.createElement("div");
+              item.className = "playlist-log-entry";
+              if (entryKey) {
+                item.dataset.activityKey = entryKey;
+              }
 
-            const messageRow = document.createElement("div");
-            messageRow.className = "playlist-log-message";
+              const percentValue = normalizeProgressPercent(entry);
+              const isProgressEntry =
+                entry && entry.type === "progress" && percentValue !== null;
+              const showSpinner =
+                (isActivePlaylist || (isWaiting && running)) &&
+                !isProgressEntry &&
+                entry?.is_final !== true;
 
-            if (showSpinner) {
-              item.classList.add("is-active-step");
-              const spinner = document.createElement("div");
-              spinner.className = "playlist-log-spinner";
-              messageRow.appendChild(spinner);
+              if (isProgressEntry) {
+                item.classList.add("progress-entry");
+                const progressWrapper = document.createElement("div");
+                progressWrapper.className = "playlist-log-bar";
+                progressWrapper.setAttribute("role", "progressbar");
+                progressWrapper.setAttribute("aria-valuemin", "0");
+                progressWrapper.setAttribute("aria-valuemax", "100");
+                const progressFill = document.createElement("span");
+                const sanitizedPercent = Math.max(0, Math.min(100, percentValue));
+                progressWrapper.setAttribute(
+                  "aria-valuenow",
+                  String(Math.round(sanitizedPercent))
+                );
+                progressFill.style.setProperty(
+                  "--progress",
+                  `${sanitizedPercent}%`
+                );
+                progressFill.style.width = `${sanitizedPercent}%`;
+                progressWrapper.appendChild(progressFill);
+                item.appendChild(progressWrapper);
+              }
+
+              const messageRow = document.createElement("div");
+              messageRow.className = "playlist-log-message";
+
+              if (showSpinner) {
+                item.classList.add("is-active-step");
+                const spinner = document.createElement("div");
+                spinner.className = "playlist-log-spinner";
+                messageRow.appendChild(spinner);
+              }
+
+              const text = document.createElement("div");
+              text.className = "playlist-log-text";
+              text.textContent = entry?.text || "";
+              messageRow.appendChild(text);
+
+              if (entryKey) {
+                messageRow.appendChild(
+                  createDismissButton(entryKey, { playlistName: trimmedName })
+                );
+              }
+
+              item.appendChild(messageRow);
+              listEl.appendChild(item);
+              hasContent = true;
             }
-
-            const text = document.createElement("div");
-            text.className = "playlist-log-text";
-            text.textContent = entry?.text || "";
-            messageRow.appendChild(text);
-
-            item.appendChild(messageRow);
-            listEl.appendChild(item);
           } else {
             const placeholder = document.createElement("div");
             placeholder.className = "playlist-log-entry";
@@ -2186,6 +2438,11 @@
             messageRow.appendChild(text);
             placeholder.appendChild(messageRow);
             listEl.appendChild(placeholder);
+            hasContent = true;
+          }
+
+          if (!hasContent) {
+            return;
           }
 
           block.appendChild(listEl);
@@ -2229,8 +2486,22 @@
           listEl.className = "build-log-playlist-entries";
 
           normalizedGeneralEntries.forEach((entry) => {
+            const entryKey = getGeneralActivityKey(entry);
+            if (entryKey) {
+              activeActivityKeys.add(entryKey);
+              if (dismissedActivityKeys.has(entryKey)) {
+                return;
+              }
+            }
+
             const item = document.createElement("div");
             item.className = "playlist-log-entry general-entry";
+            if (entryKey) {
+              item.dataset.activityKey = entryKey;
+            }
+            const messageRow = document.createElement("div");
+            messageRow.className = "playlist-log-message";
+
             const text = document.createElement("div");
             text.className = "playlist-log-text";
             text.textContent = entry.text || "";
@@ -2240,13 +2511,21 @@
             ) {
               registerRateLimitCountdown(text, entry);
             }
-            item.appendChild(text);
+            messageRow.appendChild(text);
+
+            if (entryKey) {
+              messageRow.appendChild(createDismissButton(entryKey));
+            }
+
+            item.appendChild(messageRow);
             listEl.appendChild(item);
           });
 
-          block.appendChild(listEl);
-          blocksToRender.push(block);
-          renderedGroups += 1;
+          if (listEl.childElementCount > 0) {
+            block.appendChild(listEl);
+            blocksToRender.push(block);
+            renderedGroups += 1;
+          }
         }
 
         const spotifyStatus = latestPopularityStatus || {};
@@ -2284,47 +2563,89 @@
           listEl.className = "build-log-playlist-entries";
 
           if (spotifyHeadline) {
-            const statusEntry = document.createElement("div");
-            statusEntry.className = "playlist-log-entry general-entry";
-            const statusRow = document.createElement("div");
-            statusRow.className = "playlist-log-message";
-            const statusText = document.createElement("div");
-            statusText.className = "playlist-log-text";
-            statusText.textContent = spotifyHeadline;
-            statusRow.appendChild(statusText);
-            statusEntry.appendChild(statusRow);
-            listEl.appendChild(statusEntry);
-          }
-
-          if (shouldShowSpotifyMessage) {
-            const messageEntry = document.createElement("div");
-            messageEntry.className = "playlist-log-entry general-entry";
-            const messageRow = document.createElement("div");
-            messageRow.className = "playlist-log-message";
-            const messageTextEl = document.createElement("div");
-            messageTextEl.className = "playlist-log-text";
-            const baseText = spotifyMessage || "Spotify rate limit reached.";
-            messageTextEl.textContent = baseText;
-            messageRow.appendChild(messageTextEl);
-            messageEntry.appendChild(messageRow);
-            listEl.appendChild(messageEntry);
-
-            if (hasRateLimit) {
-              registerRateLimitCountdown(messageTextEl, {
-                text: baseText,
-                rate_limit_resume_epoch: spotifyStatus.rate_limit_resume_epoch,
-                rate_limit_resume: spotifyStatus.rate_limit_resume,
-                timestamp: spotifyStatus.last_log_at,
-              });
+            const headlineKey = getSpotifyActivityKey("headline", spotifyHeadline, [
+              spotifyStatus.started_at,
+              spotifyStatus.finished_at,
+              spotifyStatus.last_log_at,
+            ]);
+            if (headlineKey) {
+              activeActivityKeys.add(headlineKey);
+            }
+            if (!headlineKey || !dismissedActivityKeys.has(headlineKey)) {
+              const statusEntry = document.createElement("div");
+              statusEntry.className = "playlist-log-entry general-entry";
+              if (headlineKey) {
+                statusEntry.dataset.activityKey = headlineKey;
+              }
+              const statusRow = document.createElement("div");
+              statusRow.className = "playlist-log-message";
+              const statusText = document.createElement("div");
+              statusText.className = "playlist-log-text";
+              statusText.textContent = spotifyHeadline;
+              statusRow.appendChild(statusText);
+              if (headlineKey) {
+                statusRow.appendChild(createDismissButton(headlineKey));
+              }
+              statusEntry.appendChild(statusRow);
+              listEl.appendChild(statusEntry);
             }
           }
 
-          block.appendChild(listEl);
-          blocksToRender.push(block);
-          renderedGroups += 1;
+          if (shouldShowSpotifyMessage) {
+            const baseText = spotifyMessage || "Spotify rate limit reached.";
+            const messageKey = getSpotifyActivityKey("message", baseText, [
+              spotifyStatus.rate_limit_resume_epoch,
+              spotifyStatus.rate_limit_resume,
+              spotifyStatus.last_log_at,
+            ]);
+            if (messageKey) {
+              activeActivityKeys.add(messageKey);
+            }
+            if (!messageKey || !dismissedActivityKeys.has(messageKey)) {
+              const messageEntry = document.createElement("div");
+              messageEntry.className = "playlist-log-entry general-entry";
+              if (messageKey) {
+                messageEntry.dataset.activityKey = messageKey;
+              }
+              const messageRow = document.createElement("div");
+              messageRow.className = "playlist-log-message";
+              const messageTextEl = document.createElement("div");
+              messageTextEl.className = "playlist-log-text";
+              messageTextEl.textContent = baseText;
+              messageRow.appendChild(messageTextEl);
+              if (messageKey) {
+                messageRow.appendChild(createDismissButton(messageKey));
+              }
+              messageEntry.appendChild(messageRow);
+              listEl.appendChild(messageEntry);
+
+              if (hasRateLimit) {
+                registerRateLimitCountdown(messageTextEl, {
+                  text: baseText,
+                  rate_limit_resume_epoch: spotifyStatus.rate_limit_resume_epoch,
+                  rate_limit_resume: spotifyStatus.rate_limit_resume,
+                  timestamp: spotifyStatus.last_log_at,
+                });
+              }
+            }
+          }
+
+          if (listEl.childElementCount > 0) {
+            block.appendChild(listEl);
+            blocksToRender.push(block);
+            renderedGroups += 1;
+          }
         }
 
         blocksToRender.forEach((block) => buildLogContainer.appendChild(block));
+
+        if (dismissedActivityKeys.size) {
+          dismissedActivityKeys.forEach((key) => {
+            if (!activeActivityKeys.has(key)) {
+              dismissedActivityKeys.delete(key);
+            }
+          });
+        }
 
         if (!renderedGroups) {
           const empty = document.createElement("div");
