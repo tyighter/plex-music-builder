@@ -2534,6 +2534,23 @@
             hasContent = true;
           }
 
+          if (hasCancellationMessage) {
+            const cancellationEntry = document.createElement("div");
+            cancellationEntry.className = "playlist-log-entry cancellation-entry";
+            const messageRow = document.createElement("div");
+            messageRow.className = "playlist-log-message";
+            const messageText = document.createElement("div");
+            messageText.className = "playlist-log-text";
+            const cancellationText =
+              (cancellationInfo && cancellationInfo.message) ||
+              `${trimmedName} has been cancelled.`;
+            messageText.textContent = cancellationText;
+            messageRow.appendChild(messageText);
+            cancellationEntry.appendChild(messageRow);
+            listEl.appendChild(cancellationEntry);
+            hasContent = true;
+          }
+
           if (!hasContent) {
             return;
           }
@@ -2722,24 +2739,6 @@
               }
             }
           }
-
-          if (hasCancellationMessage) {
-            const cancellationEntry = document.createElement("div");
-            cancellationEntry.className = "playlist-log-entry cancellation-entry";
-            const messageRow = document.createElement("div");
-            messageRow.className = "playlist-log-message";
-            const messageText = document.createElement("div");
-            messageText.className = "playlist-log-text";
-            const cancellationText =
-              (cancellationInfo && cancellationInfo.message) ||
-              `${trimmedName} has been cancelled.`;
-            messageText.textContent = cancellationText;
-            messageRow.appendChild(messageText);
-            cancellationEntry.appendChild(messageRow);
-            listEl.appendChild(cancellationEntry);
-            hasContent = true;
-          }
-
           if (listEl.childElementCount > 0) {
             block.appendChild(listEl);
             blocksToRender.push(block);
