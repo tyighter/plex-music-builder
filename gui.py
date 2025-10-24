@@ -206,56 +206,6 @@ def _format_timestamp(value: Optional[datetime]) -> Optional[str]:
     return value.astimezone(timezone.utc).isoformat()
 
 
-RATE_LIMIT_RETRY_PATTERN = re.compile(
-    r"Retry will occur after:\s*(?P<value>[0-9]+(?:\.[0-9]+)?)",
-    re.IGNORECASE,
-)
-
-
-def _parse_rate_limit_details(
-    message: Optional[str], reference_time: Optional[float] = None
-) -> Optional[Dict[str, Any]]:
-    if not message:
-        return None
-
-    match = RATE_LIMIT_RETRY_PATTERN.search(message)
-    if not match:
-        return None
-
-    try:
-        retry_seconds = float(match.group("value"))
-    except (TypeError, ValueError):
-        return None
-
-    if retry_seconds <= 0:
-        return None
-
-    if isinstance(reference_time, datetime):
-        base_epoch = reference_time.timestamp()
-    elif reference_time is not None:
-        try:
-            base_epoch = float(reference_time)
-        except (TypeError, ValueError):
-            base_epoch = time.time()
-    else:
-        base_epoch = time.time()
-
-    resume_epoch = base_epoch + retry_seconds
-    try:
-        resume_at = datetime.fromtimestamp(resume_epoch, tz=timezone.utc)
-    except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
-        resume_at = None
-
-    details: Dict[str, Any] = {
-        "rate_limit_seconds": retry_seconds,
-        "rate_limit_resume_epoch": resume_epoch,
-    }
-    if resume_at is not None:
-        details["rate_limit_resume"] = resume_at
-
-    return details
-
-
 class PlaylistConflictError(Exception):
     """Raised when attempting to save a playlist that already exists."""
 
@@ -445,15 +395,6 @@ class BuildManager:
                             timestamp = timestamp.replace(tzinfo=timezone.utc)
                     except ValueError:
                         timestamp = None
-                resume_value = normalized_entry.get("rate_limit_resume")
-                if isinstance(resume_value, str):
-                    try:
-                        resume_dt = datetime.fromisoformat(resume_value)
-                        if resume_dt.tzinfo is None:
-                            resume_dt = resume_dt.replace(tzinfo=timezone.utc)
-                        normalized_entry["rate_limit_resume"] = resume_dt
-                    except ValueError:
-                        normalized_entry.pop("rate_limit_resume", None)
             elif isinstance(entry, str):
                 normalized_entry = {"text": entry}
                 text = entry
@@ -482,9 +423,6 @@ class BuildManager:
 
     def _append_general_log_locked(self, message: str) -> None:
         entry: Dict[str, Any] = {"text": message, "timestamp": _utcnow()}
-        rate_limit_details = _parse_rate_limit_details(message)
-        if rate_limit_details:
-            entry.update(rate_limit_details)
         self._general_logs.append(entry)
         self._prune_general_logs_locked(entry["timestamp"])
         self._passive_last_message = message
@@ -1461,28 +1399,6 @@ class BuildManager:
                     payload_entry["timestamp"] = _format_timestamp(timestamp_value)
                 elif isinstance(timestamp_value, str):
                     payload_entry["timestamp"] = timestamp_value
-
-                resume_value = entry.get("rate_limit_resume")
-                if isinstance(resume_value, datetime):
-                    payload_entry["rate_limit_resume"] = _format_timestamp(resume_value)
-                elif isinstance(resume_value, str):
-                    payload_entry["rate_limit_resume"] = resume_value
-
-                resume_epoch_value = entry.get("rate_limit_resume_epoch")
-                try:
-                    resume_epoch_float = float(resume_epoch_value)
-                except (TypeError, ValueError):
-                    resume_epoch_float = None
-                if resume_epoch_float and resume_epoch_float > 0:
-                    payload_entry["rate_limit_resume_epoch"] = resume_epoch_float
-
-                seconds_value = entry.get("rate_limit_seconds")
-                try:
-                    seconds_float = float(seconds_value)
-                except (TypeError, ValueError):
-                    seconds_float = None
-                if seconds_float and seconds_float > 0:
-                    payload_entry["rate_limit_seconds"] = seconds_float
 
                 general_logs_payload.append(payload_entry)
             elif isinstance(entry, str):

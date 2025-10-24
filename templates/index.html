@@ -1461,20 +1461,6 @@
           normalized.timestamp = entry.timestamp;
         }
 
-        const resumeEpoch = Number(entry.rate_limit_resume_epoch);
-        if (Number.isFinite(resumeEpoch)) {
-          normalized.rate_limit_resume_epoch = resumeEpoch;
-        }
-
-        if (entry.rate_limit_resume) {
-          normalized.rate_limit_resume = entry.rate_limit_resume;
-        }
-
-        const retrySeconds = Number(entry.rate_limit_seconds);
-        if (Number.isFinite(retrySeconds)) {
-          normalized.rate_limit_seconds = retrySeconds;
-        }
-
         return normalized;
       }
 
@@ -1822,8 +1808,6 @@
         if (!buildStatusPanel || !buildLogContainer) {
           return;
         }
-
-        clearRateLimitCountdowns(buildLogContainer);
 
         const nowMs = Date.now();
         Array.from(playlistCancellationMessages.entries()).forEach(
@@ -2272,12 +2256,6 @@
             const text = document.createElement("div");
             text.className = "playlist-log-text";
             text.textContent = entry.text || "";
-            if (
-              entry.rate_limit_resume_epoch !== undefined ||
-              entry.rate_limit_resume
-            ) {
-              registerRateLimitCountdown(text, entry);
-            }
             messageRow.appendChild(text);
 
             if (entryKey) {
