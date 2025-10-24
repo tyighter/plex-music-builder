@@ -14,16 +14,6 @@ runtime:
   max_workers: 3             # number of playlists to process in parallel
   build_all_on_start: false   # true = build playlists automatically when services start
 
-spotify:
-  client_id: "97bfb7998acd470ea0f00886921fc927"
-  client_secret: "a014bd8f23f44edfb92d6e3feb05d88e"
-  market: "US"                 # optional: ISO 3166-1 alpha-2 market code
-  search_limit: 10             # optional: number of search results to evaluate
-  cache_file: "/app/spotify_popularity.json"   # optional: persistent cache for Spotify profiles (set to false to disable)
-  cache_max_age_days: 30       # optional: refresh cached entries after N days (omit or <=0 to keep forever)
-  request_min_interval_seconds: 0.25  # optional: minimum delay between Spotify API calls to avoid rate limits
-  request_retry_backoff_seconds: 5.0  # optional: fallback delay when Spotify returns rate-limit errors
-
 allmusic:
   enabled: true
   cache_file: "/app/allmusic_popularity.json"
