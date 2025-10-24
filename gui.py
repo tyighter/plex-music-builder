@@ -2118,10 +2118,11 @@ def load_playlists() -> Dict[str, Any]:
     data = load_yaml_data()
     defaults_config = data.get("defaults", {}) or {}
     defaults_filters = serialize_filters(defaults_config.get("plex_filter"))
+    defaults_boosts = serialize_boosts(defaults_config.get("popularity_boosts"))
     defaults_extras = {
         key: value
         for key, value in defaults_config.items()
-        if key != "plex_filter"
+        if key not in {"plex_filter", "popularity_boosts"}
     }
 
     playlists_data = []
@@ -2162,7 +2163,11 @@ def load_playlists() -> Dict[str, Any]:
         )
 
     return {
-        "defaults": {"plex_filter": defaults_filters, "extras": defaults_extras},
+        "defaults": {
+            "plex_filter": defaults_filters,
+            "popularity_boosts": defaults_boosts,
+            "extras": defaults_extras,
+        },
         "playlists": playlists_data,
     }
 
@@ -2282,12 +2287,20 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         if yaml_filter is not None:
             defaults_filters.append(yaml_filter)
 
+    defaults_boosts = []
+    for boost_entry in defaults_payload.get("popularity_boosts", []):
+        yaml_boost = build_boost_for_yaml(boost_entry)
+        if yaml_boost is not None:
+            defaults_boosts.append(yaml_boost)
+
     defaults_config: Dict[str, Any] = {}
     extras = defaults_payload.get("extras")
     if isinstance(extras, dict):
         defaults_config.update(extras)
     if defaults_filters:
         defaults_config["plex_filter"] = defaults_filters
+    if defaults_boosts:
+        defaults_config["popularity_boosts"] = defaults_boosts
 
     playlists_dict: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
     for playlist_entry in playlists_payload:

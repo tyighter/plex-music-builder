@@ -17,7 +17,11 @@ if "plexapi.server" not in sys.modules:
     sys.modules["plexapi"] = plexapi_module
     sys.modules["plexapi.server"] = plexapi_server_module
 
-from main import _apply_configured_popularity_boosts, _resolve_popularity_for_sort
+from main import (
+    _apply_configured_popularity_boosts,
+    _merge_playlist_defaults,
+    _resolve_popularity_for_sort,
+)
 
 
 class DummyTrack(SimpleNamespace):
@@ -181,3 +185,31 @@ def test_sorting_prefers_album_boost_over_dedup_cache():
     assert has_value is True
     assert value == pytest.approx(80.0)
     assert dedup_popularity_cache["4"] == pytest.approx(80.0)
+
+
+def test_default_popularity_boosts_merge_with_playlist_rules():
+    defaults_boost = {
+        "field": "genre",
+        "operator": "equals",
+        "value": "Rock",
+        "boost": 2.0,
+    }
+    playlist_boost = {
+        "field": "grandparentTitle",
+        "operator": "contains",
+        "value": "DJ",
+        "boost": 1.5,
+    }
+
+    payload = {
+        "defaults": {"popularity_boosts": [defaults_boost]},
+        "playlists": {"Mix": {"popularity_boosts": [playlist_boost]}},
+    }
+
+    merged = _merge_playlist_defaults(payload)
+    merged_boosts = merged["Mix"]["popularity_boosts"]
+
+    assert merged_boosts[0] == defaults_boost
+    assert merged_boosts[0] is not defaults_boost
+    assert merged_boosts[1] == playlist_boost
+    assert merged_boosts[1] is not playlist_boost
