@@ -76,6 +76,75 @@
         flex: 0 0 auto;
       }
 
+      .config-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        z-index: 2000;
+      }
+
+      .config-overlay.show {
+        display: flex;
+      }
+
+      .config-panel {
+        background: var(--card-bg);
+        border-radius: 20px;
+        padding: 0;
+        width: min(520px, 100%);
+        max-width: 520px;
+        max-height: 85vh;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid rgba(229, 160, 13, 0.22);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+        overflow: hidden;
+      }
+
+      .config-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 24px;
+        border-bottom: 1px solid rgba(229, 160, 13, 0.16);
+        background: rgba(14, 14, 14, 0.6);
+      }
+
+      .config-panel-header h2 {
+        margin: 0;
+        font-size: 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .config-panel-body {
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        overflow-y: auto;
+      }
+
+      .config-panel-body p {
+        margin: 0;
+        color: rgba(255, 255, 255, 0.75);
+        line-height: 1.6;
+      }
+
+      .config-panel-footer {
+        padding: 20px 24px;
+        display: flex;
+        justify-content: flex-end;
+        border-top: 1px solid rgba(229, 160, 13, 0.16);
+        background: rgba(14, 14, 14, 0.6);
+        gap: 12px;
+      }
+
       main {
         flex: 1;
         padding: 32px 48px 120px;
@@ -1007,6 +1076,16 @@
           flex-wrap: wrap;
         }
 
+        .config-overlay {
+          padding: 16px;
+        }
+
+        .config-panel {
+          width: 100%;
+          max-width: none;
+          max-height: 90vh;
+        }
+
         #addPlaylist {
           bottom: 24px;
           right: 24px;
@@ -1089,7 +1168,18 @@
     <header>
       <h1><span class="icon">▶</span>Plex Playlist Builder</h1>
       <div class="action-bar">
-                        <button
+        <button
+          id="configBtn"
+          class="icon-only secondary"
+          type="button"
+          title="Open configuration menu"
+          aria-label="Open configuration menu"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          ⚙️
+        </button>
+        <button
           id="reloadBtn"
           class="icon-only secondary"
           type="button"
@@ -1119,6 +1209,41 @@
         <span id="message" class="message"></span>
       </div>
     </header>
+    <div
+      id="configOverlay"
+      class="config-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div class="config-panel" role="document" tabindex="-1">
+        <div class="config-panel-header">
+          <h2><span class="section-icon">⚙️</span>Configuration</h2>
+          <button
+            id="configCloseBtn"
+            class="icon-only secondary"
+            type="button"
+            title="Close configuration menu"
+            aria-label="Close configuration menu"
+            data-config-initial-focus
+          >
+            ✕
+          </button>
+        </div>
+        <div class="config-panel-body">
+          <p>
+            Adjust application preferences and defaults from this menu. Future
+            updates can surface additional controls without leaving the main
+            builder screen.
+          </p>
+        </div>
+        <div class="config-panel-footer">
+          <button id="configDismissBtn" class="secondary" type="button">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
     <main>
       <section>
         <h2><span class="section-icon">🛠</span>Build Status</h2>
@@ -1231,6 +1356,10 @@
       const collapseAllPlaylistsBtn = document.getElementById(
         "collapseAllPlaylists"
       );
+      const configBtn = document.getElementById("configBtn");
+      const configOverlay = document.getElementById("configOverlay");
+      const configCloseBtn = document.getElementById("configCloseBtn");
+      const configDismissBtn = document.getElementById("configDismissBtn");
       const defaultFiltersContainer = document.getElementById("defaultFilters");
       const defaultBoostsPopout = document.getElementById("defaultBoostsPopout");
       const defaultBoostsContainer = document.getElementById(
@@ -1269,6 +1398,55 @@
       let messageHideTimeout = null;
       const waitingPlaylistOrder = new Map();
       let nextWaitingOrderValue = 1;
+      let lastFocusedBeforeConfig = null;
+
+      function openConfigMenu() {
+        if (!configOverlay) {
+          return;
+        }
+
+        lastFocusedBeforeConfig = document.activeElement;
+        configOverlay.classList.add("show");
+        configOverlay.setAttribute("aria-hidden", "false");
+
+        if (configBtn) {
+          configBtn.setAttribute("aria-expanded", "true");
+        }
+
+        const focusTarget =
+          configOverlay.querySelector("[data-config-initial-focus]") ||
+          configOverlay.querySelector(".config-panel") ||
+          configCloseBtn ||
+          configOverlay;
+
+        window.requestAnimationFrame(() => {
+          if (focusTarget && typeof focusTarget.focus === "function") {
+            focusTarget.focus();
+          }
+        });
+      }
+
+      function closeConfigMenu() {
+        if (!configOverlay) {
+          return;
+        }
+
+        configOverlay.classList.remove("show");
+        configOverlay.setAttribute("aria-hidden", "true");
+
+        if (configBtn) {
+          configBtn.setAttribute("aria-expanded", "false");
+        }
+
+        if (
+          lastFocusedBeforeConfig &&
+          typeof lastFocusedBeforeConfig.focus === "function"
+        ) {
+          lastFocusedBeforeConfig.focus();
+        }
+
+        lastFocusedBeforeConfig = null;
+      }
 
       function parseTimestampMs(value) {
         if (value === null || value === undefined) {
@@ -4168,6 +4346,39 @@
           }
         }
       }
+
+      if (configBtn && configOverlay) {
+        configBtn.addEventListener("click", () => {
+          if (configOverlay.classList.contains("show")) {
+            closeConfigMenu();
+          } else {
+            openConfigMenu();
+          }
+        });
+      }
+
+      [configCloseBtn, configDismissBtn].forEach((btn) => {
+        if (btn) {
+          btn.addEventListener("click", () => {
+            closeConfigMenu();
+          });
+        }
+      });
+
+      if (configOverlay) {
+        configOverlay.addEventListener("click", (event) => {
+          if (event.target === configOverlay) {
+            closeConfigMenu();
+          }
+        });
+      }
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && configOverlay?.classList.contains("show")) {
+          event.preventDefault();
+          closeConfigMenu();
+        }
+      });
 
       if (toggleDefaultFiltersBtn) {
         toggleDefaultFiltersBtn.addEventListener("click", () => {
