@@ -247,11 +247,15 @@
       }
 
       .playlist-header {
-        display: flex;
-        align-items: center;
-        gap: 16px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+          "title actions"
+          "status actions"
+          "message message";
+        align-items: start;
+        gap: 12px 16px;
         margin-bottom: 18px;
-        flex-wrap: wrap;
       }
 
       .playlist-list-controls {
@@ -287,6 +291,7 @@
         gap: 10px;
         min-width: 0;
         flex: 1 1 220px;
+        grid-area: title;
       }
 
       .playlist-status {
@@ -295,13 +300,17 @@
         gap: 10px;
         min-width: 0;
         flex: 1 1 240px;
+        grid-area: status;
       }
 
       .playlist-action-buttons {
         display: flex;
         align-items: center;
         gap: 8px;
-        flex: 0 0 auto;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        align-self: start;
+        grid-area: actions;
       }
 
       .playlist-inline-message {
@@ -312,7 +321,8 @@
         background: rgba(229, 160, 13, 0.18);
         color: var(--plex-light);
         flex-basis: 100%;
-        margin-top: 4px;
+        margin-top: 0;
+        grid-area: message;
       }
 
       .playlist-inline-message.show {
@@ -975,6 +985,11 @@
         display: inline-flex;
       }
 
+      .message.error {
+        background: rgba(229, 65, 70, 0.28);
+        color: #fff;
+      }
+
       @media (max-width: 960px) {
         main {
           padding: 24px;
@@ -998,34 +1013,23 @@
         }
 
         .playlist-header {
-          flex-direction: column;
+          grid-template-columns: minmax(0, 1fr) auto;
+          grid-template-areas:
+            "title actions"
+            "status actions"
+            "message message";
+        }
+
+        .playlist-header-title {
           align-items: flex-start;
-          gap: 12px;
         }
 
         .playlist-status {
-          width: 100%;
+          align-items: flex-start;
         }
 
         .playlist-action-buttons {
-          width: 100%;
-        }
-
-        .playlist-card.is-collapsed .playlist-header {
-          flex-direction: row;
-          align-items: center;
-          gap: 10px;
-        }
-
-        .playlist-card.is-collapsed .playlist-status,
-        .playlist-card.is-collapsed .playlist-action-buttons {
-          width: auto;
-          flex: 0 0 auto;
-        }
-
-        .playlist-card.is-collapsed .playlist-status {
-          flex: 1 1 auto;
-          min-width: 0;
+          justify-content: flex-end;
         }
 
         .playlist-status-line,
@@ -1258,9 +1262,144 @@
       let nextPlaylistActivityOrder = 1;
       const pendingActivityStopRequests = new Map();
       const ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
-      const GENERAL_ACTIVITY_RETENTION_MS = 60 * 1000;
+      const GENERAL_ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
+      const MESSAGE_DISPLAY_DURATION = 5 * 1000;
+      const PLAYLIST_INLINE_MESSAGE_DURATION = 4 * 1000;
+      const PLAYLIST_CANCELLATION_MESSAGE_TTL = 2 * 60 * 1000;
+      let messageHideTimeout = null;
       const waitingPlaylistOrder = new Map();
       let nextWaitingOrderValue = 1;
+
+      function hideMessage() {
+        if (!messageEl) {
+          return;
+        }
+
+        if (messageHideTimeout !== null) {
+          window.clearTimeout(messageHideTimeout);
+          messageHideTimeout = null;
+        }
+
+        messageEl.textContent = "";
+        messageEl.classList.remove("show");
+        messageEl.classList.remove("error");
+      }
+
+      function showMessage(text, isError = false) {
+        if (!messageEl) {
+          return;
+        }
+
+        const rawText =
+          text === null || text === undefined ? "" : String(text);
+        const trimmedText = rawText.trim();
+        if (!trimmedText) {
+          hideMessage();
+          return;
+        }
+
+        if (messageHideTimeout !== null) {
+          window.clearTimeout(messageHideTimeout);
+        }
+
+        messageEl.textContent = trimmedText;
+        messageEl.classList.toggle("error", Boolean(isError));
+        messageEl.classList.add("show");
+
+        messageHideTimeout = window.setTimeout(() => {
+          hideMessage();
+        }, MESSAGE_DISPLAY_DURATION);
+      }
+
+      function clearPlaylistInlineMessageTimer(playlist) {
+        if (!playlist || typeof playlist !== "object") {
+          return;
+        }
+
+        const timeoutId = playlistMessageTimeouts.get(playlist);
+        if (timeoutId !== undefined) {
+          window.clearTimeout(timeoutId);
+          playlistMessageTimeouts.delete(playlist);
+        }
+      }
+
+      function hidePlaylistInlineMessage(playlist) {
+        if (!playlist || typeof playlist !== "object") {
+          return;
+        }
+
+        const inlineEl = playlist._inlineMessageEl;
+        if (!inlineEl) {
+          return;
+        }
+
+        clearPlaylistInlineMessageTimer(playlist);
+        inlineEl.textContent = "";
+        inlineEl.classList.remove("show");
+        inlineEl.classList.remove("error");
+      }
+
+      function showPlaylistInlineMessage(playlist, text, options = {}) {
+        if (!playlist || typeof playlist !== "object") {
+          return;
+        }
+
+        const inlineEl = playlist._inlineMessageEl;
+        if (!inlineEl) {
+          return;
+        }
+
+        if (!options || typeof options !== "object") {
+          options = {};
+        }
+
+        clearPlaylistInlineMessageTimer(playlist);
+
+        const rawText =
+          text === null || text === undefined ? "" : String(text);
+        const trimmedText = rawText.trim();
+
+        if (!trimmedText) {
+          hidePlaylistInlineMessage(playlist);
+          return;
+        }
+
+        inlineEl.textContent = trimmedText;
+        inlineEl.classList.toggle("error", Boolean(options.isError));
+        inlineEl.classList.add("show");
+
+        const persist = Boolean(options.persist);
+        if (!persist) {
+          const durationCandidate = Number(options.duration);
+          const duration = Number.isFinite(durationCandidate) && durationCandidate > 0
+            ? durationCandidate
+            : PLAYLIST_INLINE_MESSAGE_DURATION;
+          const timeoutId = window.setTimeout(() => {
+            hidePlaylistInlineMessage(playlist);
+          }, duration);
+          playlistMessageTimeouts.set(playlist, timeoutId);
+        }
+      }
+
+      function registerPlaylistCancellation(playlistName, customMessage) {
+        const trimmedName =
+          typeof playlistName === "string" ? playlistName.trim() : "";
+        if (!trimmedName) {
+          return;
+        }
+
+        const nowMs = Date.now();
+        const normalizedMessage =
+          typeof customMessage === "string" && customMessage.trim()
+            ? customMessage.trim()
+            : `Cancellation requested for '${trimmedName}'.`;
+
+        playlistCancellationMessages.set(trimmedName, {
+          message: normalizedMessage,
+          expiresAt: nowMs + PLAYLIST_CANCELLATION_MESSAGE_TTL,
+        });
+        playlistCancellationCutoffs.set(trimmedName, nowMs);
+      }
 
       function normalizeProgressPercent(entry) {
         if (!entry || typeof entry !== "object") {
@@ -1615,9 +1754,11 @@
           ? "Build this playlist"
           : "Enter a playlist name to build it individually";
 
-        if (isRunningThisPlaylist) {
+        if (isRunningThisPlaylist || isWaitingThisPlaylist) {
           buttonIcon = "⏹";
-          baseTitle = "Stop building this playlist";
+          baseTitle = isWaitingThisPlaylist
+            ? "Cancel the queued build for this playlist"
+            : "Stop building this playlist";
           button.classList.add("danger");
           button.classList.remove("secondary");
         } else if (shouldShowQueueButton) {
@@ -2392,17 +2533,22 @@
         }
 
         const activePlaylistsSet = collectActivePlaylistSet(latestBuildStatus);
+        const waitingPlaylistsSet = collectWaitingPlaylistSet(latestBuildStatus);
         const isRunningThisPlaylist = Boolean(
           latestBuildStatus?.running &&
             activePlaylistsSet.has(playlistName)
         );
+        const isWaitingThisPlaylist = Boolean(
+          waitingPlaylistsSet.has(playlistName)
+        );
+        const shouldStopPlaylist = isRunningThisPlaylist || isWaitingThisPlaylist;
 
         const elements = playlist._statusElements || {};
         if (elements.button) {
           elements.button.disabled = true;
         }
 
-        const endpoint = isRunningThisPlaylist
+        const endpoint = shouldStopPlaylist
           ? "/api/build/stop_playlist"
           : "/api/build/start";
         const options = {
@@ -2412,7 +2558,7 @@
         };
 
         try {
-          if (!isRunningThisPlaylist) {
+          if (!shouldStopPlaylist) {
             await savePlaylist(
               playlist,
               undefined,
@@ -2443,14 +2589,21 @@
             showMessage(result.message);
           } else {
             showMessage(
-              isRunningThisPlaylist
-                ? `Stopping '${playlistName}'...`
+              shouldStopPlaylist
+                ? isWaitingThisPlaylist
+                  ? `Cancelling queued build for '${playlistName}'...`
+                  : `Stopping '${playlistName}'...`
                 : `Starting '${playlistName}'...`
             );
           }
 
-          if (isRunningThisPlaylist) {
-            registerPlaylistCancellation(playlistName);
+          if (shouldStopPlaylist) {
+            registerPlaylistCancellation(
+              playlistName,
+              isWaitingThisPlaylist
+                ? `Cancellation requested for '${playlistName}'.`
+                : undefined
+            );
           }
 
           setTimeout(() => {
