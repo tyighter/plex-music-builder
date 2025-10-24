@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -120,6 +121,438 @@ def _load_config_data() -> Dict[str, Any]:
     _CONFIG_CACHE["mtime"] = getattr(stat_result, "st_mtime", None)
     _CONFIG_CACHE["data"] = config_data
     return config_data if isinstance(config_data, dict) else {}
+
+
+CONFIG_LOG_LEVEL_OPTIONS: List[Dict[str, str]] = [
+    {"value": "DEBUG", "label": "Debug"},
+    {"value": "INFO", "label": "Info"},
+    {"value": "WARNING", "label": "Warning"},
+    {"value": "ERROR", "label": "Error"},
+    {"value": "CRITICAL", "label": "Critical"},
+]
+
+CONFIG_FORM_DEFINITION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
+    [
+        (
+            "plex",
+            {
+                "label": "Plex Server",
+                "description": (
+                    "Configure how the builder connects to your Plex server. "
+                    "These values mirror the entries in config.yml."
+                ),
+                "fields": [
+                    {
+                        "key": "PLEX_URL",
+                        "label": "Server URL",
+                        "type": "string",
+                        "input": "text",
+                        "placeholder": "http://localhost:32400",
+                        "helper": "Include the protocol (http or https).",
+                    },
+                    {
+                        "key": "PLEX_TOKEN",
+                        "label": "Access Token",
+                        "type": "string",
+                        "input": "password",
+                        "sensitive": True,
+                        "helper": "Stored as plain text in config.yml.",
+                    },
+                    {
+                        "key": "library_name",
+                        "label": "Music Library Name",
+                        "type": "string",
+                        "input": "text",
+                        "placeholder": "Music",
+                    },
+                ],
+            },
+        ),
+        (
+            "logging",
+            {
+                "label": "Logging",
+                "description": (
+                    "Control the verbosity and location of builder log output."
+                ),
+                "fields": [
+                    {
+                        "key": "level",
+                        "label": "Log Level",
+                        "type": "select",
+                        "input": "select",
+                        "options": CONFIG_LOG_LEVEL_OPTIONS,
+                        "helper": "Choose the minimum log severity to capture.",
+                    },
+                    {
+                        "key": "file",
+                        "label": "Log File",
+                        "type": "string",
+                        "input": "text",
+                        "placeholder": str(DEFAULT_LOG_PATH),
+                        "helper": "Relative paths are resolved from the config directory.",
+                    },
+                    {
+                        "key": "playlist_debug_dir",
+                        "label": "Playlist Debug Directory",
+                        "type": "string",
+                        "input": "text",
+                        "helper": "Optional folder for individual playlist debug dumps.",
+                    },
+                ],
+            },
+        ),
+        (
+            "runtime",
+            {
+                "label": "Runtime Behaviour",
+                "description": (
+                    "Tune how the builder schedules work and interacts with Plex."
+                ),
+                "fields": [
+                    {
+                        "key": "run_forever",
+                        "label": "Run Continuously",
+                        "type": "boolean",
+                        "input": "checkbox",
+                        "helper": "Repeat builds on a schedule instead of exiting after one pass.",
+                    },
+                    {
+                        "key": "cache_only",
+                        "label": "Cache Only Mode",
+                        "type": "boolean",
+                        "input": "checkbox",
+                        "helper": "Skip playlist updates and only refresh cached metadata.",
+                    },
+                    {
+                        "key": "build_all_on_start",
+                        "label": "Build All on Start",
+                        "type": "boolean",
+                        "input": "checkbox",
+                        "helper": "Automatically start building playlists when services launch.",
+                    },
+                    {
+                        "key": "refresh_interval_minutes",
+                        "label": "Refresh Interval (minutes)",
+                        "type": "integer",
+                        "input": "number",
+                        "min": 1,
+                    },
+                    {
+                        "key": "save_interval",
+                        "label": "Save Interval",
+                        "type": "integer",
+                        "input": "number",
+                        "min": 1,
+                        "helper": "Cache progress every N processed items.",
+                    },
+                    {
+                        "key": "max_workers",
+                        "label": "Max Parallel Playlists",
+                        "type": "integer",
+                        "input": "number",
+                        "min": 1,
+                    },
+                    {
+                        "key": "playlist_chunk_size",
+                        "label": "Playlist Chunk Size",
+                        "type": "integer",
+                        "input": "number",
+                        "min": 1,
+                        "helper": "How many tracks to batch when syncing to Plex.",
+                    },
+                ],
+            },
+        ),
+        (
+            "allmusic",
+            {
+                "label": "AllMusic Integration",
+                "description": (
+                    "Control how popularity data is fetched from AllMusic and cached."
+                ),
+                "fields": [
+                    {
+                        "key": "enabled",
+                        "label": "Enable AllMusic",
+                        "type": "boolean",
+                        "input": "checkbox",
+                    },
+                    {
+                        "key": "cache_file",
+                        "label": "Cache File",
+                        "type": "string",
+                        "input": "text",
+                        "placeholder": str(DEFAULT_ALLMUSIC_CACHE),
+                    },
+                    {
+                        "key": "timeout",
+                        "label": "Request Timeout (seconds)",
+                        "type": "integer",
+                        "input": "number",
+                        "min": 1,
+                    },
+                    {
+                        "key": "google_min_interval",
+                        "label": "Google Search Interval (seconds)",
+                        "type": "float",
+                        "input": "number",
+                        "min": 0.0,
+                        "step": 0.1,
+                    },
+                    {
+                        "key": "google_backoff_seconds",
+                        "label": "Google Backoff (seconds)",
+                        "type": "float",
+                        "input": "number",
+                        "min": 0.0,
+                        "step": 0.1,
+                    },
+                    {
+                        "key": "user_agent",
+                        "label": "User Agent",
+                        "type": "string",
+                        "input": "text",
+                    },
+                ],
+            },
+        ),
+    ]
+)
+
+_CONFIG_TRUE_VALUES = {"1", "true", "yes", "on", "y"}
+_CONFIG_FALSE_VALUES = {"0", "false", "no", "off", "n"}
+
+
+def _coerce_config_boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if not lowered:
+            return False
+        if lowered in _CONFIG_TRUE_VALUES:
+            return True
+        if lowered in _CONFIG_FALSE_VALUES:
+            return False
+    raise ValueError("Enter true or false.")
+
+
+def _coerce_config_number(value: Any, field: Dict[str, Any], *, is_float: bool) -> Optional[float]:
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        numeric: float = float(value)
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            numeric = float(text)
+        except ValueError:
+            raise ValueError("Enter a valid number.")
+
+    if not math.isfinite(numeric):
+        raise ValueError("Enter a valid number.")
+
+    minimum = field.get("min")
+    maximum = field.get("max")
+    if minimum is not None and numeric < minimum:
+        raise ValueError(f"Value must be at least {minimum}.")
+    if maximum is not None and numeric > maximum:
+        raise ValueError(f"Value must be at most {maximum}.")
+
+    if not is_float:
+        return float(int(round(numeric)))
+    return numeric
+
+
+def _coerce_config_string(value: Any, field: Dict[str, Any]) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
+
+
+def _coerce_config_select(value: Any, field: Dict[str, Any]) -> Optional[str]:
+    options = field.get("options") or []
+    if value is None:
+        return None
+
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+
+    option_values = {str(option.get("value")) for option in options}
+    if candidate in option_values:
+        return candidate
+
+    upper_candidate = candidate.upper()
+    for option in options:
+        option_value = str(option.get("value"))
+        if option_value.upper() == upper_candidate:
+            return option_value
+
+    valid = ", ".join(option_values)
+    raise ValueError(f"Choose one of: {valid}.")
+
+
+def _normalize_field_display_value(value: Any, field: Dict[str, Any]) -> Any:
+    input_type = field.get("input")
+    if input_type == "checkbox":
+        try:
+            return _coerce_config_boolean(value)
+        except ValueError:
+            return bool(value)
+
+    if value is None:
+        default = field.get("default")
+        return "" if default is None else str(default)
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+
+    return str(value)
+
+
+def _extract_section_values(config_data: Dict[str, Any], section_id: str) -> Dict[str, Any]:
+    if section_id == "plex":
+        plex_cfg = config_data.get("plex")
+        if isinstance(plex_cfg, dict):
+            return plex_cfg.copy()
+        extracted: Dict[str, Any] = {}
+        for key in ("PLEX_URL", "PLEX_TOKEN", "library_name"):
+            if key in config_data:
+                extracted[key] = config_data.get(key)
+        return extracted
+
+    section = config_data.get(section_id)
+    return section.copy() if isinstance(section, dict) else {}
+
+
+def _apply_section_updates(
+    config_data: Dict[str, Any], section_id: str, updates: Dict[str, Any]
+) -> Dict[str, Any]:
+    updated = dict(config_data)
+    section_values = _extract_section_values(updated, section_id)
+
+    for key, value in updates.items():
+        if value is None:
+            section_values.pop(key, None)
+        else:
+            section_values[key] = value
+
+    if section_id == "plex":
+        if section_values:
+            updated["plex"] = section_values
+        else:
+            updated.pop("plex", None)
+        for legacy_key in ("PLEX_URL", "PLEX_TOKEN", "library_name"):
+            if legacy_key in updates:
+                legacy_value = updates[legacy_key]
+                if legacy_value is None:
+                    updated.pop(legacy_key, None)
+                else:
+                    updated[legacy_key] = legacy_value
+        return updated
+
+    if section_values:
+        updated[section_id] = section_values
+    else:
+        updated.pop(section_id, None)
+    return updated
+
+
+def _coerce_config_field_value(value: Any, field: Dict[str, Any]) -> Optional[Any]:
+    field_type = field.get("type")
+    if field_type == "boolean":
+        return _coerce_config_boolean(value)
+    if field_type == "integer":
+        coerced = _coerce_config_number(value, field, is_float=False)
+        return None if coerced is None else int(coerced)
+    if field_type == "float":
+        coerced = _coerce_config_number(value, field, is_float=True)
+        return None if coerced is None else float(coerced)
+    if field_type == "select":
+        return _coerce_config_select(value, field)
+    return _coerce_config_string(value, field)
+
+
+def _build_config_sections_payload(
+    config_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if config_data is None:
+        config_data = _load_config_data()
+
+    sections_payload: List[Dict[str, Any]] = []
+    for section_id, definition in CONFIG_FORM_DEFINITION.items():
+        values = _extract_section_values(config_data, section_id)
+        fields_payload: List[Dict[str, Any]] = []
+        for field in definition.get("fields", []):
+            key = field.get("key")
+            if not key:
+                continue
+            raw_value = values.get(key, field.get("default"))
+            display_value = _normalize_field_display_value(raw_value, field)
+            field_payload: Dict[str, Any] = {
+                "key": key,
+                "label": field.get("label", key),
+                "input": field.get("input", "text"),
+                "type": field.get("type", "string"),
+                "value": display_value,
+            }
+            for attr in ("placeholder", "helper", "step", "min", "max"):
+                if field.get(attr) is not None:
+                    field_payload[attr] = field.get(attr)
+            if field.get("options"):
+                field_payload["options"] = field.get("options")
+            if field.get("sensitive"):
+                field_payload["sensitive"] = True
+            fields_payload.append(field_payload)
+
+        section_payload = {
+            "id": section_id,
+            "label": definition.get("label", section_id.title()),
+            "description": definition.get("description"),
+            "fields": fields_payload,
+        }
+        sections_payload.append(section_payload)
+
+    return {
+        "sections": sections_payload,
+        "path": str(CONFIG_PATH),
+        "search_paths": [str(path) for path in CONFIG_SEARCH_PATHS],
+    }
+
+
+def _save_config_data(config_data: Dict[str, Any]) -> Dict[str, Any]:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    serializable = deepcopy(config_data)
+    with CONFIG_PATH.open("w", encoding="utf-8") as config_file:
+        yaml.safe_dump(serializable, config_file, sort_keys=False, allow_unicode=True)
+
+    try:
+        stat_result = CONFIG_PATH.stat()
+        _CONFIG_CACHE["mtime"] = getattr(stat_result, "st_mtime", None)
+    except OSError:
+        _CONFIG_CACHE["mtime"] = None
+
+    _CONFIG_CACHE["data"] = deepcopy(config_data)
+    return config_data
+
+
+def _schedule_restart(delay: float = 1.0) -> None:
+    def _delayed_exit() -> None:
+        time.sleep(max(0.0, delay))
+        os._exit(0)
+
+    thread = threading.Thread(target=_delayed_exit, name="pmb-restart", daemon=True)
+    thread.start()
 
 GENERAL_LOG_RETENTION = timedelta(minutes=5)
 GENERAL_LOG_DISPLAY_LIMIT = 3
@@ -298,6 +731,13 @@ class BuildManager:
                 if candidate == normalized:
                     return handle
 
+        return None
+
+    def _find_handle_for_all_locked(self) -> Optional[_ProcessHandle]:
+        for handle in self._processes:
+            job = handle.job or {}
+            if job.get("type") == "all":
+                return handle
         return None
 
     @classmethod
@@ -1596,23 +2036,44 @@ class BuildManager:
 
             handle = self._find_handle_for_playlist_locked(normalized)
             if handle is None:
-                self._sync_waiting_from_pending_locked()
-                if removed_from_pending or removed_from_queue:
-                    message = f"Build for playlist '{normalized}' cancelled."
+                all_handle = self._find_handle_for_all_locked()
+                normalized_active = {
+                    self._normalize_playlist_key(name)
+                    for name in self._observed_active_playlists
+                }
+                if (
+                    all_handle is not None
+                    and normalized in normalized_active
+                ):
+                    if all_handle not in handles_to_stop:
+                        handles_to_stop.append(all_handle)
+                    all_handle.stop_requested = True
+                    stopping_message = (
+                        f"Stopping build for playlist '{normalized}' as part of the all-playlists job."
+                    )
+                    self._last_message = stopping_message
+                    self._pending_jobs.clear()
+                    self._queued_playlists = []
+                    self._sync_waiting_from_pending_locked()
+                else:
+                    self._sync_waiting_from_pending_locked()
+                    if removed_from_pending or removed_from_queue:
+                        message = f"Build for playlist '{normalized}' cancelled."
+                        self._last_message = message
+                        status = self._status_snapshot_locked()
+                        return True, status, message
+
+                    message = f"No active build found for playlist '{normalized}'."
                     self._last_message = message
                     status = self._status_snapshot_locked()
-                    return True, status, message
-
-                message = f"No active build found for playlist '{normalized}'."
-                self._last_message = message
-                status = self._status_snapshot_locked()
-                return False, status, message
-
-            handle.stop_requested = True
-            handles_to_stop.append(handle)
-            stopping_message = f"Stopping build for playlist '{normalized}'."
-            self._last_message = stopping_message
-            self._sync_waiting_from_pending_locked()
+                    return False, status, message
+            else:
+                handle.stop_requested = True
+                if handle not in handles_to_stop:
+                    handles_to_stop.append(handle)
+                stopping_message = f"Stopping build for playlist '{normalized}'."
+                self._last_message = stopping_message
+                self._sync_waiting_from_pending_locked()
 
         encountered_error: Optional[Exception] = None
         for handle in handles_to_stop:
@@ -1712,10 +2173,13 @@ def load_yaml_data() -> Dict[str, Any]:
 
     defaults = data.get("defaults", {}) or {}
     raw_playlists = data.get("playlists", {}) or {}
-    if isinstance(raw_playlists, OrderedDict):
-        playlists = raw_playlists
-    else:
-        playlists = OrderedDict(raw_playlists.items())
+    playlist_items: List[Tuple[str, Dict[str, Any]]] = []
+    if isinstance(raw_playlists, dict):
+        for name, config in raw_playlists.items():
+            if not isinstance(name, str):
+                continue
+            playlist_items.append((name, config or {}))
+    playlists = _alphabetize_playlist_configs(playlist_items)
     return {"defaults": defaults, "playlists": playlists}
 
 
@@ -2319,6 +2783,84 @@ def create_app() -> Flask:
             else:
                 http_status = 500
         return jsonify(response), http_status
+
+    @app.route("/api/config", methods=["GET"])
+    def get_config_settings() -> Any:
+        payload = _build_config_sections_payload()
+        payload["supports_restart"] = True
+        return jsonify(payload)
+
+    @app.route("/api/config", methods=["POST"])
+    def update_config_settings() -> Any:
+        payload = request.get_json(force=True, silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Invalid JSON payload."}), 400
+
+        sections_payload = payload.get("sections")
+        if not isinstance(sections_payload, dict):
+            return jsonify({"error": "Invalid configuration payload."}), 400
+
+        config_data = _load_config_data()
+        updated_config = dict(config_data)
+        changes_applied = False
+
+        try:
+            for section_id, definition in CONFIG_FORM_DEFINITION.items():
+                raw_section = sections_payload.get(section_id)
+                if raw_section is None:
+                    continue
+                if not isinstance(raw_section, dict):
+                    raise ValueError(f"Invalid payload for section '{section_id}'.")
+
+                field_updates: Dict[str, Any] = {}
+                for field in definition.get("fields", []):
+                    key = field.get("key")
+                    if not key or key not in raw_section:
+                        continue
+                    coerced_value = _coerce_config_field_value(raw_section[key], field)
+                    field_updates[key] = coerced_value
+
+                if field_updates:
+                    updated_config = _apply_section_updates(
+                        updated_config, section_id, field_updates
+                    )
+                    changes_applied = True
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:  # pragma: no cover - defensive guard
+            return jsonify({"error": str(exc)}), 400
+
+        if changes_applied and updated_config != config_data:
+            saved_config = _save_config_data(updated_config)
+        else:
+            saved_config = config_data
+
+        response_payload = _build_config_sections_payload(saved_config)
+        response_payload["supports_restart"] = True
+        response_payload["message"] = (
+            "Configuration updated successfully."
+            if changes_applied
+            else "No configuration changes detected."
+        )
+        return jsonify(response_payload)
+
+    @app.route("/api/runtime/restart", methods=["POST"])
+    def restart_runtime() -> Any:
+        try:
+            build_manager.stop(timeout=5.0)
+        except Exception:
+            pass
+
+        _schedule_restart(1.0)
+        return (
+            jsonify(
+                {
+                    "message": "Restart requested. The application will exit shortly.",
+                    "supports_restart": True,
+                }
+            ),
+            202,
+        )
 
     @app.route("/api/playlists", methods=["GET"])
     def get_playlists() -> Any:

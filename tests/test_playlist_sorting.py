@@ -54,3 +54,26 @@ def test_save_single_playlist_preserves_sorted_order(tmp_path, monkeypatch):
         saved = yaml.safe_load(handle)
 
     assert list(saved["playlists"].keys()) == ["acoustic", "Blues", "Rock"]
+
+
+def test_load_playlists_returns_sorted_entries(tmp_path, monkeypatch):
+    from gui import load_playlists
+
+    playlist_path = tmp_path / "playlists.yml"
+    monkeypatch.setattr("gui.PLAYLISTS_PATH", playlist_path)
+
+    data = {
+        "defaults": {},
+        "playlists": {
+            "Rock": {"limit": 0},
+            "acoustic": {"limit": 0},
+            "Blues": {"limit": 0},
+        },
+    }
+
+    write_yaml(playlist_path, data)
+
+    result = load_playlists()
+    names = [playlist["name"] for playlist in result["playlists"]]
+
+    assert names == ["acoustic", "Blues", "Rock"]
