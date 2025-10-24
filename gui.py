@@ -1832,20 +1832,11 @@ def serialize_filters(filters: Optional[List[Dict[str, Any]]]) -> List[Dict[str,
     return [normalize_filter_entry(filter_entry or {}) for filter_entry in filters]
 
 
-def normalize_boost_entry(boost_entry: Dict[str, Any]) -> Dict[str, Any]:
-    field = boost_entry.get("field", "")
-    operator = boost_entry.get("operator", "equals")
-    value = boost_entry.get("value", "")
-    boost_raw = boost_entry.get("boost", 1.0)
-    match_all_raw = boost_entry.get("match_all")
-
-    try:
-        boost_value = float(boost_raw)
-    except (TypeError, ValueError):
-        boost_value = 1.0
-
-    if not math.isfinite(boost_value) or boost_value < 0:
-        boost_value = 1.0
+def normalize_boost_condition_entry(condition_entry: Dict[str, Any]) -> Dict[str, Any]:
+    field = condition_entry.get("field", "")
+    operator = condition_entry.get("operator", "equals")
+    value = condition_entry.get("value", "")
+    match_all_raw = condition_entry.get("match_all")
 
     has_multiple_expected_values = False
 
@@ -1867,6 +1858,34 @@ def normalize_boost_entry(boost_entry: Dict[str, Any]) -> Dict[str, Any]:
         "operator": operator,
         "value": value_str,
         "match_all": match_all_value,
+    }
+
+
+def normalize_boost_entry(boost_entry: Dict[str, Any]) -> Dict[str, Any]:
+    boost_raw = boost_entry.get("boost", 1.0)
+
+    try:
+        boost_value = float(boost_raw)
+    except (TypeError, ValueError):
+        boost_value = 1.0
+
+    if not math.isfinite(boost_value) or boost_value < 0:
+        boost_value = 1.0
+
+    raw_conditions = boost_entry.get("conditions")
+    if isinstance(raw_conditions, list):
+        normalized_conditions = [
+            normalize_boost_condition_entry(condition or {})
+            for condition in raw_conditions
+        ]
+    else:
+        normalized_conditions = [normalize_boost_condition_entry(boost_entry)]
+
+    if not normalized_conditions:
+        normalized_conditions = [normalize_boost_condition_entry({})]
+
+    return {
+        "conditions": normalized_conditions,
         "boost": boost_value,
     }
 

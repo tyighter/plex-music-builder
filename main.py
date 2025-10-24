@@ -768,6 +768,40 @@ def _compute_album_popularity_boosts(
     return adjusted_by_rating_key, adjusted_by_object
 
 
+def _normalize_boost_condition(raw_condition):
+    if not isinstance(raw_condition, dict):
+        raw_condition = {}
+
+    field = str(raw_condition.get("field") or "").strip()
+    operator = str(raw_condition.get("operator") or "equals").strip() or "equals"
+    value = raw_condition.get("value", "")
+
+    match_all_raw = raw_condition.get("match_all")
+    if isinstance(match_all_raw, bool):
+        match_all_value = match_all_raw
+    elif match_all_raw is None:
+        match_all_value = True
+    else:
+        match_all_value = bool(match_all_raw)
+
+    has_multiple_expected_values = False
+    if isinstance(value, str):
+        segments = [segment.strip() for segment in value.split(",")]
+        has_multiple_expected_values = len([segment for segment in segments if segment]) > 1
+    elif isinstance(value, (list, tuple, set)):
+        has_multiple_expected_values = len(value) > 1
+
+    if has_multiple_expected_values:
+        match_all_value = False
+
+    return {
+        "field": field,
+        "operator": operator,
+        "value": value,
+        "match_all": match_all_value,
+    }
+
+
 def _apply_configured_popularity_boosts(
     tracks,
     boost_rules,
@@ -783,39 +817,29 @@ def _apply_configured_popularity_boosts(
     for rule in boost_rules:
         if not isinstance(rule, dict):
             continue
-        field = str(rule.get("field") or "").strip()
-        if not field:
-            continue
-        operator = str(rule.get("operator") or "equals").strip() or "equals"
-        value = rule.get("value", "")
-        match_all_raw = rule.get("match_all")
-        if isinstance(match_all_raw, bool):
-            match_all_value = match_all_raw
-        elif match_all_raw is None:
-            match_all_value = True
+
+        raw_conditions = rule.get("conditions")
+        if isinstance(raw_conditions, (list, tuple)):
+            normalized_conditions = [
+                _normalize_boost_condition(condition)
+                for condition in raw_conditions
+            ]
         else:
-            match_all_value = bool(match_all_raw)
+            normalized_conditions = [_normalize_boost_condition(rule)]
 
-        has_multiple_expected_values = False
-        if isinstance(value, str):
-            segments = [segment.strip() for segment in value.split(",")]
-            non_empty_segments = [segment for segment in segments if segment]
-            has_multiple_expected_values = len(non_empty_segments) > 1
-        elif isinstance(value, (list, tuple, set)):
-            has_multiple_expected_values = len(value) > 1
+        normalized_conditions = [
+            condition for condition in normalized_conditions if condition["field"]
+        ]
 
-        if has_multiple_expected_values:
-            match_all_value = False
+        if not normalized_conditions:
+            continue
 
         boost_value = _coerce_non_negative_float(rule.get("boost"))
         if boost_value is None:
             boost_value = 1.0
         normalized_rules.append(
             {
-                "field": field,
-                "operator": operator,
-                "value": value,
-                "match_all": match_all_value,
+                "conditions": normalized_conditions,
                 "boost": boost_value,
             }
         )
@@ -858,12 +882,14 @@ def _apply_configured_popularity_boosts(
 
         multiplier = 1.0
         for rule in normalized_rules:
-            field_value = get_field_value(track, rule["field"])
-            if check_condition(
-                field_value,
-                rule["operator"],
-                rule["value"],
-                rule.get("match_all", True),
+            if all(
+                check_condition(
+                    get_field_value(track, condition["field"]),
+                    condition["operator"],
+                    condition["value"],
+                    condition.get("match_all", True),
+                )
+                for condition in rule["conditions"]
             ):
                 multiplier *= rule["boost"]
 
