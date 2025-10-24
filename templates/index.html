@@ -2047,7 +2047,7 @@
         ];
         const waitingSet = new Set(waitingPlaylists);
 
-        const isWaitingThisPlaylist = Boolean(
+        let isWaitingThisPlaylist = Boolean(
           playlistName &&
             !isRunningThisPlaylist &&
             waitingSet.has(playlistName)
@@ -2055,6 +2055,14 @@
 
         if (isWaitingThisPlaylist) {
           isRunningThisPlaylist = false;
+        }
+
+        const cancellationInfo =
+          playlistName && playlistCancellationMessages.get(playlistName);
+        const hasCancellationPending = Boolean(cancellationInfo);
+        if (hasCancellationPending) {
+          isRunningThisPlaylist = false;
+          isWaitingThisPlaylist = false;
         }
 
         const coerceInteger = (value) => {
@@ -2116,6 +2124,10 @@
           indicatorState = "idle";
         }
 
+        if (hasCancellationPending) {
+          indicatorState = "idle";
+        }
+
         indicator.classList.remove(
           "running",
           "waiting",
@@ -2132,11 +2144,20 @@
         } else if (isWaitingThisPlaylist) {
           statusLineText = "Queued – waiting";
         }
+
+        if (hasCancellationPending) {
+          statusLineText = "Cancellation requested";
+        }
         line.textContent = statusLineText;
 
         let detailText = "";
         if (isRunningThisPlaylist && status?.since) {
           detailText = `Started ${formatTimestamp(status.since)}`;
+        }
+
+        if (hasCancellationPending) {
+          const cancellationMessage = cancellationInfo?.message;
+          detailText = cancellationMessage || detailText;
         }
         message.textContent = detailText;
 
