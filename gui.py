@@ -4,6 +4,7 @@ import re
 import json
 import os
 import math
+import mimetypes
 import subprocess
 import sys
 import threading
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, IO, Iterable, List, Optional, Set, Tuple
 
 import yaml
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, abort, jsonify, render_template, request, send_file
 
 
 def _represent_ordered_dict(dumper: yaml.Dumper, data: OrderedDict) -> Any:
@@ -2656,6 +2657,33 @@ def _determine_separator(raw_path: str) -> str:
     return "/"
 
 
+IMAGE_EXTENSIONS: Set[str] = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".tif",
+    ".tiff",
+    ".avif",
+}
+
+
+def _is_image_file(path: Path) -> bool:
+    try:
+        if not path.is_file():
+            return False
+    except OSError:
+        return False
+
+    mime_type, _ = mimetypes.guess_type(str(path))
+    if mime_type and mime_type.startswith("image/"):
+        return True
+
+    return path.suffix.lower() in IMAGE_EXTENSIONS
+
+
 def _find_existing_directory(path: Path) -> Optional[Path]:
     current = path
     visited = set()
@@ -2702,6 +2730,27 @@ def resolve_directory_request(raw_path: str) -> Tuple[Path, str, str]:
         prefix = f"{prefix}{separator}"
 
     return existing_directory, prefix, separator
+
+
+def resolve_file_request(raw_path: str) -> Optional[Path]:
+    trimmed = (raw_path or "").strip()
+    if not trimmed:
+        return None
+
+    expanded = os.path.expanduser(trimmed)
+    candidate = Path(expanded)
+    if not candidate.is_absolute():
+        candidate = (PLAYLISTS_PATH.parent / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+
+    try:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    except OSError:
+        return None
+
+    return None
 
 
 def create_app() -> Flask:
@@ -2937,6 +2986,7 @@ def create_app() -> Flask:
                     "is_dir": is_dir,
                     "display": display_name,
                     "suggestion": suggestion,
+                    "is_image": False if is_dir else _is_image_file(candidate),
                 }
             )
 
@@ -2944,6 +2994,29 @@ def create_app() -> Flask:
             "directory": str(directory),
             "entries": entries,
         })
+
+    @app.route("/api/cover_preview", methods=["GET"])
+    def cover_preview() -> Any:
+        raw_path = request.args.get("path", "") or ""
+        resolved_path = resolve_file_request(raw_path)
+        if resolved_path is None:
+            abort(404)
+
+        if not _is_image_file(resolved_path):
+            abort(404)
+
+        mime_type, _ = mimetypes.guess_type(str(resolved_path))
+
+        try:
+            return send_file(
+                resolved_path,
+                mimetype=mime_type or "application/octet-stream",
+                conditional=True,
+            )
+        except FileNotFoundError:
+            abort(404)
+        except PermissionError:
+            abort(403)
 
     @app.route("/api/playlists/save_single", methods=["POST"])
     def save_single_playlist_route() -> Any:

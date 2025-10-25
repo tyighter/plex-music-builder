@@ -107,6 +107,238 @@
         overflow: hidden;
       }
 
+      .cover-picker-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        z-index: 2300;
+      }
+
+      .cover-picker-overlay.show {
+        display: flex;
+      }
+
+      .cover-picker-panel {
+        background: var(--card-bg);
+        border-radius: 24px;
+        width: min(960px, 100%);
+        max-height: 90vh;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid rgba(229, 160, 13, 0.24);
+        box-shadow: 0 28px 60px rgba(0, 0, 0, 0.6);
+        overflow: hidden;
+      }
+
+      .cover-picker-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 24px;
+        border-bottom: 1px solid rgba(229, 160, 13, 0.16);
+        background: rgba(14, 14, 14, 0.7);
+      }
+
+      .cover-picker-header h2 {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 20px;
+      }
+
+      .cover-picker-body {
+        padding: 20px 24px 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        flex: 1;
+        min-height: 0;
+      }
+
+      .cover-picker-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .cover-picker-path {
+        flex: 1;
+        min-width: 200px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.7);
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(229, 160, 13, 0.18);
+        border-radius: 12px;
+        padding: 10px 12px;
+        word-break: break-all;
+      }
+
+      .cover-picker-directory-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        max-height: 120px;
+        overflow-y: auto;
+        padding-right: 4px;
+      }
+
+      .cover-picker-directory-list button {
+        border-radius: 999px;
+        padding: 10px 16px;
+        font-size: 15px;
+        background: rgba(229, 160, 13, 0.18);
+        color: var(--plex-light);
+        border: 1px solid rgba(229, 160, 13, 0.32);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .cover-picker-directory-list button:hover,
+      .cover-picker-directory-list button:focus {
+        background: rgba(229, 160, 13, 0.32);
+        border-color: rgba(229, 160, 13, 0.5);
+        outline: none;
+      }
+
+      .cover-picker-content {
+        display: flex;
+        gap: 18px;
+        flex: 1;
+        min-height: 0;
+      }
+
+      .cover-picker-grid {
+        flex: 2;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 14px;
+        overflow-y: auto;
+        padding-right: 6px;
+      }
+
+      .cover-picker-grid button {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid transparent;
+        border-radius: 16px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: center;
+        color: var(--plex-light);
+        font-size: 14px;
+        transition: border 0.2s ease, transform 0.2s ease,
+          background 0.2s ease;
+      }
+
+      .cover-picker-grid button:hover,
+      .cover-picker-grid button:focus {
+        border-color: rgba(229, 160, 13, 0.6);
+        background: rgba(229, 160, 13, 0.22);
+        outline: none;
+      }
+
+      .cover-picker-grid button:active {
+        transform: translateY(1px);
+      }
+
+      .cover-picker-grid img {
+        width: 100%;
+        aspect-ratio: 1;
+        object-fit: cover;
+        border-radius: 12px;
+        background: rgba(0, 0, 0, 0.45);
+        pointer-events: none;
+      }
+
+      .cover-picker-grid span {
+        width: 100%;
+        text-align: center;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.72);
+        word-break: break-word;
+      }
+
+      .cover-picker-preview {
+        flex: 1;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(229, 160, 13, 0.18);
+        border-radius: 16px;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        align-items: stretch;
+        min-width: 220px;
+      }
+
+      .cover-picker-preview-frame {
+        position: relative;
+        width: 100%;
+        padding-top: 100%;
+        border-radius: 14px;
+        overflow: hidden;
+        background: rgba(0, 0, 0, 0.45);
+      }
+
+      .cover-picker-preview-frame img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: none;
+      }
+
+      .cover-picker-preview.has-image .cover-picker-preview-frame img {
+        display: block;
+      }
+
+      .cover-picker-preview-placeholder {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 12px;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.68);
+        font-size: 13px;
+      }
+
+      .cover-picker-preview.has-image .cover-picker-preview-placeholder {
+        display: none;
+      }
+
+      .cover-picker-preview-label {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.72);
+        word-break: break-all;
+      }
+
+      .cover-picker-status {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.68);
+      }
+
+      .cover-picker-empty {
+        grid-column: 1 / -1;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.7);
+        text-align: center;
+        padding: 24px 12px;
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 16px;
+      }
+
       .config-panel-header {
         display: flex;
         align-items: center;
@@ -142,6 +374,16 @@
         padding: 20px 24px;
         border-top: 1px solid rgba(229, 160, 13, 0.16);
         background: rgba(14, 14, 14, 0.6);
+      }
+
+      @media (max-width: 1024px) {
+        .cover-picker-content {
+          flex-direction: column;
+        }
+
+        .cover-picker-preview {
+          min-width: 0;
+        }
       }
 
       main {
@@ -702,6 +944,108 @@
 
       .path-suggestions button:hover {
         background: rgba(229, 160, 13, 0.18);
+      }
+
+      .cover-field {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        color: rgba(255, 255, 255, 0.8);
+        font-size: 14px;
+      }
+
+      .cover-field-label {
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .cover-input-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: stretch;
+      }
+
+      .cover-input-row .path-input {
+        flex: 1 1 220px;
+        min-width: 0;
+      }
+
+      button.cover-picker-button {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 18px;
+        min-height: 42px;
+        font-size: 15px;
+        border-radius: 14px;
+        background: rgba(229, 160, 13, 0.18);
+        color: var(--plex-light);
+        border: 1px solid rgba(229, 160, 13, 0.32);
+        transition: background 0.2s ease, border 0.2s ease, transform 0.2s ease;
+      }
+
+      button.cover-picker-button:hover,
+      button.cover-picker-button:focus {
+        background: rgba(229, 160, 13, 0.32);
+        border-color: rgba(229, 160, 13, 0.5);
+        outline: none;
+      }
+
+      button.cover-picker-button:active {
+        transform: translateY(1px);
+      }
+
+      .cover-preview {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(229, 160, 13, 0.18);
+        border-radius: 14px;
+        padding: 10px 12px;
+      }
+
+      .cover-preview-frame {
+        width: 80px;
+        height: 80px;
+        border-radius: 12px;
+        overflow: hidden;
+        background: rgba(0, 0, 0, 0.45);
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .cover-preview-frame img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: none;
+      }
+
+      .cover-preview.has-image .cover-preview-frame img {
+        display: block;
+      }
+
+      .cover-preview-placeholder {
+        color: rgba(255, 255, 255, 0.65);
+        font-size: 12px;
+        text-align: center;
+        padding: 0 6px;
+      }
+
+      .cover-preview-caption {
+        flex: 1;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.7);
+        word-break: break-all;
       }
 
       .button,
@@ -1498,6 +1842,81 @@
         </div>
       </div>
     </div>
+    <div
+      id="coverPickerOverlay"
+      class="cover-picker-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div
+        id="coverPickerPanel"
+        class="cover-picker-panel"
+        role="document"
+        tabindex="-1"
+      >
+        <div class="cover-picker-header">
+          <h2><span class="section-icon">🖼️</span>Choose Cover Image</h2>
+          <button
+            id="coverPickerCloseBtn"
+            class="icon-only secondary"
+            type="button"
+            title="Close cover picker"
+            aria-label="Close cover picker"
+          >
+            ✕
+          </button>
+        </div>
+        <div class="cover-picker-body">
+          <div class="cover-picker-controls">
+            <button
+              id="coverPickerUpBtn"
+              class="secondary"
+              type="button"
+              title="Go up one folder"
+              aria-label="Go up one folder"
+            >
+              ⤴️ Up One Level
+            </button>
+            <div
+              id="coverPickerPath"
+              class="cover-picker-path"
+              role="status"
+              aria-live="polite"
+            ></div>
+          </div>
+          <div
+            id="coverPickerStatus"
+            class="cover-picker-status"
+            role="status"
+            aria-live="polite"
+          ></div>
+          <div
+            id="coverPickerDirectories"
+            class="cover-picker-directory-list"
+          ></div>
+          <div class="cover-picker-content">
+            <div id="coverPickerGrid" class="cover-picker-grid"></div>
+            <div id="coverPickerPreview" class="cover-picker-preview">
+              <div class="cover-picker-preview-frame">
+                <img
+                  id="coverPickerPreviewImage"
+                  alt="Cover preview"
+                  draggable="false"
+                />
+                <div class="cover-picker-preview-placeholder">
+                  Select a cover to preview it.
+                </div>
+              </div>
+              <div
+                id="coverPickerPreviewLabel"
+                class="cover-picker-preview-label"
+              ></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
     <main>
       <section>
         <h2><span class="section-icon">🛠</span>Build Status</h2>
@@ -1658,6 +2077,46 @@
       let messageHideTimeout = null;
       const waitingPlaylistOrder = new Map();
       let nextWaitingOrderValue = 1;
+      const coverPickerOverlay = document.getElementById("coverPickerOverlay");
+      const coverPickerPanel = document.getElementById("coverPickerPanel");
+      const coverPickerCloseBtn = document.getElementById("coverPickerCloseBtn");
+      const coverPickerUpBtn = document.getElementById("coverPickerUpBtn");
+      const coverPickerPath = document.getElementById("coverPickerPath");
+      const coverPickerStatus = document.getElementById("coverPickerStatus");
+      const coverPickerDirectories = document.getElementById(
+        "coverPickerDirectories"
+      );
+      const coverPickerGrid = document.getElementById("coverPickerGrid");
+      const coverPickerPreview = document.getElementById("coverPickerPreview");
+      const coverPickerPreviewImage = document.getElementById(
+        "coverPickerPreviewImage"
+      );
+      const coverPickerPreviewLabel = document.getElementById(
+        "coverPickerPreviewLabel"
+      );
+      const CARD_COVER_PREVIEW_TEXTS = {
+        empty: "No cover selected",
+        loading: "Loading preview…",
+        error: "Preview unavailable",
+      };
+      const COVER_PICKER_PREVIEW_TEXTS = {
+        empty: "Select a cover to preview it.",
+        loading: "Loading preview…",
+        error: "Preview unavailable",
+      };
+      const coverPickerState = {
+        playlist: null,
+        inputEl: null,
+        extrasKey: "",
+        previewContainer: null,
+        previewImage: null,
+        previewLabel: null,
+        selectedPath: "",
+        currentRawPath: "",
+        currentDirectory: "",
+        lastFocus: null,
+        directoryController: null,
+      };
       let lastFocusedBeforeConfig = null;
       const configFieldElements = new Map();
       const configOriginalValues = new Map();
@@ -4025,6 +4484,95 @@
         return sanitized;
       }
 
+      function buildCoverPreviewUrl(rawPath) {
+        return `/api/cover_preview?path=${encodeURIComponent(rawPath)}`;
+      }
+
+      function updateImagePreview(
+        container,
+        imageEl,
+        labelEl,
+        rawPath,
+        texts = {}
+      ) {
+        if (!container || !imageEl || !labelEl) {
+          return;
+        }
+        const emptyText = texts.empty || "No image selected";
+        const loadingText = texts.loading || "Loading preview…";
+        const errorText = texts.error || "Preview unavailable";
+        const value = (rawPath || "").trim();
+
+        if (!value) {
+          container.classList.remove("has-image");
+          labelEl.textContent = emptyText;
+          labelEl.title = emptyText;
+          imageEl.removeAttribute("src");
+          imageEl.dataset.previewPath = "";
+          return;
+        }
+
+        container.classList.remove("has-image");
+        labelEl.textContent = loadingText;
+        labelEl.title = value;
+        const previewPath = value;
+        imageEl.dataset.previewPath = previewPath;
+        imageEl.onload = () => {
+          if (imageEl.dataset.previewPath !== previewPath) {
+            return;
+          }
+          container.classList.add("has-image");
+          labelEl.textContent = previewPath;
+          labelEl.title = previewPath;
+        };
+        imageEl.onerror = () => {
+          if (imageEl.dataset.previewPath !== previewPath) {
+            return;
+          }
+          container.classList.remove("has-image");
+          labelEl.textContent = errorText;
+          labelEl.title = errorText;
+        };
+        imageEl.src = buildCoverPreviewUrl(previewPath);
+      }
+
+      function determineDirectoryHint(rawPath) {
+        const trimmed = (rawPath || "").trim();
+        if (!trimmed) {
+          return "";
+        }
+        if (trimmed.endsWith("/") || trimmed.endsWith("\\")) {
+          return trimmed;
+        }
+        const lastSlash = Math.max(
+          trimmed.lastIndexOf("/"),
+          trimmed.lastIndexOf("\\")
+        );
+        if (lastSlash >= 0) {
+          return trimmed.slice(0, lastSlash + 1);
+        }
+        return "";
+      }
+
+      function computeParentPath(rawPath) {
+        const trimmed = (rawPath || "").trim();
+        if (!trimmed) {
+          return "";
+        }
+        let normalized = trimmed;
+        if (normalized.endsWith("/") || normalized.endsWith("\\")) {
+          normalized = normalized.slice(0, -1);
+        }
+        const lastSlash = Math.max(
+          normalized.lastIndexOf("/"),
+          normalized.lastIndexOf("\\")
+        );
+        if (lastSlash < 0) {
+          return "";
+        }
+        return normalized.slice(0, lastSlash + 1);
+      }
+
       function setupPathAutocomplete(inputEl, suggestionsEl, playlist, extrasKey) {
         const extras = ensureExtras(playlist);
         let debounceTimer = null;
@@ -4050,6 +4598,7 @@
               const suggestion = entry.suggestion;
               inputEl.value = suggestion;
               extras[extrasKey] = suggestion;
+              inputEl.dispatchEvent(new Event("input", { bubbles: true }));
               hideSuggestions();
             });
             suggestionsEl.appendChild(optionBtn);
@@ -4117,6 +4666,282 @@
         inputEl.addEventListener("blur", () => {
           setTimeout(hideSuggestions, 150);
         });
+      }
+
+      function renderCoverPickerDirectories(entries) {
+        if (!coverPickerDirectories) {
+          return false;
+        }
+        coverPickerDirectories.innerHTML = "";
+        const directories = entries.filter((entry) => entry && entry.is_dir);
+        directories.forEach((entry) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = `📁 ${entry.name}`;
+          button.addEventListener("click", () => {
+            loadCoverPickerDirectory(entry.suggestion || "");
+          });
+          coverPickerDirectories.appendChild(button);
+        });
+        return directories.length > 0;
+      }
+
+      function renderCoverPickerImages(entries) {
+        if (!coverPickerGrid) {
+          return false;
+        }
+        coverPickerGrid.innerHTML = "";
+        const images = entries.filter((entry) => entry && entry.is_image);
+        if (!images.length) {
+          const empty = document.createElement("div");
+          empty.className = "cover-picker-empty";
+          empty.textContent = "No image files found in this folder.";
+          coverPickerGrid.appendChild(empty);
+          return false;
+        }
+        images.forEach((entry) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          const thumb = document.createElement("img");
+          thumb.src = buildCoverPreviewUrl(entry.suggestion || "");
+          thumb.alt = entry.name || "Cover image";
+          thumb.loading = "lazy";
+          thumb.draggable = false;
+          button.appendChild(thumb);
+          const caption = document.createElement("span");
+          caption.textContent = entry.name || entry.suggestion || "Image";
+          button.appendChild(caption);
+          const handlePreview = () => {
+            previewCoverCandidate(entry.suggestion || "");
+          };
+          button.addEventListener("mouseenter", handlePreview);
+          button.addEventListener("focus", handlePreview);
+          button.addEventListener("touchstart", handlePreview, { passive: true });
+          button.addEventListener("click", () => {
+            chooseCoverFromPicker(entry.suggestion || "");
+          });
+          coverPickerGrid.appendChild(button);
+        });
+        return true;
+      }
+
+      function updateCoverPickerUpButton() {
+        if (!coverPickerUpBtn) {
+          return;
+        }
+        const parentPath = computeParentPath(coverPickerState.currentRawPath);
+        coverPickerUpBtn.disabled = !parentPath;
+        coverPickerUpBtn.dataset.parentPath = parentPath || "";
+      }
+
+      function previewCoverCandidate(rawPath) {
+        if (!coverPickerPreview || !coverPickerPreviewImage) {
+          return;
+        }
+        const targetPath = (rawPath || "").trim();
+        updateImagePreview(
+          coverPickerPreview,
+          coverPickerPreviewImage,
+          coverPickerPreviewLabel,
+          targetPath,
+          COVER_PICKER_PREVIEW_TEXTS
+        );
+      }
+
+      async function loadCoverPickerDirectory(rawPath = "") {
+        if (!coverPickerOverlay) {
+          return;
+        }
+        const trimmed = (rawPath || "").trim();
+        if (coverPickerState.directoryController) {
+          coverPickerState.directoryController.abort();
+        }
+        const controller = new AbortController();
+        coverPickerState.directoryController = controller;
+        coverPickerState.currentRawPath = trimmed;
+        if (coverPickerDirectories) {
+          coverPickerDirectories.innerHTML = "";
+        }
+        if (coverPickerGrid) {
+          coverPickerGrid.innerHTML = "";
+        }
+        if (coverPickerStatus) {
+          coverPickerStatus.textContent = "Loading covers…";
+        }
+        const params = new URLSearchParams();
+        if (trimmed) {
+          params.set("path", trimmed);
+        }
+        const query = params.toString();
+        const url = query ? `/api/list_directory?${query}` : "/api/list_directory";
+        try {
+          const response = await fetch(url, { signal: controller.signal });
+          if (!response.ok) {
+            throw new Error("Unable to load directory contents");
+          }
+          const data = await response.json();
+          if (controller.signal.aborted) {
+            return;
+          }
+          const entries = Array.isArray(data.entries) ? data.entries : [];
+          coverPickerState.currentDirectory = data.directory || "";
+          if (coverPickerPath) {
+            const pathText =
+              coverPickerState.currentDirectory || "Directory unavailable";
+            coverPickerPath.textContent = pathText;
+            coverPickerPath.title = pathText;
+          }
+          const hasDirectories = renderCoverPickerDirectories(entries);
+          const hasImages = renderCoverPickerImages(entries);
+          if (coverPickerStatus) {
+            if (!entries.length) {
+              coverPickerStatus.textContent = "This folder is empty.";
+            } else if (!hasImages && hasDirectories) {
+              coverPickerStatus.textContent =
+                "Open a folder to keep browsing covers.";
+            } else if (!hasImages) {
+              coverPickerStatus.textContent = "No image files found here.";
+            } else {
+              coverPickerStatus.textContent = "Tap a cover to select it.";
+            }
+          }
+          previewCoverCandidate(coverPickerState.selectedPath);
+        } catch (error) {
+          if (controller.signal.aborted) {
+            return;
+          }
+          console.error(error);
+          if (coverPickerStatus) {
+            coverPickerStatus.textContent =
+              "Unable to load covers for this location.";
+          }
+          if (coverPickerGrid) {
+            coverPickerGrid.innerHTML = "";
+            const errorEl = document.createElement("div");
+            errorEl.className = "cover-picker-empty";
+            errorEl.textContent =
+              "Unable to load cover images for this folder.";
+            coverPickerGrid.appendChild(errorEl);
+          }
+        } finally {
+          if (coverPickerState.directoryController === controller) {
+            coverPickerState.directoryController = null;
+          }
+          updateCoverPickerUpButton();
+          previewCoverCandidate(coverPickerState.selectedPath);
+        }
+      }
+
+      function chooseCoverFromPicker(rawPath) {
+        if (!coverPickerState.playlist || !coverPickerState.inputEl) {
+          return;
+        }
+        const trimmed = (rawPath || "").trim();
+        coverPickerState.selectedPath = trimmed;
+        const extras = ensureExtras(coverPickerState.playlist);
+        extras[coverPickerState.extrasKey] = trimmed;
+        coverPickerState.inputEl.value = trimmed;
+        if (
+          coverPickerState.previewContainer &&
+          coverPickerState.previewImage &&
+          coverPickerState.previewLabel
+        ) {
+          updateImagePreview(
+            coverPickerState.previewContainer,
+            coverPickerState.previewImage,
+            coverPickerState.previewLabel,
+            trimmed,
+            CARD_COVER_PREVIEW_TEXTS
+          );
+        }
+        coverPickerState.inputEl.dispatchEvent(
+          new Event("input", { bubbles: true })
+        );
+        closeCoverPicker();
+      }
+
+      function openCoverPicker(playlist, inputEl, extrasKey, previewElements) {
+        if (!coverPickerOverlay || !coverPickerPanel) {
+          return;
+        }
+        coverPickerState.playlist = playlist;
+        coverPickerState.inputEl = inputEl;
+        coverPickerState.extrasKey = extrasKey;
+        coverPickerState.previewContainer = previewElements?.container || null;
+        coverPickerState.previewImage = previewElements?.image || null;
+        coverPickerState.previewLabel = previewElements?.label || null;
+        coverPickerState.selectedPath = (inputEl.value || "").trim();
+        coverPickerState.currentRawPath = determineDirectoryHint(
+          coverPickerState.selectedPath
+        );
+        coverPickerState.lastFocus = document.activeElement;
+        coverPickerOverlay.classList.add("show");
+        coverPickerOverlay.setAttribute("aria-hidden", "false");
+        setTimeout(() => {
+          try {
+            coverPickerPanel.focus({ preventScroll: true });
+          } catch (error) {
+            // Ignore focus errors
+          }
+        }, 0);
+        previewCoverCandidate(coverPickerState.selectedPath);
+        loadCoverPickerDirectory(coverPickerState.currentRawPath);
+      }
+
+      function closeCoverPicker() {
+        if (!coverPickerOverlay) {
+          return;
+        }
+        if (coverPickerState.directoryController) {
+          coverPickerState.directoryController.abort();
+          coverPickerState.directoryController = null;
+        }
+        coverPickerOverlay.classList.remove("show");
+        coverPickerOverlay.setAttribute("aria-hidden", "true");
+        if (coverPickerStatus) {
+          coverPickerStatus.textContent = "";
+        }
+        if (coverPickerDirectories) {
+          coverPickerDirectories.innerHTML = "";
+        }
+        if (coverPickerGrid) {
+          coverPickerGrid.innerHTML = "";
+        }
+        if (coverPickerUpBtn) {
+          coverPickerUpBtn.disabled = true;
+          coverPickerUpBtn.dataset.parentPath = "";
+        }
+        const focusTarget = coverPickerState.lastFocus;
+        coverPickerState.playlist = null;
+        coverPickerState.inputEl = null;
+        coverPickerState.extrasKey = "";
+        coverPickerState.previewContainer = null;
+        coverPickerState.previewImage = null;
+        coverPickerState.previewLabel = null;
+        coverPickerState.selectedPath = "";
+        coverPickerState.currentRawPath = "";
+        coverPickerState.currentDirectory = "";
+        coverPickerState.lastFocus = null;
+        if (focusTarget && typeof focusTarget.focus === "function") {
+          try {
+            focusTarget.focus({ preventScroll: true });
+          } catch (error) {
+            // Ignore focus restoration errors
+          }
+        }
+      }
+
+      function handleCoverPickerUp() {
+        if (!coverPickerUpBtn) {
+          return;
+        }
+        const parentPath =
+          coverPickerUpBtn.dataset.parentPath ||
+          computeParentPath(coverPickerState.currentRawPath);
+        if (!parentPath) {
+          return;
+        }
+        loadCoverPickerDirectory(parentPath);
       }
 
       function createOptionElements(selectEl, opts, selectedValue = "") {
@@ -4755,6 +5580,9 @@
 
 
       function renderPlaylists() {
+        if (coverPickerOverlay?.classList.contains("show")) {
+          closeCoverPicker();
+        }
         playlistsContainer.innerHTML = "";
 
         const hasPlaylists = state.playlists.length > 0;
@@ -5004,22 +5832,84 @@
           });
           top5BoostLabel.appendChild(top5BoostInput);
 
+          const coverField = document.createElement("div");
+          coverField.className = "cover-field";
+          const coverInputId = `coverInput-${Math.random()
+            .toString(36)
+            .slice(2, 10)}`;
           const coverLabel = document.createElement("label");
-          coverLabel.textContent = "Cover Image Path";
+          coverLabel.className = "cover-field-label";
+          coverLabel.setAttribute("for", coverInputId);
+          coverLabel.textContent = "Cover Image";
+          coverField.appendChild(coverLabel);
+
+          const coverInputRow = document.createElement("div");
+          coverInputRow.className = "cover-input-row";
+
           const coverWrapper = document.createElement("div");
           coverWrapper.className = "path-input";
           const coverInput = document.createElement("input");
           coverInput.type = "text";
+          coverInput.id = coverInputId;
           coverInput.placeholder = "/images/cover.png";
           coverInput.value = extras.cover || "";
           coverInput.addEventListener("input", (event) => {
-            extras.cover = event.target.value;
+            const value = event.target.value;
+            extras.cover = value;
+            updateImagePreview(
+              coverPreviewContainer,
+              coverPreviewImage,
+              coverPreviewCaption,
+              value,
+              CARD_COVER_PREVIEW_TEXTS
+            );
           });
           const suggestionsList = document.createElement("div");
           suggestionsList.className = "path-suggestions";
           coverWrapper.appendChild(coverInput);
           coverWrapper.appendChild(suggestionsList);
-          coverLabel.appendChild(coverWrapper);
+          coverInputRow.appendChild(coverWrapper);
+
+          const coverPickerBtn = document.createElement("button");
+          coverPickerBtn.type = "button";
+          coverPickerBtn.className = "cover-picker-button";
+          coverPickerBtn.textContent = "Browse Covers";
+          coverPickerBtn.addEventListener("click", () => {
+            openCoverPicker(playlist, coverInput, "cover", {
+              container: coverPreviewContainer,
+              image: coverPreviewImage,
+              label: coverPreviewCaption,
+            });
+          });
+          coverInputRow.appendChild(coverPickerBtn);
+
+          coverField.appendChild(coverInputRow);
+
+          const coverPreviewContainer = document.createElement("div");
+          coverPreviewContainer.className = "cover-preview";
+          const coverPreviewFrame = document.createElement("div");
+          coverPreviewFrame.className = "cover-preview-frame";
+          const coverPreviewImage = document.createElement("img");
+          coverPreviewImage.alt = "Cover preview";
+          coverPreviewImage.draggable = false;
+          const coverPreviewPlaceholder = document.createElement("div");
+          coverPreviewPlaceholder.className = "cover-preview-placeholder";
+          coverPreviewPlaceholder.textContent = "No cover selected";
+          coverPreviewFrame.appendChild(coverPreviewImage);
+          coverPreviewFrame.appendChild(coverPreviewPlaceholder);
+          const coverPreviewCaption = document.createElement("div");
+          coverPreviewCaption.className = "cover-preview-caption";
+          coverPreviewContainer.appendChild(coverPreviewFrame);
+          coverPreviewContainer.appendChild(coverPreviewCaption);
+          coverField.appendChild(coverPreviewContainer);
+
+          updateImagePreview(
+            coverPreviewContainer,
+            coverPreviewImage,
+            coverPreviewCaption,
+            extras.cover || "",
+            CARD_COVER_PREVIEW_TEXTS
+          );
 
           grid.appendChild(nameLabel);
           grid.appendChild(limitLabel);
@@ -5027,7 +5917,7 @@
           grid.appendChild(albumLimitLabel);
           grid.appendChild(sortLabel);
           grid.appendChild(top5BoostLabel);
-          grid.appendChild(coverLabel);
+          grid.appendChild(coverField);
 
           details.appendChild(grid);
 
@@ -5471,8 +6361,47 @@
         });
       }
 
+      if (coverPickerOverlay) {
+        coverPickerOverlay.addEventListener("click", (event) => {
+          if (event.target === coverPickerOverlay) {
+            closeCoverPicker();
+          }
+        });
+        coverPickerOverlay.addEventListener("focusout", (event) => {
+          if (!coverPickerOverlay.contains(event.relatedTarget)) {
+            previewCoverCandidate(coverPickerState.selectedPath);
+          }
+        });
+      }
+
+      if (coverPickerCloseBtn) {
+        coverPickerCloseBtn.addEventListener("click", () => {
+          closeCoverPicker();
+        });
+      }
+
+      if (coverPickerUpBtn) {
+        coverPickerUpBtn.addEventListener("click", handleCoverPickerUp);
+      }
+
+      if (coverPickerGrid) {
+        coverPickerGrid.addEventListener("mouseleave", () => {
+          if (coverPickerOverlay?.classList.contains("show")) {
+            previewCoverCandidate(coverPickerState.selectedPath);
+          }
+        });
+      }
+
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && configOverlay?.classList.contains("show")) {
+        if (event.key !== "Escape") {
+          return;
+        }
+        if (coverPickerOverlay?.classList.contains("show")) {
+          event.preventDefault();
+          closeCoverPicker();
+          return;
+        }
+        if (configOverlay?.classList.contains("show")) {
           event.preventDefault();
           closeConfigMenu();
         }
