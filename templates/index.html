@@ -2190,6 +2190,7 @@
       const coverPickerPreviewLabel = document.getElementById(
         "coverPickerPreviewLabel"
       );
+      const COVER_PICKER_DEFAULT_DIRECTORY = "/images/";
       const CARD_COVER_PREVIEW_TEXTS = {
         empty: "No cover selected",
         loading: "Loading preview…",
@@ -4994,9 +4995,16 @@
         coverPickerState.previewImage = previewElements?.image || null;
         coverPickerState.previewLabel = previewElements?.label || null;
         coverPickerState.selectedPath = (inputEl.value || "").trim();
-        coverPickerState.currentRawPath = determineDirectoryHint(
+        const directoryHint = determineDirectoryHint(
           coverPickerState.selectedPath
         );
+        if (directoryHint) {
+          coverPickerState.currentRawPath = directoryHint;
+        } else if (!coverPickerState.selectedPath) {
+          coverPickerState.currentRawPath = COVER_PICKER_DEFAULT_DIRECTORY;
+        } else {
+          coverPickerState.currentRawPath = "";
+        }
         coverPickerState.lastFocus = document.activeElement;
         coverPickerOverlay.classList.add("show");
         coverPickerOverlay.setAttribute("aria-hidden", "false");
