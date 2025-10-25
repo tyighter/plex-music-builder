@@ -2408,31 +2408,57 @@ def build_filter_for_yaml(filter_entry: Dict[str, Any]) -> Optional[Dict[str, An
     return yaml_entry
 
 
-def build_boost_for_yaml(boost_entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    field = (boost_entry.get("field") or "").strip()
+def build_boost_condition_for_yaml(
+    condition_entry: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    field = (condition_entry.get("field") or "").strip()
     if not field:
         return None
 
-    operator = (boost_entry.get("operator") or "equals").strip() or "equals"
-    value = parse_filter_value(boost_entry.get("value", ""))
+    operator = (condition_entry.get("operator") or "equals").strip() or "equals"
+    value = parse_filter_value(condition_entry.get("value", ""))
+    match_all_flag = _normalize_bool_flag(condition_entry.get("match_all"), default=True)
+
+    yaml_condition: Dict[str, Any] = {
+        "field": field,
+        "operator": operator,
+        "value": value,
+    }
+
+    if isinstance(value, list):
+        if isinstance(match_all_flag, bool) and not match_all_flag:
+            yaml_condition["match_all"] = False
+    elif isinstance(match_all_flag, bool) and not match_all_flag:
+        yaml_condition["match_all"] = False
+
+    return yaml_condition
+
+
+def build_boost_for_yaml(boost_entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     boost_raw = boost_entry.get("boost", 1.0)
     boost_value = to_float(boost_raw, default=1.0)
     if boost_value < 0:
         boost_value = 1.0
 
-    match_all_flag = _normalize_bool_flag(boost_entry.get("match_all"), default=True)
+    raw_conditions = boost_entry.get("conditions")
+    if isinstance(raw_conditions, list):
+        condition_candidates = raw_conditions
+    else:
+        condition_candidates = [boost_entry]
 
-    yaml_entry = {
-        "field": field,
-        "operator": operator,
-        "value": value,
+    yaml_conditions = []
+    for condition_entry in condition_candidates:
+        yaml_condition = build_boost_condition_for_yaml(condition_entry or {})
+        if yaml_condition is not None:
+            yaml_conditions.append(yaml_condition)
+
+    if not yaml_conditions:
+        return None
+
+    return {
+        "conditions": yaml_conditions,
         "boost": boost_value,
     }
-
-    if not match_all_flag:
-        yaml_entry["match_all"] = False
-
-    return yaml_entry
 
 
 def to_int(value: Any, default: int = 0) -> int:
