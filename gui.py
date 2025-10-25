@@ -2325,8 +2325,26 @@ def load_playlists() -> Dict[str, Any]:
                 "plex_filter",
                 "top_5_boost",
                 "popularity_boosts",
+                "source",
+                "spotify_url",
             }
         }
+        raw_source = config.get("source")
+        if isinstance(raw_source, str):
+            normalized_source = raw_source.strip().lower()
+        else:
+            normalized_source = ""
+        if normalized_source not in {"plex", "spotify"}:
+            normalized_source = "plex"
+
+        raw_spotify_url = config.get("spotify_url")
+        if raw_spotify_url is None:
+            spotify_url = ""
+        else:
+            spotify_url = str(raw_spotify_url).strip()
+        if normalized_source != "spotify":
+            spotify_url = ""
+
         playlists_data.append(
             {
                 "name": name,
@@ -2341,6 +2359,8 @@ def load_playlists() -> Dict[str, Any]:
                     config.get("popularity_boosts")
                 ),
                 "extras": extras,
+                "source": normalized_source,
+                "spotify_url": spotify_url,
             }
         )
 
@@ -2504,7 +2524,13 @@ def save_playlists(payload: Dict[str, Any]) -> None:
     defaults_config: Dict[str, Any] = {}
     extras = defaults_payload.get("extras")
     if isinstance(extras, dict):
-        defaults_config.update(extras)
+        defaults_config.update(
+            {
+                key: value
+                for key, value in extras.items()
+                if key not in {"source", "spotify_url"}
+            }
+        )
     if defaults_filters:
         defaults_config["plex_filter"] = defaults_filters
     if defaults_boosts:
@@ -2529,7 +2555,13 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         playlist_config: Dict[str, Any] = {}
         extras = playlist_entry.get("extras")
         if isinstance(extras, dict):
-            playlist_config.update(extras)
+            playlist_config.update(
+                {
+                    key: value
+                    for key, value in extras.items()
+                    if key not in {"source", "spotify_url"}
+                }
+            )
         playlist_config["limit"] = max(limit, 0)
         playlist_config["artist_limit"] = max(artist_limit, 0)
         playlist_config["album_limit"] = max(album_limit, 0)
@@ -2538,6 +2570,25 @@ def save_playlists(payload: Dict[str, Any]) -> None:
             playlist_config["sort_by"] = sort_by
         if after_sort:
             playlist_config["after_sort"] = after_sort
+
+        raw_source = playlist_entry.get("source")
+        if isinstance(raw_source, str):
+            normalized_source = raw_source.strip().lower()
+        else:
+            normalized_source = "plex"
+        if normalized_source not in {"plex", "spotify"}:
+            normalized_source = "plex"
+        if normalized_source != "plex":
+            playlist_config["source"] = normalized_source
+        else:
+            playlist_config.pop("source", None)
+
+        raw_spotify_url = playlist_entry.get("spotify_url")
+        spotify_url = "" if raw_spotify_url is None else str(raw_spotify_url).strip()
+        if normalized_source == "spotify" and spotify_url:
+            playlist_config["spotify_url"] = spotify_url
+        else:
+            playlist_config.pop("spotify_url", None)
 
         playlist_filters = []
         for filter_entry in playlist_entry.get("plex_filter", []):
@@ -2577,7 +2628,13 @@ def save_single_playlist(
     extras = playlist_payload.get("extras")
     playlist_config: Dict[str, Any] = {}
     if isinstance(extras, dict):
-        playlist_config.update(extras)
+        playlist_config.update(
+            {
+                key: value
+                for key, value in extras.items()
+                if key not in {"source", "spotify_url"}
+            }
+        )
 
     limit = to_int(playlist_payload.get("limit", 0))
     artist_limit = to_int(playlist_payload.get("artist_limit", 0))
@@ -2597,6 +2654,25 @@ def save_single_playlist(
         playlist_config["sort_by"] = sort_by
     if after_sort:
         playlist_config["after_sort"] = after_sort
+
+    raw_source = playlist_payload.get("source")
+    if isinstance(raw_source, str):
+        normalized_source = raw_source.strip().lower()
+    else:
+        normalized_source = "plex"
+    if normalized_source not in {"plex", "spotify"}:
+        normalized_source = "plex"
+    if normalized_source != "plex":
+        playlist_config["source"] = normalized_source
+    else:
+        playlist_config.pop("source", None)
+
+    raw_spotify_url = playlist_payload.get("spotify_url")
+    spotify_url = "" if raw_spotify_url is None else str(raw_spotify_url).strip()
+    if normalized_source == "spotify" and spotify_url:
+        playlist_config["spotify_url"] = spotify_url
+    else:
+        playlist_config.pop("spotify_url", None)
 
     playlist_filters = []
     for filter_entry in playlist_payload.get("plex_filter", []):

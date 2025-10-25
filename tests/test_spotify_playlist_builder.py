@@ -1,0 +1,106 @@
+import pytest
+
+import main
+
+
+def test_normalize_spotify_playlist_url_variants():
+    assert (
+        main._normalize_spotify_playlist_url(
+            "https://open.spotify.com/playlist/abc123?si=xyz"
+        )
+        == "https://open.spotify.com/playlist/abc123"
+    )
+    assert (
+        main._normalize_spotify_playlist_url("spotify:playlist:AbC456")
+        == "https://open.spotify.com/playlist/AbC456"
+    )
+    with pytest.raises(ValueError):
+        main._normalize_spotify_playlist_url("https://example.com/not-spotify")
+
+
+def test_parse_spotify_entity_tracks_skips_local_and_missing():
+    entity = {
+        "tracks": {
+            "items": [
+                {"track": {"name": "Local Song", "is_local": True}},
+                {
+                    "track": {
+                        "name": "Cloud Song",
+                        "album": {"name": "Great Album", "artists": [{"name": "Artist"}]},
+                    }
+                },
+                {"track": None},
+            ]
+        }
+    }
+
+    parsed = main._parse_spotify_entity_tracks(entity)
+    assert parsed == [
+        {"title": "Cloud Song", "album": "Great Album", "artist": "Artist"}
+    ]
+
+
+class _DummyTrack:
+    def __init__(self, title, album, artist, rating_count, rating_key):
+        self.title = title
+        self.parentTitle = album
+        self.grandparentTitle = artist
+        self.ratingCount = rating_count
+        self.ratingKey = rating_key
+
+
+class _DummyLibrary:
+    def __init__(self, responses):
+        self._responses = responses
+        self.calls = []
+
+    def searchTracks(self, **kwargs):
+        self.calls.append(kwargs)
+        key = tuple(sorted(kwargs.items()))
+        return list(self._responses.get(key, []))
+
+
+class _DummyLog:
+    def __init__(self):
+        self.records = []
+
+    def debug(self, *args, **kwargs):  # pragma: no cover - optional tracing
+        pass
+
+    def info(self, *args, **kwargs):
+        self.records.append(("info", args, kwargs))
+
+    def warning(self, *args, **kwargs):
+        self.records.append(("warning", args, kwargs))
+
+    def isEnabledFor(self, level):
+        return False
+
+
+def test_match_spotify_tracks_prefers_higher_ratingcount():
+    track_low = _DummyTrack("Song", "Album", "Artist", 5, 1)
+    track_high = _DummyTrack("Song", "Album", "Artist", 12, 2)
+
+    query = tuple(sorted([("album", "Album"), ("artist", "Artist"), ("title", "Song")]))
+    responses = {query: [track_low, track_high]}
+    library = _DummyLibrary(responses)
+    log = _DummyLog()
+
+    spotify_tracks = [
+        {"title": "Song (Remastered)", "album": "Album (Deluxe)", "artist": "Artist"}
+    ]
+
+    matched, unmatched = main._match_spotify_tracks_to_library(
+        spotify_tracks,
+        library,
+        log,
+    )
+
+    assert matched == [track_high]
+    assert unmatched == 0
+    assert library.calls[0] == {
+        "title": "Song",
+        "album": "Album",
+        "artist": "Artist",
+    }
+

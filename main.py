@@ -21,7 +21,7 @@ from functools import cmp_to_key, lru_cache
 from xml.etree import ElementTree as ET
 from html import unescape
 import unicodedata
-from urllib.parse import unquote, quote
+from urllib.parse import unquote, quote, urlparse
 
 from plexapi.server import PlexServer
 from tqdm import tqdm
@@ -400,6 +400,14 @@ def get_plex_server():
 raw_playlists = load_yaml(PLAYLISTS_FILE)
 
 
+def _normalize_playlist_source(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"plex", "spotify"}:
+            return normalized
+    return "plex"
+
+
 def _merge_playlist_defaults(raw_payload):
     if not isinstance(raw_payload, dict):
         return {}
@@ -421,25 +429,33 @@ def _merge_playlist_defaults(raw_payload):
         combined = copy.deepcopy(default_cfg)
         combined.update(cfg)
 
+        playlist_source = _normalize_playlist_source(cfg.get("source"))
+
         playlist_filters = cfg.get("plex_filter", []) or []
         playlist_boosts = cfg.get("popularity_boosts", []) or []
         combined_filters = []
-        if default_filters:
-            combined_filters.extend(copy.deepcopy(default_filters))
-        if playlist_filters:
-            combined_filters.extend(copy.deepcopy(playlist_filters))
+        if playlist_source != "spotify":
+            if default_filters:
+                combined_filters.extend(copy.deepcopy(default_filters))
+            if playlist_filters:
+                combined_filters.extend(copy.deepcopy(playlist_filters))
 
-        if default_filters or playlist_filters or "plex_filter" in combined:
+        if combined_filters:
             combined["plex_filter"] = combined_filters
+        else:
+            combined.pop("plex_filter", None)
 
         combined_boosts = []
-        if default_boosts:
-            combined_boosts.extend(copy.deepcopy(default_boosts))
-        if playlist_boosts:
-            combined_boosts.extend(copy.deepcopy(playlist_boosts))
+        if playlist_source != "spotify":
+            if default_boosts:
+                combined_boosts.extend(copy.deepcopy(default_boosts))
+            if playlist_boosts:
+                combined_boosts.extend(copy.deepcopy(playlist_boosts))
 
-        if default_boosts or playlist_boosts or "popularity_boosts" in combined:
+        if combined_boosts:
             combined["popularity_boosts"] = combined_boosts
+        else:
+            combined.pop("popularity_boosts", None)
 
         merged_playlists[playlist_name] = combined
 
@@ -580,6 +596,202 @@ def _normalize_compare_value(value):
         return ""
     normalized = re.sub(r"\s+", " ", str(value)).strip().lower()
     return normalized
+
+
+_SPOTIFY_PLAYLIST_ID_RE = re.compile(
+    r"(?:https?://open\.spotify\.com/playlist/|spotify:playlist:)([A-Za-z0-9]+)"
+)
+_SPOTIFY_ENTITY_PATTERN = re.compile(r"Spotify\.Entity\s*=\s*({.*?})\s*;", re.DOTALL)
+_SPOTIFY_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
+
+def _extract_spotify_playlist_id(raw_url):
+    if not raw_url:
+        return ""
+
+    candidate = str(raw_url).strip()
+    match = _SPOTIFY_PLAYLIST_ID_RE.search(candidate)
+    if match:
+        return match.group(1)
+
+    parsed = urlparse(candidate)
+    if parsed.scheme in {"http", "https"} and parsed.netloc.endswith("spotify.com"):
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if len(path_parts) >= 2 and path_parts[0] == "playlist":
+            return path_parts[1]
+
+    return ""
+
+
+def _normalize_spotify_playlist_url(raw_url):
+    playlist_id = _extract_spotify_playlist_id(raw_url)
+    if not playlist_id:
+        raise ValueError(f"Invalid Spotify playlist URL: {raw_url!r}")
+    return f"https://open.spotify.com/playlist/{playlist_id}"
+
+
+def _extract_spotify_entity_payload(html_text):
+    if not html_text:
+        raise ValueError("Spotify playlist page was empty")
+
+    match = _SPOTIFY_ENTITY_PATTERN.search(html_text)
+    if not match:
+        raise ValueError("Unable to locate Spotify playlist metadata in page contents")
+
+    payload = match.group(1)
+
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Failed to parse Spotify playlist metadata") from exc
+
+
+def _parse_spotify_entity_tracks(entity_payload):
+    tracks_section = {}
+    if isinstance(entity_payload, dict):
+        tracks_section = entity_payload.get("tracks", {}) or {}
+
+    track_items = tracks_section.get("items") if isinstance(tracks_section, dict) else None
+    if not isinstance(track_items, list):
+        return []
+
+    parsed_tracks = []
+    for item in track_items:
+        track_info = item.get("track") if isinstance(item, dict) else None
+        if not isinstance(track_info, dict):
+            continue
+
+        if track_info.get("is_local"):
+            continue
+
+        album_info = track_info.get("album") or {}
+        artists = track_info.get("artists") or album_info.get("artists") or []
+        primary_artist = ""
+        if isinstance(artists, list) and artists:
+            artist_entry = artists[0]
+            if isinstance(artist_entry, dict):
+                primary_artist = artist_entry.get("name") or ""
+
+        parsed_tracks.append(
+            {
+                "title": track_info.get("name") or "",
+                "album": album_info.get("name") or "",
+                "artist": primary_artist,
+            }
+        )
+
+    return parsed_tracks
+
+
+def _match_spotify_tracks_to_library(spotify_tracks, library, log):
+    matched_tracks = []
+    unmatched_count = 0
+
+    for position, spotify_track in enumerate(spotify_tracks, 1):
+        raw_title = spotify_track.get("title") or ""
+        raw_album = spotify_track.get("album") or ""
+        raw_artist = spotify_track.get("artist") or ""
+
+        title = _strip_parenthetical(raw_title)
+        album = _strip_parenthetical(raw_album)
+        artist = _strip_parenthetical(raw_artist)
+
+        normalized_title = _normalize_compare_value(title)
+        normalized_album = _normalize_compare_value(album)
+        normalized_artist = _normalize_compare_value(artist)
+
+        search_attempts = [
+            {"title": title, "album": album, "artist": artist},
+            {"title": title, "artist": artist},
+            {"title": title, "album": album},
+            {"title": title},
+        ]
+
+        search_results = []
+        for params in search_attempts:
+            query = {key: value for key, value in params.items() if value}
+            if not query:
+                continue
+
+            try:
+                search_results = library.searchTracks(**query)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                log.warning(
+                    "Spotify search failed for '%s' by '%s' (query=%s): %s",
+                    raw_title or "<unknown>",
+                    raw_artist or "<unknown>",
+                    query,
+                    exc,
+                )
+                search_results = []
+            if search_results:
+                break
+
+        if not search_results:
+            unmatched_count += 1
+            if log.isEnabledFor(logging.INFO):
+                log.info(
+                    "Spotify track '%s' by '%s' on '%s' was not found in Plex",
+                    raw_title or "<unknown>",
+                    raw_artist or "<unknown>",
+                    raw_album or "<unknown>",
+                )
+            continue
+
+        def _candidate_score(candidate):
+            candidate_title = _normalize_compare_value(
+                _strip_parenthetical(getattr(candidate, "title", ""))
+            )
+            candidate_album = _normalize_compare_value(
+                _strip_parenthetical(getattr(candidate, "parentTitle", ""))
+            )
+            candidate_artist = _normalize_compare_value(
+                getattr(candidate, "grandparentTitle", "")
+            )
+            popularity = _resolve_track_popularity_value(candidate, playlist_logger=log)
+            popularity_score = popularity if popularity is not None else -1
+
+            return (
+                1 if normalized_title and candidate_title == normalized_title else 0,
+                1 if normalized_album and candidate_album == normalized_album else 0,
+                1 if normalized_artist and candidate_artist == normalized_artist else 0,
+                popularity_score,
+            )
+
+        best_candidate = max(search_results, key=_candidate_score)
+        matched_tracks.append(best_candidate)
+
+    return matched_tracks, unmatched_count
+
+
+def _collect_spotify_tracks(spotify_url, library, log):
+    normalized_url = _normalize_spotify_playlist_url(spotify_url)
+    response = requests.get(normalized_url, headers=_SPOTIFY_REQUEST_HEADERS, timeout=30)
+    response.raise_for_status()
+
+    entity_payload = _extract_spotify_entity_payload(response.text)
+    spotify_tracks = _parse_spotify_entity_tracks(entity_payload)
+    matched_tracks, unmatched_count = _match_spotify_tracks_to_library(
+        spotify_tracks,
+        library,
+        log,
+    )
+
+    stats = {
+        "normalized_url": normalized_url,
+        "total_tracks": len(spotify_tracks),
+        "matched_tracks": len(matched_tracks),
+        "unmatched_tracks": unmatched_count,
+    }
+
+    return matched_tracks, stats
 
 
 def _collect_normalized_candidates(values):
@@ -3700,6 +3912,337 @@ def _sort_tracks_in_place(
     return time.perf_counter() - sort_start
 
 
+def _run_spotify_playlist_build(
+    name,
+    config,
+    log,
+    plex_server,
+    library,
+    spotify_url,
+    resolved_sort_by,
+    sort_desc,
+    resolved_after_sort,
+    after_sort_desc,
+    chunk_size,
+    top_5_boost_value,
+    cover_path,
+    build_start,
+    limit,
+):
+    fetch_start = time.perf_counter()
+    if not spotify_url:
+        log.warning(
+            "Spotify playlist '%s' does not have a URL configured; no tracks will be added.",
+            name,
+        )
+        matched_tracks: List[Any] = []
+        spotify_stats = {
+            "normalized_url": "",
+            "total_tracks": 0,
+            "matched_tracks": 0,
+            "unmatched_tracks": 0,
+        }
+    else:
+        try:
+            matched_tracks, spotify_stats = _collect_spotify_tracks(
+                spotify_url,
+                library,
+                log,
+            )
+        except Exception as exc:
+            log.error(
+                "Failed to load Spotify playlist for '%s' from '%s': %s",
+                name,
+                spotify_url,
+                exc,
+            )
+            matched_tracks = []
+            spotify_stats = {
+                "normalized_url": spotify_url,
+                "total_tracks": 0,
+                "matched_tracks": 0,
+                "unmatched_tracks": 0,
+            }
+
+    fetch_duration = time.perf_counter() - fetch_start
+    total_tracks = spotify_stats.get("total_tracks", 0)
+    matched_total = len(matched_tracks)
+    normalized_url = spotify_stats.get("normalized_url")
+
+    if normalized_url:
+        log.info(
+            "Matched %s of %s track(s) from Spotify playlist %s",
+            matched_total,
+            total_tracks,
+            normalized_url,
+        )
+    else:
+        log.info(
+            "Matched %s of %s track(s) from Spotify playlist '%s'",
+            matched_total,
+            total_tracks,
+            name,
+        )
+
+    unmatched = spotify_stats.get("unmatched_tracks", 0)
+    if unmatched:
+        log.warning(
+            "Unable to match %s Spotify track(s) for playlist '%s'",
+            unmatched,
+            name,
+        )
+
+    try:
+        existing = plex_server.playlist(name)
+    except Exception:
+        existing = None
+
+    deleted_existing = False
+    playlist_obj = None
+    playlist_update_duration = 0.0
+    debug_logging = log.isEnabledFor(logging.DEBUG)
+
+    filter_duration = 0.0
+    filter_rate = 0.0
+    warm_duration = 0.0
+    dedup_duration = 0.0
+    sort_duration = 0.0
+
+    dedup_popularity_cache: Dict[str, Any] = {}
+    if matched_tracks:
+        dedup_start = time.perf_counter()
+        matched_tracks, dedup_popularity_cache, duplicates_removed = _deduplicate_tracks(
+            matched_tracks,
+            log,
+        )
+        dedup_duration = time.perf_counter() - dedup_start
+        if duplicates_removed:
+            log.info(
+                "Removed %s duplicate track(s) from playlist '%s' after popularity comparison",
+                duplicates_removed,
+                name,
+            )
+
+    album_popularity_cache: Dict[str, Any] = {}
+    album_popularity_cache_by_object: Dict[int, Any] = {}
+    needs_popularity_sort = (
+        resolved_sort_by == "__rating_count__" or resolved_after_sort == "__rating_count__"
+    )
+    if needs_popularity_sort and matched_tracks:
+        (
+            album_popularity_cache,
+            album_popularity_cache_by_object,
+        ) = _compute_album_popularity_boosts(
+            matched_tracks,
+            dedup_popularity_cache,
+            playlist_logger=log,
+            top_5_boost=top_5_boost_value,
+        )
+
+    match_count = len(matched_tracks)
+
+    if matched_tracks:
+        sort_duration += _sort_tracks_in_place(
+            matched_tracks,
+            resolved_sort_by,
+            sort_desc,
+            log,
+            dedup_popularity_cache,
+            album_popularity_cache,
+            album_popularity_cache_by_object,
+            debug_logging=debug_logging,
+        )
+
+    artist_limit_raw = config.get("artist_limit")
+    if artist_limit_raw is not None and matched_tracks:
+        try:
+            artist_limit_value = int(artist_limit_raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "Invalid artist_limit '%s' for playlist '%s'; expected integer.",
+                artist_limit_raw,
+                name,
+            )
+        else:
+            if artist_limit_value > 0:
+                artist_counts = {}
+                limited_tracks = []
+                removed_for_limit = 0
+
+                for track in matched_tracks:
+                    artist_name = _normalize_compare_value(getattr(track, "grandparentTitle", None))
+                    if not artist_name:
+                        fallback_artist = (
+                            getattr(track, "grandparentRatingKey", None)
+                            or getattr(track, "grandparentGuid", None)
+                            or getattr(track, "originalTitle", None)
+                        )
+                        artist_name = _normalize_compare_value(fallback_artist) or "__unknown__"
+
+                    current_count = artist_counts.get(artist_name, 0)
+                    if current_count >= artist_limit_value:
+                        removed_for_limit += 1
+                        if debug_logging:
+                            log.debug(
+                                "Skipping track '%s' by '%s' due to artist limit %s",
+                                getattr(track, "title", "<unknown>"),
+                                getattr(track, "grandparentTitle", "<unknown>"),
+                                artist_limit_value,
+                            )
+                        continue
+
+                    artist_counts[artist_name] = current_count + 1
+                    limited_tracks.append(track)
+
+                if removed_for_limit:
+                    log.info(
+                        "Applied artist limit (%s) for playlist '%s' – removed %s track(s)",
+                        artist_limit_value,
+                        name,
+                        removed_for_limit,
+                    )
+
+                matched_tracks = limited_tracks
+                match_count = len(matched_tracks)
+            else:
+                log.warning(
+                    "Artist limit for playlist '%s' must be positive; received %s.",
+                    name,
+                    artist_limit_raw,
+                )
+
+    album_limit_raw = config.get("album_limit")
+    if album_limit_raw is not None and matched_tracks:
+        try:
+            album_limit_value = int(album_limit_raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "Invalid album_limit '%s' for playlist '%s'; expected integer.",
+                album_limit_raw,
+                name,
+            )
+        else:
+            if album_limit_value > 0:
+                album_counts = {}
+                limited_tracks = []
+                removed_for_album_limit = 0
+
+                for track in matched_tracks:
+                    album_name = _normalize_compare_value(getattr(track, "parentTitle", None))
+                    if not album_name:
+                        fallback_album = (
+                            getattr(track, "parentRatingKey", None)
+                            or getattr(track, "parentGuid", None)
+                        )
+                        album_name = _normalize_compare_value(fallback_album) or "__unknown_album__"
+
+                    current_count = album_counts.get(album_name, 0)
+                    if current_count >= album_limit_value:
+                        removed_for_album_limit += 1
+                        if debug_logging:
+                            log.debug(
+                                "Skipping track '%s' from album '%s' due to album limit %s",
+                                getattr(track, "title", "<unknown>"),
+                                getattr(track, "parentTitle", "<unknown>"),
+                                album_limit_value,
+                            )
+                        continue
+
+                    album_counts[album_name] = current_count + 1
+                    limited_tracks.append(track)
+
+                if removed_for_album_limit:
+                    log.info(
+                        "Applied album limit (%s) for playlist '%s' – removed %s track(s)",
+                        album_limit_value,
+                        name,
+                        removed_for_album_limit,
+                    )
+
+                matched_tracks = limited_tracks
+                match_count = len(matched_tracks)
+            else:
+                log.warning(
+                    "Album limit for playlist '%s' must be positive; received %s.",
+                    name,
+                    album_limit_raw,
+                )
+
+    if limit and matched_tracks:
+        matched_tracks = matched_tracks[:limit]
+        match_count = len(matched_tracks)
+
+    if matched_tracks:
+        after_sort_duration = _sort_tracks_in_place(
+            matched_tracks,
+            resolved_after_sort,
+            after_sort_desc,
+            log,
+            dedup_popularity_cache,
+            album_popularity_cache,
+            album_popularity_cache_by_object,
+            debug_logging=debug_logging,
+        )
+        sort_duration += after_sort_duration
+
+    log.info(f"Playlist '{name}' → {match_count} matching tracks")
+
+    if existing and not deleted_existing:
+        try:
+            existing.delete()
+        except Exception as exc:
+            log.warning(f"Failed to delete existing playlist '{name}': {exc}")
+        else:
+            deleted_existing = True
+
+    if not matched_tracks:
+        total_duration = time.perf_counter() - build_start
+        log.info(
+            "Performance summary for '%s': fetch=%.2fs, prefetch=%.2fs, filter=%.2fs (%.1f track/s), dedup=%.2fs, sort=%.2fs, update=%.2fs, total=%.2fs",
+            name,
+            fetch_duration,
+            warm_duration,
+            filter_duration,
+            filter_rate,
+            dedup_duration,
+            sort_duration,
+            playlist_update_duration,
+            total_duration,
+        )
+        log.info(f"✅ Finished building '{name}' (0 tracks)")
+        return
+
+    update_start = time.perf_counter()
+    for chunk in chunked(matched_tracks, chunk_size):
+        try:
+            if playlist_obj is None:
+                playlist_obj = plex_server.createPlaylist(name, items=chunk)
+            else:
+                playlist_obj.addItems(chunk)
+        except Exception as exc:
+            log.error(f"Failed to update playlist '{name}': {exc}")
+            raise
+    playlist_update_duration += time.perf_counter() - update_start
+
+    apply_playlist_cover(playlist_obj, cover_path)
+    total_duration = time.perf_counter() - build_start
+    update_rate = (match_count / playlist_update_duration) if playlist_update_duration > 0 else 0.0
+    log.info(
+        "Performance summary for '%s': fetch=%.2fs, prefetch=%.2fs, filter=%.2fs (%.1f track/s), dedup=%.2fs, sort=%.2fs, update=%.2fs (%.1f track/s), total=%.2fs",
+        name,
+        fetch_duration,
+        warm_duration,
+        filter_duration,
+        filter_rate,
+        dedup_duration,
+        sort_duration,
+        playlist_update_duration,
+        update_rate,
+        total_duration,
+    )
+    log.info(f"✅ Finished building '{name}' ({match_count} tracks)")
+
+
 def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     if playlist_handler:
         log.debug(
@@ -3710,6 +4253,11 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
 
     log.info(f"Building playlist: {name}")
     build_start = time.perf_counter()
+    playlist_source = _normalize_playlist_source(config.get("source"))
+    spotify_url = ""
+    if playlist_source == "spotify":
+        raw_spotify_url = config.get("spotify_url")
+        spotify_url = str(raw_spotify_url).strip() if raw_spotify_url else ""
     filters = config.get("plex_filter", [])
     boost_rules = config.get("popularity_boosts", []) or []
     wildcard_filters = [_compile_filter_entry(f) for f in filters if bool(f.get("wildcard"))]
@@ -3770,6 +4318,25 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     top_5_boost_value = _coerce_non_negative_float(top_5_boost_raw)
     if top_5_boost_value is None:
         top_5_boost_value = 1.0
+    if playlist_source == "spotify":
+        _run_spotify_playlist_build(
+            name,
+            config,
+            log,
+            plex_server,
+            library,
+            spotify_url,
+            resolved_sort_by,
+            sort_desc,
+            resolved_after_sort,
+            after_sort_desc,
+            chunk_size,
+            top_5_boost_value,
+            cover_path,
+            build_start,
+            limit,
+        )
+        return
     stream_requested = config.get("stream_while_filtering", False)
     stream_enabled = stream_requested and not sort_by and not limit
     if stream_enabled:
