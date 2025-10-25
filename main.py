@@ -859,6 +859,26 @@ def _normalize_boost_condition(raw_condition):
     }
 
 
+def _normalize_sort_option(raw_value):
+    if not isinstance(raw_value, str):
+        return raw_value
+
+    trimmed = raw_value.strip()
+    if not trimmed:
+        return None
+
+    normalized = trimmed.lower()
+    known_options = {
+        "popularity": "popularity",
+        "alphabetical": "alphabetical",
+        "reverse_alphabetical": "reverse_alphabetical",
+        "oldest_first": "oldest_first",
+        "newest_first": "newest_first",
+    }
+
+    return known_options.get(normalized, trimmed)
+
+
 def _apply_configured_popularity_boosts(
     tracks,
     boost_rules,
@@ -3421,6 +3441,28 @@ def _sort_tracks_in_place(
                 sort_value_cache_by_object[object_cache_key] = popularity_value
             return popularity_value
 
+        if resolved_sort_by == "__album_year__":
+            year_token = _resolve_album_year(track)
+            if year_token is None:
+                sort_value = None
+            else:
+                try:
+                    numeric_year = int(str(year_token))
+                except (TypeError, ValueError):
+                    numeric_year = year_token
+
+                sort_value = (
+                    numeric_year,
+                    getattr(track, "title", ""),
+                    getattr(track, "grandparentTitle", ""),
+                )
+
+            if cache_key_str:
+                sort_value_cache[cache_key_str] = sort_value
+            else:
+                sort_value_cache_by_object[object_cache_key] = sort_value
+            return sort_value
+
         if resolved_sort_by == "__alphabetical__":
             raw_title = getattr(track, "title", "") or ""
             raw_artist = getattr(track, "grandparentTitle", "") or ""
@@ -3610,8 +3652,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     plex_server = get_plex_server()
     library = plex_server.library.section(config.get("library", LIBRARY_NAME))
     limit = config.get("limit")
-    sort_by = config.get("sort_by")
-    after_sort = config.get("after_sort")
+    sort_by = _normalize_sort_option(config.get("sort_by"))
+    after_sort = _normalize_sort_option(config.get("after_sort"))
     cover_path = config.get("cover")
     resolved_sort_by = sort_by
     resolved_after_sort = after_sort
@@ -3633,11 +3675,11 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         if not sort_desc_in_config:
             sort_desc = True
     elif sort_by == "oldest_first":
-        resolved_sort_by = "originallyAvailableAt"
+        resolved_sort_by = "__album_year__"
         if not sort_desc_in_config:
             sort_desc = False
     elif sort_by == "newest_first":
-        resolved_sort_by = "originallyAvailableAt"
+        resolved_sort_by = "__album_year__"
         if not sort_desc_in_config:
             sort_desc = True
     if after_sort == "popularity":
@@ -3651,11 +3693,11 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         if not after_sort_desc_in_config:
             after_sort_desc = True
     elif after_sort == "oldest_first":
-        resolved_after_sort = "originallyAvailableAt"
+        resolved_after_sort = "__album_year__"
         if not after_sort_desc_in_config:
             after_sort_desc = False
     elif after_sort == "newest_first":
-        resolved_after_sort = "originallyAvailableAt"
+        resolved_after_sort = "__album_year__"
         if not after_sort_desc_in_config:
             after_sort_desc = True
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
