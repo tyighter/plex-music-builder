@@ -3109,8 +3109,20 @@ def _fetch_tracks_with_server_filters(
         result = library.search(**params)
         return list(result)
 
+    def log_query_result(index: int, total: int, results: Sequence[Any]) -> None:
+        if not logger or not logger.isEnabledFor(logging.DEBUG):
+            return
+        logger.debug(
+            "Server-side filter query %d/%d returned %d result(s)",
+            index,
+            total,
+            len(results),
+        )
+
     if request_count == 1:
-        results = [execute_search(search_parameter_sets[0])]
+        single_results = execute_search(search_parameter_sets[0])
+        log_query_result(1, request_count, single_results)
+        results = [single_results]
     else:
         try:
             configured_workers = int(MAX_WORKERS)
@@ -3126,7 +3138,9 @@ def _fetch_tracks_with_server_filters(
             }
             for future in as_completed(future_map):
                 idx = future_map[future]
-                results[idx] = list(future.result())
+                query_results = list(future.result())
+                results[idx] = query_results
+                log_query_result(idx + 1, request_count, query_results)
 
     combined: List[Any] = []
     seen_keys: Set[Any] = set()
