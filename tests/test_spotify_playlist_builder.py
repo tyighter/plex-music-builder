@@ -247,7 +247,8 @@ def test_match_spotify_tracks_prefers_higher_ratingcount():
 
     assert matched == [track_high]
     assert unmatched == 0
-    assert library.calls[0] == {"title": "Song", "artist": "Artist"}
+    assert library.calls[0] == {"artist": "Artist"}
+    assert {"title": "Song", "artist": "Artist"} in library.calls
 
 
 def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
