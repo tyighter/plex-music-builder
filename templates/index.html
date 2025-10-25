@@ -497,7 +497,7 @@
 
       .filter-row {
         display: grid;
-        grid-template-columns: 1.1fr 1fr 1fr auto auto;
+        grid-template-columns: 1.1fr 1fr 1fr auto;
         gap: 12px;
         align-items: start;
         margin-bottom: 10px;
@@ -581,7 +581,7 @@
 
       .boost-condition {
         display: grid;
-        grid-template-columns: 1.1fr 1fr minmax(200px, 1fr) auto auto;
+        grid-template-columns: 1.1fr 1fr minmax(200px, 1fr) auto;
         gap: 12px;
         align-items: start;
       }
@@ -652,6 +652,10 @@
 
       .boost-condition .filter-flag {
         cursor: pointer;
+      }
+
+      .filter-flags button.remove-control {
+        margin-left: auto;
       }
 
       .filter-row button.icon-only,
@@ -4154,18 +4158,23 @@
 
           valueWrapper.appendChild(valueInput);
 
-          const removeBtn = document.createElement("button");
-          removeBtn.type = "button";
-          removeBtn.className = "icon-only danger";
-          removeBtn.textContent = "✕";
-          removeBtn.title = "Remove filter";
-          removeBtn.addEventListener("click", () => onRemove(index));
+          const shouldShowRemoveButton =
+            filters.length > 1 || !isFilterEmpty(filter);
+
+          if (shouldShowRemoveButton) {
+            const removeBtn = document.createElement("button");
+            removeBtn.type = "button";
+            removeBtn.className = "icon-only danger remove-control";
+            removeBtn.textContent = "✕";
+            removeBtn.title = "Remove filter";
+            removeBtn.addEventListener("click", () => onRemove(index));
+            flagsWrapper.appendChild(removeBtn);
+          }
 
           row.appendChild(fieldSelect);
           row.appendChild(operatorSelect);
           row.appendChild(valueWrapper);
           row.appendChild(flagsWrapper);
-          row.appendChild(removeBtn);
 
           containerEl.appendChild(row);
         });
@@ -4185,6 +4194,58 @@
           conditions: [createEmptyBoostCondition()],
           boost: undefined,
         };
+      }
+
+      function isBoostConditionEmpty(condition) {
+        if (!condition || typeof condition !== "object") {
+          return true;
+        }
+
+        const hasField =
+          typeof condition.field === "string" && condition.field.trim() !== "";
+        const hasValue =
+          condition.value !== undefined &&
+          condition.value !== null &&
+          String(condition.value).trim() !== "";
+        const hasNonDefaultOperator =
+          typeof condition.operator === "string" &&
+          condition.operator.trim() !== "" &&
+          condition.operator.trim() !== "equals";
+        const hasMatchAllOverride = condition.match_all === false;
+
+        return !(
+          hasField ||
+          hasValue ||
+          hasNonDefaultOperator ||
+          hasMatchAllOverride
+        );
+      }
+
+      function isFilterEmpty(filter) {
+        if (!filter || typeof filter !== "object") {
+          return true;
+        }
+
+        const hasField =
+          typeof filter.field === "string" && filter.field.trim() !== "";
+        const hasValue =
+          filter.value !== undefined &&
+          filter.value !== null &&
+          String(filter.value).trim() !== "";
+        const hasNonDefaultOperator =
+          typeof filter.operator === "string" &&
+          filter.operator.trim() !== "" &&
+          filter.operator.trim() !== "equals";
+        const hasWildcard = !!filter.wildcard;
+        const hasMatchAllOverride = filter.match_all === false;
+
+        return !(
+          hasField ||
+          hasValue ||
+          hasNonDefaultOperator ||
+          hasWildcard ||
+          hasMatchAllOverride
+        );
       }
 
       function normalizeBoostConditionForClient(condition) {
@@ -4330,21 +4391,26 @@
               flagsWrapper.appendChild(matchAllLabel);
               conditionRow.appendChild(flagsWrapper);
 
-              const removeConditionBtn = document.createElement("button");
-              removeConditionBtn.type = "button";
-              removeConditionBtn.className = "icon-only danger";
-              removeConditionBtn.textContent = "✕";
-              removeConditionBtn.title = "Remove condition";
-              removeConditionBtn.disabled = boost.conditions.length <= 1;
-              removeConditionBtn.addEventListener("click", () => {
-                if (boost.conditions.length > 1) {
-                  boost.conditions.splice(conditionIndex, 1);
-                } else {
-                  boost.conditions[0] = createEmptyBoostCondition();
-                }
-                renderConditions();
-              });
-              conditionRow.appendChild(removeConditionBtn);
+              const shouldShowRemoveCondition =
+                boost.conditions.length > 1 ||
+                !isBoostConditionEmpty(current);
+
+              if (shouldShowRemoveCondition) {
+                const removeConditionBtn = document.createElement("button");
+                removeConditionBtn.type = "button";
+                removeConditionBtn.className = "icon-only danger remove-control";
+                removeConditionBtn.textContent = "✕";
+                removeConditionBtn.title = "Remove condition";
+                removeConditionBtn.addEventListener("click", () => {
+                  if (boost.conditions.length > 1) {
+                    boost.conditions.splice(conditionIndex, 1);
+                  } else {
+                    boost.conditions[0] = createEmptyBoostCondition();
+                  }
+                  renderConditions();
+                });
+                flagsWrapper.appendChild(removeConditionBtn);
+              }
 
               conditionsContainer.appendChild(conditionRow);
             });
