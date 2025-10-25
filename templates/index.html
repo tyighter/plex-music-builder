@@ -6407,6 +6407,42 @@
             closeCoverPicker();
           }
         });
+        coverPickerOverlay.addEventListener(
+          "wheel",
+          (event) => {
+            if (!coverPickerOverlay.classList.contains("show")) {
+              return;
+            }
+
+            const target = event.target;
+            if (
+              target instanceof Element &&
+              target.closest(".cover-picker-grid, .cover-picker-directory-list")
+            ) {
+              return;
+            }
+
+            const scrollCandidates = [coverPickerGrid, coverPickerDirectories];
+            const scrollContainer = scrollCandidates.find(
+              (container) =>
+                container &&
+                container.scrollHeight > container.clientHeight + 1
+            );
+
+            if (!scrollContainer) {
+              return;
+            }
+
+            scrollContainer.scrollTop += event.deltaY;
+
+            if (event.deltaX) {
+              scrollContainer.scrollLeft += event.deltaX;
+            }
+
+            event.preventDefault();
+          },
+          { passive: false }
+        );
         coverPickerOverlay.addEventListener("focusout", (event) => {
           if (!coverPickerOverlay.contains(event.relatedTarget)) {
             previewCoverCandidate(coverPickerState.selectedPath);
