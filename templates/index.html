@@ -34,6 +34,10 @@
         flex-direction: column;
       }
 
+      body.no-scroll {
+        overflow: hidden;
+      }
+
       header {
         background: linear-gradient(135deg, var(--plex-dark), #0d0d0d);
         padding: 24px 48px;
@@ -2148,6 +2152,7 @@
         currentDirectory: "",
         lastFocus: null,
         directoryController: null,
+        scrollLocked: false,
       };
       let lastFocusedBeforeConfig = null;
       const configFieldElements = new Map();
@@ -4958,6 +4963,10 @@
         coverPickerState.lastFocus = document.activeElement;
         coverPickerOverlay.classList.add("show");
         coverPickerOverlay.setAttribute("aria-hidden", "false");
+        if (document.body) {
+          document.body.classList.add("no-scroll");
+          coverPickerState.scrollLocked = true;
+        }
         setTimeout(() => {
           try {
             coverPickerPanel.focus({ preventScroll: true });
@@ -4991,6 +5000,12 @@
         if (coverPickerUpBtn) {
           coverPickerUpBtn.disabled = true;
           coverPickerUpBtn.dataset.parentPath = "";
+        }
+        if (coverPickerState.scrollLocked && document.body) {
+          if (!configOverlay?.classList.contains("show")) {
+            document.body.classList.remove("no-scroll");
+          }
+          coverPickerState.scrollLocked = false;
         }
         const focusTarget = coverPickerState.lastFocus;
         coverPickerState.playlist = null;
