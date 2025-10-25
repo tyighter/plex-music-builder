@@ -4966,6 +4966,11 @@
           inputEl.dispatchEvent(new Event("input", { bubbles: true }));
         } else if (playlist && extrasKey) {
           const extras = ensureExtras(playlist);
+          delete extras.source;
+          delete extras.spotify_url;
+
+          playlist.source = normalizePlaylistSource(playlist.source);
+          playlist.spotify_url = sanitizeSpotifyUrl(playlist.spotify_url);
           extras[extrasKey] = savedPath;
           if (
             preview?.container &&
@@ -5649,6 +5654,18 @@
         return parsed;
       }
 
+      function normalizePlaylistSource(value) {
+        const normalized = String(value || "").toLowerCase();
+        return normalized === "spotify" ? "spotify" : "plex";
+      }
+
+      function sanitizeSpotifyUrl(value) {
+        if (value === undefined || value === null) {
+          return "";
+        }
+        return String(value).trim();
+      }
+
       function normalizePopularityBoostMultiplier(value) {
         const parsed = Number.parseFloat(value);
         if (!Number.isFinite(parsed) || parsed < 0) {
@@ -6016,6 +6033,40 @@
             savePlaylist(playlist, saveBtn, title, nameInput)
           );
 
+          let updateSourceUi;
+
+          const sourceLabel = document.createElement("label");
+          sourceLabel.textContent = "Source";
+          const sourceSelect = document.createElement("select");
+          [
+            { value: "plex", label: "Plex" },
+            { value: "spotify", label: "Spotify" },
+          ].forEach((optionData) => {
+            const option = document.createElement("option");
+            option.value = optionData.value;
+            option.textContent = optionData.label;
+            sourceSelect.appendChild(option);
+          });
+          sourceSelect.value = playlist.source;
+          sourceSelect.addEventListener("change", (event) => {
+            playlist.source = normalizePlaylistSource(event.target.value);
+            if (typeof updateSourceUi === "function") {
+              updateSourceUi();
+            }
+          });
+          sourceLabel.appendChild(sourceSelect);
+
+          const spotifyUrlLabel = document.createElement("label");
+          spotifyUrlLabel.textContent = "Spotify Playlist URL";
+          const spotifyUrlInput = document.createElement("input");
+          spotifyUrlInput.type = "url";
+          spotifyUrlInput.placeholder = "https://open.spotify.com/playlist/...";
+          spotifyUrlInput.value = playlist.spotify_url || "";
+          spotifyUrlInput.addEventListener("input", (event) => {
+            playlist.spotify_url = sanitizeSpotifyUrl(event.target.value);
+          });
+          spotifyUrlLabel.appendChild(spotifyUrlInput);
+
           const limitLabel = document.createElement("label");
           limitLabel.textContent = "Limit";
           const limitInput = document.createElement("input");
@@ -6261,6 +6312,8 @@
           );
 
           grid.appendChild(nameLabel);
+          grid.appendChild(sourceLabel);
+          grid.appendChild(spotifyUrlLabel);
           grid.appendChild(limitLabel);
           grid.appendChild(artistLimitLabel);
           grid.appendChild(albumLimitLabel);
@@ -6350,6 +6403,16 @@
 
           details.appendChild(boostsPopout);
 
+          updateSourceUi = () => {
+            const isSpotify = playlist.source === "spotify";
+            filtersWrapper.style.display = isSpotify ? "none" : "";
+            addFilterBtn.style.display = isSpotify ? "none" : "";
+            boostsPopout.style.display = isSpotify ? "none" : "";
+            spotifyUrlLabel.style.display = isSpotify ? "" : "none";
+          };
+
+          updateSourceUi();
+
           playlist._collapseElements = {
             card,
             toggleButton: toggleBtn,
@@ -6435,6 +6498,16 @@
 
           state.playlists = (data.playlists || []).map((playlist) => {
             const playlistName = playlist.name || "";
+            const normalizedSource = normalizePlaylistSource(
+              playlist.source || playlist.extras?.source
+            );
+            const spotifyUrl = sanitizeSpotifyUrl(
+              playlist.spotify_url || playlist.extras?.spotify_url || ""
+            );
+            const extras = { ...(playlist.extras || {}) };
+            delete extras.source;
+            delete extras.spotify_url;
+
             const entry = {
               name: playlistName,
               limit: playlist.limit ?? 0,
@@ -6456,7 +6529,9 @@
               popularity_boosts: (playlist.popularity_boosts || []).map((boost) =>
                 normalizeBoostForClient(boost || {})
               ),
-              extras: playlist.extras || {},
+              extras,
+              source: normalizedSource,
+              spotify_url: normalizedSource === "spotify" ? spotifyUrl : "",
             };
             entry._originalName = playlistName;
             entry._collapsed = true;
@@ -6533,22 +6608,32 @@
             ),
             extras: sanitizeExtras(state.defaults.extras || {}),
           },
-          playlists: state.playlists.map((playlist) => ({
-            name: playlist.name || "",
-            limit: playlist.limit ?? 0,
-            artist_limit: playlist.artist_limit ?? 0,
-            album_limit: playlist.album_limit ?? 0,
-            sort_by: playlist.sort_by || "",
-            after_sort: playlist.after_sort || "",
-            top_5_boost: normalizeTop5Boost(
-              playlist.top_5_boost ?? 1.0
-            ),
-            plex_filter: prepareFiltersForSave(playlist.plex_filter),
-            popularity_boosts: prepareBoostsForSave(
-              playlist.popularity_boosts
-            ),
-            extras: sanitizeExtras(playlist.extras || {}),
-          })),
+          playlists: state.playlists.map((playlist) => {
+            const source = normalizePlaylistSource(playlist.source);
+            const spotifyUrl = sanitizeSpotifyUrl(playlist.spotify_url);
+            const extras = sanitizeExtras(playlist.extras || {});
+            delete extras.source;
+            delete extras.spotify_url;
+
+            return {
+              name: playlist.name || "",
+              limit: playlist.limit ?? 0,
+              artist_limit: playlist.artist_limit ?? 0,
+              album_limit: playlist.album_limit ?? 0,
+              sort_by: playlist.sort_by || "",
+              after_sort: playlist.after_sort || "",
+              top_5_boost: normalizeTop5Boost(
+                playlist.top_5_boost ?? 1.0
+              ),
+              plex_filter: prepareFiltersForSave(playlist.plex_filter),
+              popularity_boosts: prepareBoostsForSave(
+                playlist.popularity_boosts
+              ),
+              extras,
+              source,
+              spotify_url: source === "spotify" ? spotifyUrl : "",
+            };
+          }),
         };
 
         try {
@@ -6597,6 +6682,12 @@
 
         const { showSuccessMessage = true, rethrowOnError = false } = options;
 
+        const source = normalizePlaylistSource(playlist.source);
+        const spotifyUrl = sanitizeSpotifyUrl(playlist.spotify_url);
+        const extras = sanitizeExtras(playlist.extras || {});
+        delete extras.source;
+        delete extras.spotify_url;
+
         const payload = {
           playlist: {
             name: trimmedName,
@@ -6612,7 +6703,9 @@
             popularity_boosts: prepareBoostsForSave(
               playlist.popularity_boosts
             ),
-            extras: sanitizeExtras(playlist.extras || {}),
+            extras,
+            source,
+            spotify_url: source === "spotify" ? spotifyUrl : "",
           },
           original_name: playlist._originalName || "",
         };
@@ -6935,6 +7028,8 @@
           plex_filter: [],
           popularity_boosts: [],
           extras: {},
+          source: "plex",
+          spotify_url: "",
           _originalName: "",
           _collapsed: false,
           _boostsOpen: false,
