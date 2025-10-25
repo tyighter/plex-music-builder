@@ -607,6 +607,10 @@ _SPOTIFY_ENTITY_JSON_PARSE_PATTERN = re.compile(
     r"Spotify\.Entity\s*=\s*JSON\.parse\(\s*(?P<decoder>decodeURIComponent\()?(?P<quoted>\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*')\s*\)?\s*\)\s*;",
     re.DOTALL,
 )
+_SPOTIFY_NEXT_DATA_PATTERN = re.compile(
+    r"<script[^>]+id=\"__NEXT_DATA__\"[^>]*>(?P<payload>{.*?})</script>",
+    re.DOTALL,
+)
 _SPOTIFY_REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -642,6 +646,243 @@ def _normalize_spotify_playlist_url(raw_url):
     return f"https://open.spotify.com/playlist/{playlist_id}"
 
 
+def _collect_tracks_from_next_data(root_node):
+    tracks = []
+    seen_keys = set()
+
+    def _extract_key(info):
+        uri = info.get("uri")
+        if uri:
+            return ("uri", uri)
+        return (
+            "identity",
+            _normalize_compare_value(info.get("name")),
+            _normalize_compare_value(info.get("album")),
+            _normalize_compare_value(info.get("artist")),
+        )
+
+    def _append_tracks(track_infos):
+        for info in track_infos:
+            key = _extract_key(info)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            album_artists = []
+            primary_artist = info.get("artist") or ""
+            if primary_artist:
+                album_artists.append({"name": primary_artist})
+            album_info = {}
+            album_name = info.get("album") or ""
+            if album_name or album_artists:
+                album_info = {"name": album_name or ""}
+                if album_artists:
+                    album_info["artists"] = album_artists
+            track_payload = {
+                "name": info.get("name") or "",
+                "album": album_info,
+                "artists": album_artists,
+            }
+            uri = info.get("uri")
+            if uri:
+                track_payload["uri"] = uri
+            tracks.append({"track": track_payload})
+
+    def _walk(node):
+        if isinstance(node, list):
+            converted = []
+            fallback_nodes = []
+            for item in node:
+                track_info = _coerce_next_data_track(item)
+                if track_info:
+                    converted.append(track_info)
+                else:
+                    fallback_nodes.append(item)
+            if converted:
+                _append_tracks(converted)
+            for item in fallback_nodes:
+                _walk(item)
+        elif isinstance(node, dict):
+            for value in node.values():
+                _walk(value)
+
+    _walk(root_node)
+    return tracks
+
+
+def _coerce_next_data_track(node):
+    if isinstance(node, dict):
+        # unwrap common containers used in the Next.js payload
+        for key in ("track", "item", "itemV2", "itemV1", "data"):
+            value = node.get(key)
+            if isinstance(value, (dict, list)):
+                track_info = _coerce_next_data_track(value)
+                if track_info:
+                    return track_info
+
+        if "trackMetadata" in node and isinstance(node["trackMetadata"], dict):
+            metadata = node["trackMetadata"]
+            return _build_next_data_track_info(
+                uri=metadata.get("trackUri"),
+                name=metadata.get("trackName"),
+                album=metadata.get("albumName"),
+                artist=metadata.get("artistName"),
+            )
+
+        typename = node.get("__typename")
+        if typename and typename not in {"Track", "MusicTrack", "Episode"}:
+            # Ignore nodes that explicitly describe other entity types
+            pass
+
+        name = node.get("name") or node.get("trackName") or node.get("title")
+        if not name and isinstance(node.get("metadata"), dict):
+            metadata = node["metadata"]
+            name = metadata.get("name") or metadata.get("trackName")
+
+        if not name and isinstance(node.get("content"), dict):
+            content = node["content"]
+            name = content.get("title") or content.get("name")
+
+        album_name = _extract_album_name_from_next_data(node)
+        artist_name = _extract_artist_name_from_next_data(node)
+
+        if not artist_name and isinstance(node.get("subtitle"), str):
+            subtitle_parts = [part.strip() for part in node["subtitle"].split("•")]
+            if subtitle_parts:
+                artist_name = artist_name or subtitle_parts[0]
+            if len(subtitle_parts) >= 2 and not album_name:
+                album_name = subtitle_parts[1]
+
+        uri = None
+        for key in ("uri", "trackUri", "uriRaw"):
+            value = node.get(key)
+            if isinstance(value, str) and value.startswith("spotify:track:"):
+                uri = value
+                break
+
+        if name and (artist_name or album_name or uri):
+            return _build_next_data_track_info(
+                uri=uri,
+                name=name,
+                album=album_name,
+                artist=artist_name,
+            )
+
+    elif isinstance(node, list):
+        converted = []
+        for item in node:
+            track_info = _coerce_next_data_track(item)
+            if track_info:
+                converted.append(track_info)
+        if converted:
+            return converted[0]
+
+    return None
+
+
+def _build_next_data_track_info(uri=None, name=None, album=None, artist=None):
+    if not name:
+        return None
+    info = {
+        "name": name,
+        "album": album or "",
+        "artist": artist or "",
+    }
+    if uri:
+        info["uri"] = uri
+    return info
+
+
+def _extract_album_name_from_next_data(node):
+    if isinstance(node, dict):
+        if isinstance(node.get("album"), dict):
+            album_name = node["album"].get("name") or node["album"].get("title")
+            if album_name:
+                return album_name
+        if isinstance(node.get("albumOfTrack"), dict):
+            album = node["albumOfTrack"]
+            album_name = album.get("name") or album.get("title")
+            if album_name:
+                return album_name
+            if isinstance(album.get("items"), list):
+                for item in album["items"]:
+                    album_name = _extract_album_name_from_next_data(item)
+                    if album_name:
+                        return album_name
+        if isinstance(node.get("albumOfEpisode"), dict):
+            album = node["albumOfEpisode"]
+            album_name = album.get("name") or album.get("title")
+            if album_name:
+                return album_name
+        if isinstance(node.get("album"), str):
+            return node["album"]
+        if isinstance(node.get("albumName"), str):
+            return node["albumName"]
+        if isinstance(node.get("trackMetadata"), dict):
+            album_name = node["trackMetadata"].get("albumName")
+            if album_name:
+                return album_name
+    return ""
+
+
+def _extract_artist_name_from_next_data(node):
+    if isinstance(node, dict):
+        if isinstance(node.get("albumOfTrack"), dict):
+            name = _extract_artist_name_from_next_data(node["albumOfTrack"])
+            if name:
+                return name
+        if isinstance(node.get("albumOfEpisode"), dict):
+            name = _extract_artist_name_from_next_data(node["albumOfEpisode"])
+            if name:
+                return name
+        if isinstance(node.get("artists"), list):
+            for entry in node["artists"]:
+                name = _extract_artist_name_from_next_data(entry)
+                if name:
+                    return name
+        if isinstance(node.get("artists"), dict):
+            artists = node["artists"]
+            name = artists.get("name") or artists.get("title")
+            if name:
+                return name
+            if isinstance(artists.get("items"), list):
+                for item in artists["items"]:
+                    name = _extract_artist_name_from_next_data(item)
+                    if name:
+                        return name
+        if isinstance(node.get("artistsOfTrack"), dict):
+            artists_of_track = node["artistsOfTrack"]
+            if isinstance(artists_of_track.get("items"), list):
+                for item in artists_of_track["items"]:
+                    name = _extract_artist_name_from_next_data(item)
+                    if name:
+                        return name
+        if isinstance(node.get("profile"), dict):
+            profile = node["profile"]
+            name = profile.get("name") or profile.get("displayName")
+            if name:
+                return name
+        if isinstance(node.get("artist"), dict):
+            name = node["artist"].get("name") or node["artist"].get("title")
+            if name:
+                return name
+        if isinstance(node.get("artist"), str):
+            return node["artist"]
+        if isinstance(node.get("artistName"), str):
+            return node["artistName"]
+        if isinstance(node.get("subtitle"), str):
+            subtitle_parts = [part.strip() for part in node["subtitle"].split("•")]
+            if subtitle_parts:
+                return subtitle_parts[0]
+    elif isinstance(node, list):
+        for entry in node:
+            name = _extract_artist_name_from_next_data(entry)
+            if name:
+                return name
+    elif isinstance(node, str):
+        return node
+    return ""
+
+
 def _extract_spotify_entity_payload(html_text):
     if not html_text:
         raise ValueError("Spotify playlist page was empty")
@@ -650,7 +891,10 @@ def _extract_spotify_entity_payload(html_text):
     if not match:
         json_parse_match = _SPOTIFY_ENTITY_JSON_PARSE_PATTERN.search(html_text)
         if not json_parse_match:
-            raise ValueError("Unable to locate Spotify playlist metadata in page contents")
+            next_data_payload = _extract_spotify_entity_payload_from_next_data(html_text)
+            if next_data_payload is None:
+                raise ValueError("Unable to locate Spotify playlist metadata in page contents")
+            return next_data_payload
 
         quoted_payload = json_parse_match.group("quoted")
         try:
@@ -669,6 +913,24 @@ def _extract_spotify_entity_payload(html_text):
         return json.loads(payload)
     except json.JSONDecodeError as exc:
         raise ValueError("Failed to parse Spotify playlist metadata") from exc
+
+
+def _extract_spotify_entity_payload_from_next_data(html_text):
+    match = _SPOTIFY_NEXT_DATA_PATTERN.search(html_text)
+    if not match:
+        return None
+
+    payload_text = match.group("payload")
+    try:
+        data = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Failed to parse Spotify playlist metadata") from exc
+
+    track_items = _collect_tracks_from_next_data(data)
+    if not track_items:
+        return None
+
+    return {"tracks": {"items": track_items}}
 
 
 def _parse_spotify_entity_tracks(entity_payload):
