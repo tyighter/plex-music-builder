@@ -2,6 +2,7 @@ import json
 from urllib.parse import quote
 
 import pytest
+import requests
 
 import main
 
@@ -38,9 +39,7 @@ def test_parse_spotify_entity_tracks_skips_local_and_missing():
     }
 
     parsed = main._parse_spotify_entity_tracks(entity)
-    assert parsed == [
-        {"title": "Cloud Song", "album": "Great Album", "artist": "Artist"}
-    ]
+    assert parsed == [{"title": "Cloud Song", "artist": "Artist"}]
 
 
 def test_extract_spotify_entity_payload_handles_json_parse_decode():
@@ -166,8 +165,8 @@ def test_extract_spotify_entity_payload_handles_next_data_tracks():
     tracks = main._parse_spotify_entity_tracks(parsed)
 
     assert tracks == [
-        {"title": "Next Song", "album": "Next Album", "artist": "Next Artist"},
-        {"title": "Another Song", "album": "Another Album", "artist": "Another Artist"},
+        {"title": "Next Song", "artist": "Next Artist"},
+        {"title": "Another Song", "artist": "Another Artist"},
     ]
 
 
@@ -208,17 +207,36 @@ class _DummyLog:
         return False
 
 
+class _FakeResponse:
+    def __init__(self, text, status_code=200, headers=None):
+        self._text = text
+        self.status_code = status_code
+        self.headers = headers or {"Content-Type": "text/html"}
+
+    @property
+    def text(self):
+        return self._text
+
+    @property
+    def content(self):
+        return self._text.encode("utf-8")
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"Status {self.status_code}", response=self)
+
+
 def test_match_spotify_tracks_prefers_higher_ratingcount():
     track_low = _DummyTrack("Song", "Album", "Artist", 5, 1)
     track_high = _DummyTrack("Song", "Album", "Artist", 12, 2)
 
-    query = tuple(sorted([("album", "Album"), ("artist", "Artist"), ("title", "Song")]))
+    query = tuple(sorted([("artist", "Artist"), ("title", "Song")]))
     responses = {query: [track_low, track_high]}
     library = _DummyLibrary(responses)
     log = _DummyLog()
 
     spotify_tracks = [
-        {"title": "Song (Remastered)", "album": "Album (Deluxe)", "artist": "Artist"}
+        {"title": "Song (Remastered)", "artist": "Artist"}
     ]
 
     matched, unmatched = main._match_spotify_tracks_to_library(
@@ -229,9 +247,64 @@ def test_match_spotify_tracks_prefers_higher_ratingcount():
 
     assert matched == [track_high]
     assert unmatched == 0
-    assert library.calls[0] == {
-        "title": "Song",
-        "album": "Album",
-        "artist": "Artist",
+    assert library.calls[0] == {"title": "Song", "artist": "Artist"}
+
+
+def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
+    login_page = "<html><head><title>Spotify – Web Player</title></head><body></body></html>"
+    entity_payload = {
+        "tracks": {
+            "items": [
+                {
+                    "track": {
+                        "name": "Song",
+                        "album": {
+                            "name": "Album",
+                            "artists": [{"name": "Artist"}],
+                        },
+                        "artists": [{"name": "Artist"}],
+                    }
+                }
+            ]
+        }
     }
+    embed_page = f"<script>Spotify.Entity = {json.dumps(entity_payload)};</script>"
+
+    responses = [
+        _FakeResponse(login_page),
+        _FakeResponse(embed_page),
+    ]
+    requested_urls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        requested_urls.append(url)
+        if not responses:
+            raise AssertionError("Unexpected additional Spotify requests")
+        return responses.pop(0)
+
+    monkeypatch.setattr(main, "requests", requests)
+    monkeypatch.setattr(main.requests, "get", fake_get)
+
+    track = _DummyTrack("Song", "Album", "Artist", 10, 1)
+    query = tuple(sorted([("artist", "Artist"), ("title", "Song")]))
+    library = _DummyLibrary({query: [track]})
+    log = _DummyLog()
+
+    matched, stats = main._collect_spotify_tracks(
+        "https://open.spotify.com/playlist/37i9dQZF1EQpVaHRDcozEz",
+        library,
+        log,
+    )
+
+    assert matched == [track]
+    assert stats == {
+        "normalized_url": "https://open.spotify.com/playlist/37i9dQZF1EQpVaHRDcozEz",
+        "total_tracks": 1,
+        "matched_tracks": 1,
+        "unmatched_tracks": 0,
+    }
+    assert requested_urls == [
+        "https://open.spotify.com/playlist/37i9dQZF1EQpVaHRDcozEz",
+        "https://open.spotify.com/embed/playlist/37i9dQZF1EQpVaHRDcozEz",
+    ]
 

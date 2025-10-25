@@ -619,6 +619,7 @@ _SPOTIFY_REQUEST_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
+_SPOTIFY_EMBED_PLAYLIST_URL_TEMPLATE = "https://open.spotify.com/embed/playlist/{playlist_id}"
 
 
 def _extract_spotify_playlist_id(raw_url):
@@ -644,6 +645,13 @@ def _normalize_spotify_playlist_url(raw_url):
     if not playlist_id:
         raise ValueError(f"Invalid Spotify playlist URL: {raw_url!r}")
     return f"https://open.spotify.com/playlist/{playlist_id}"
+
+
+def _build_spotify_embed_playlist_url(normalized_url):
+    playlist_id = _extract_spotify_playlist_id(normalized_url)
+    if not playlist_id:
+        raise ValueError(f"Invalid Spotify playlist URL: {normalized_url!r}")
+    return _SPOTIFY_EMBED_PLAYLIST_URL_TEMPLATE.format(playlist_id=playlist_id)
 
 
 def _collect_tracks_from_next_data(root_node):
@@ -951,8 +959,11 @@ def _parse_spotify_entity_tracks(entity_payload):
         if track_info.get("is_local"):
             continue
 
-        album_info = track_info.get("album") or {}
-        artists = track_info.get("artists") or album_info.get("artists") or []
+        artists = track_info.get("artists") or []
+        if not artists:
+            album_info = track_info.get("album") or {}
+            artists = album_info.get("artists") or []
+
         primary_artist = ""
         if isinstance(artists, list) and artists:
             artist_entry = artists[0]
@@ -962,7 +973,6 @@ def _parse_spotify_entity_tracks(entity_payload):
         parsed_tracks.append(
             {
                 "title": track_info.get("name") or "",
-                "album": album_info.get("name") or "",
                 "artist": primary_artist,
             }
         )
@@ -1091,50 +1101,75 @@ def _summarize_spotify_response(response, preview_limit=200):
     return ", ".join(parts)
 
 
-def _collect_spotify_tracks(spotify_url, library, log):
-    normalized_url = _normalize_spotify_playlist_url(spotify_url)
-
+def _fetch_spotify_playlist_response(url, log):
     if log.isEnabledFor(logging.DEBUG):
-        if spotify_url == normalized_url:
-            log.debug("Fetching Spotify playlist from %s", normalized_url)
-        else:
-            log.debug(
-                "Fetching Spotify playlist from %s (normalized from %s)",
-                normalized_url,
-                spotify_url,
-            )
+        log.debug("Fetching Spotify playlist from %s", url)
 
     try:
-        response = requests.get(
-            normalized_url, headers=_SPOTIFY_REQUEST_HEADERS, timeout=30
-        )
+        response = requests.get(url, headers=_SPOTIFY_REQUEST_HEADERS, timeout=30)
     except requests.RequestException as exc:
-        raise RuntimeError(
-            f"Spotify request failed for {normalized_url}: {exc}"
-        ) from exc
+        raise RuntimeError(f"Spotify request failed for {url}: {exc}") from exc
 
     if log.isEnabledFor(logging.DEBUG):
-        log.debug(
-            "Spotify response for %s: %s",
-            normalized_url,
-            _summarize_spotify_response(response),
-        )
+        log.debug("Spotify response for %s: %s", url, _summarize_spotify_response(response))
 
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
         raise RuntimeError(
             "Spotify request returned an error for %s: %s"
-            % (normalized_url, _summarize_spotify_response(response))
+            % (url, _summarize_spotify_response(response))
         ) from exc
+
+    return response
+
+
+def _collect_spotify_tracks(spotify_url, library, log):
+    normalized_url = _normalize_spotify_playlist_url(spotify_url)
+
+    if log.isEnabledFor(logging.DEBUG) and spotify_url != normalized_url:
+        log.debug(
+            "Fetching Spotify playlist from %s (normalized from %s)",
+            normalized_url,
+            spotify_url,
+        )
+
+    response = _fetch_spotify_playlist_response(normalized_url, log)
 
     try:
         entity_payload = _extract_spotify_entity_payload(response.text)
-    except Exception as exc:
-        raise RuntimeError(
-            "Failed to parse Spotify playlist metadata from %s: %s (response %s)"
-            % (normalized_url, exc, _summarize_spotify_response(response))
-        ) from exc
+    except Exception as primary_exc:
+        embed_url = _build_spotify_embed_playlist_url(normalized_url)
+        try:
+            embed_response = _fetch_spotify_playlist_response(embed_url, log)
+        except Exception as embed_request_exc:
+            raise RuntimeError(
+                "Failed to parse Spotify playlist metadata from %s: %s (response %s). "
+                "Attempt to load embed URL %s failed: %s"
+                % (
+                    normalized_url,
+                    primary_exc,
+                    _summarize_spotify_response(response),
+                    embed_url,
+                    embed_request_exc,
+                )
+            ) from primary_exc
+
+        try:
+            entity_payload = _extract_spotify_entity_payload(embed_response.text)
+        except Exception as embed_parse_exc:
+            raise RuntimeError(
+                "Failed to parse Spotify playlist metadata from %s: %s (response %s). "
+                "Embed URL %s also failed: %s (response %s)"
+                % (
+                    normalized_url,
+                    primary_exc,
+                    _summarize_spotify_response(response),
+                    embed_url,
+                    embed_parse_exc,
+                    _summarize_spotify_response(embed_response),
+                )
+            ) from embed_parse_exc
 
     spotify_tracks = _parse_spotify_entity_tracks(entity_payload)
     matched_tracks, unmatched_count = _match_spotify_tracks_to_library(
