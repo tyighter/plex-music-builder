@@ -23,6 +23,7 @@ from html import unescape
 import unicodedata
 import ast
 from urllib.parse import unquote, quote, urlparse
+from difflib import SequenceMatcher
 
 from plexapi.server import PlexServer
 from tqdm import tqdm
@@ -599,6 +600,77 @@ def _normalize_compare_value(value):
     return normalized
 
 
+_SPOTIFY_KEYWORD_PATTERN = re.compile(r"(?i)\bremix(?:ed)?\b|\bremaster(?:ed|s)?\b")
+_SPOTIFY_YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
+_SPOTIFY_MATCH_MIN_RATIO = 0.65
+
+
+def _clean_spotify_text(value):
+    if not value:
+        return ""
+
+    text = _strip_parenthetical(value)
+    text = _SPOTIFY_KEYWORD_PATTERN.sub(" ", text)
+    text = re.sub(r"[-–—]\s*(?:\b(19|20)\d{2}\b\s*)?(?:remix(?:ed)?|remaster(?:ed|s)?)\b", " ", text, flags=re.IGNORECASE)
+    text = _SPOTIFY_YEAR_PATTERN.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip(" -–—")
+    return text.strip()
+
+
+def _similarity_ratio(left, right):
+    if not left or not right:
+        return 0.0
+    return SequenceMatcher(None, left, right).ratio()
+
+
+def _select_best_spotify_candidate(
+    candidates,
+    normalized_title,
+    normalized_album,
+    normalized_artist,
+    log,
+):
+    best_candidate = None
+    best_similarity = 0.0
+    best_score = None
+
+    for candidate in candidates:
+        candidate_title = _normalize_compare_value(
+            _strip_parenthetical(getattr(candidate, "title", ""))
+        )
+        candidate_album = _normalize_compare_value(
+            _strip_parenthetical(getattr(candidate, "parentTitle", ""))
+        )
+        candidate_artist = _normalize_compare_value(
+            getattr(candidate, "grandparentTitle", "")
+        )
+
+        popularity = _resolve_track_popularity_value(candidate, playlist_logger=log)
+        popularity_score = popularity if popularity is not None else -1
+
+        title_similarity = _similarity_ratio(normalized_title, candidate_title)
+        album_similarity = (
+            _similarity_ratio(normalized_album, candidate_album)
+            if normalized_album
+            else 0.0
+        )
+
+        score = (
+            1 if normalized_artist and candidate_artist == normalized_artist else 0,
+            title_similarity,
+            1 if normalized_album and candidate_album == normalized_album else 0,
+            album_similarity,
+            popularity_score,
+        )
+
+        if best_score is None or score > best_score:
+            best_score = score
+            best_candidate = candidate
+            best_similarity = title_similarity
+
+    return best_candidate, best_similarity
+
+
 _SPOTIFY_PLAYLIST_ID_RE = re.compile(
     r"(?:https?://open\.spotify\.com/playlist/|spotify:playlist:)([A-Za-z0-9]+)"
 )
@@ -989,42 +1061,57 @@ def _match_spotify_tracks_to_library(spotify_tracks, library, log):
         raw_album = spotify_track.get("album") or ""
         raw_artist = spotify_track.get("artist") or ""
 
-        title = _strip_parenthetical(raw_title)
-        album = _strip_parenthetical(raw_album)
+        title = _clean_spotify_text(raw_title)
+        album = _clean_spotify_text(raw_album)
         artist = _strip_parenthetical(raw_artist)
 
         normalized_title = _normalize_compare_value(title)
         normalized_album = _normalize_compare_value(album)
         normalized_artist = _normalize_compare_value(artist)
 
-        search_attempts = [
-            {"title": title, "album": album, "artist": artist},
-            {"title": title, "artist": artist},
-            {"title": title, "album": album},
-            {"title": title},
-        ]
+        def _run_library_search():
+            search_attempts = [
+                {"title": title, "album": album, "artist": artist},
+                {"title": title, "artist": artist},
+                {"title": title, "album": album},
+                {"title": title},
+            ]
 
-        search_results = []
-        for params in search_attempts:
-            query = {key: value for key, value in params.items() if value}
-            if not query:
-                continue
+            for params in search_attempts:
+                query = {key: value for key, value in params.items() if value}
+                if not query:
+                    continue
 
+                try:
+                    results = library.searchTracks(**query)
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    log.warning(
+                        "Spotify search failed for '%s' by '%s' (query=%s): %s",
+                        raw_title or "<unknown>",
+                        raw_artist or "<unknown>",
+                        query,
+                        exc,
+                    )
+                    results = []
+                if results:
+                    return results
+            return []
+
+        artist_results = []
+        if artist:
             try:
-                search_results = library.searchTracks(**query)
+                artist_results = library.searchTracks(artist=artist)
             except Exception as exc:  # pragma: no cover - defensive logging
                 log.warning(
-                    "Spotify search failed for '%s' by '%s' (query=%s): %s",
-                    raw_title or "<unknown>",
-                    raw_artist or "<unknown>",
-                    query,
+                    "Spotify search failed when narrowing by artist '%s': %s",
+                    artist,
                     exc,
                 )
-                search_results = []
-            if search_results:
-                break
+                artist_results = []
 
-        if not search_results:
+        candidate_pool = artist_results or _run_library_search()
+
+        if not candidate_pool:
             unmatched_count += 1
             if log.isEnabledFor(logging.INFO):
                 log.info(
@@ -1035,28 +1122,42 @@ def _match_spotify_tracks_to_library(spotify_tracks, library, log):
                 )
             continue
 
-        def _candidate_score(candidate):
-            candidate_title = _normalize_compare_value(
-                _strip_parenthetical(getattr(candidate, "title", ""))
-            )
-            candidate_album = _normalize_compare_value(
-                _strip_parenthetical(getattr(candidate, "parentTitle", ""))
-            )
-            candidate_artist = _normalize_compare_value(
-                getattr(candidate, "grandparentTitle", "")
-            )
-            popularity = _resolve_track_popularity_value(candidate, playlist_logger=log)
-            popularity_score = popularity if popularity is not None else -1
+        best_candidate, best_similarity = _select_best_spotify_candidate(
+            candidate_pool,
+            normalized_title,
+            normalized_album,
+            normalized_artist,
+            log,
+        )
 
-            return (
-                1 if normalized_title and candidate_title == normalized_title else 0,
-                1 if normalized_album and candidate_album == normalized_album else 0,
-                1 if normalized_artist and candidate_artist == normalized_artist else 0,
-                popularity_score,
-            )
+        if (
+            artist_results
+            and normalized_title
+            and best_similarity < _SPOTIFY_MATCH_MIN_RATIO
+        ):
+            fallback_results = _run_library_search()
+            if fallback_results:
+                best_candidate, best_similarity = _select_best_spotify_candidate(
+                    fallback_results,
+                    normalized_title,
+                    normalized_album,
+                    normalized_artist,
+                    log,
+                )
 
-        best_candidate = max(search_results, key=_candidate_score)
-        matched_tracks.append(best_candidate)
+        if normalized_title and best_similarity < _SPOTIFY_MATCH_MIN_RATIO:
+            unmatched_count += 1
+            if log.isEnabledFor(logging.INFO):
+                log.info(
+                    "Spotify track '%s' by '%s' on '%s' was skipped (no close Plex match)",
+                    raw_title or "<unknown>",
+                    raw_artist or "<unknown>",
+                    raw_album or "<unknown>",
+                )
+            continue
+
+        if best_candidate:
+            matched_tracks.append(best_candidate)
 
     return matched_tracks, unmatched_count
 
