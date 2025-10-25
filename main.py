@@ -2979,11 +2979,12 @@ def _normalize_filter_values_for_server(values: Sequence[Any]) -> List[Any]:
 
 def _build_server_side_search_filters(
     filters: Sequence[CompiledFilter],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]:
     """Translate simple filters into Plex server-side search parameters."""
 
     server_kwargs: Dict[str, Any] = {}
     server_filters: Dict[str, Any] = {}
+    multi_value_filters: List[Dict[str, Any]] = []
 
     for compiled in filters:
         operator = (compiled.operator or "").lower()
@@ -3008,24 +3009,159 @@ def _build_server_side_search_filters(
                 if key_type != "filters":
                     continue
                 effective_key = f"{key_name}&"
-                payload = list(values)
+                payload: Any = list(dict.fromkeys(values))
             else:
-                # Plex server-side filters treat multiple values as an AND condition,
-                # which is stricter than the client-side behaviour (OR). To avoid
-                # accidentally discarding valid tracks, skip pushing this filter to the
-                # server and fall back to client-side evaluation instead.
+                deduped = list(dict.fromkeys(values))
+                if not deduped:
+                    continue
+                conflict = any(
+                    entry.get("key_type") == key_type and entry.get("key_name") == key_name
+                    for entry in multi_value_filters
+                )
+                if conflict:
+                    return {}, {}, []
+                multi_value_filters.append(
+                    {"key_type": key_type, "key_name": key_name, "values": deduped}
+                )
                 continue
         else:
             payload = values[0]
 
-        target = server_kwargs if key_type == "kwargs" else server_filters
-        if effective_key in target:
-            # Conflicting filter definitions; fall back to client-side evaluation.
-            return {}, {}
+        if len(values) == 1 or compiled.match_all:
+            target = server_kwargs if key_type == "kwargs" else server_filters
+            if effective_key in target:
+                return {}, {}, []
+            target[effective_key] = payload
 
-        target[effective_key] = payload
+    return server_kwargs, server_filters, multi_value_filters
 
-    return server_kwargs, server_filters
+
+def _fetch_tracks_with_server_filters(
+    library: Any,
+    base_kwargs: Dict[str, Any],
+    base_filters: Dict[str, Any],
+    multi_value_filters: Sequence[Dict[str, Any]],
+    logger: Optional[logging.Logger] = None,
+) -> Tuple[List[Any], Dict[str, int]]:
+    """Execute Plex library searches for the provided server-side filters."""
+
+    def build_search_kwargs(kwargs_part: Dict[str, Any], filters_part: Dict[str, Any]) -> Dict[str, Any]:
+        search_kwargs = dict(kwargs_part)
+        search_filters = dict(filters_part)
+        search_kwargs["libtype"] = "track"
+        if search_filters:
+            search_kwargs["filters"] = search_filters
+        elif "filters" in search_kwargs:
+            search_kwargs.pop("filters", None)
+        return search_kwargs
+
+    base_kwargs = dict(base_kwargs or {})
+    base_filters = dict(base_filters or {})
+
+    search_parameter_sets: List[Dict[str, Any]] = []
+
+    if multi_value_filters:
+        def expand(index: int, current_kwargs: Dict[str, Any], current_filters: Dict[str, Any]) -> None:
+            if index >= len(multi_value_filters):
+                search_parameter_sets.append(build_search_kwargs(current_kwargs, current_filters))
+                return
+
+            entry = multi_value_filters[index] or {}
+            values = list(entry.get("values") or [])
+            if not values:
+                expand(index + 1, dict(current_kwargs), dict(current_filters))
+                return
+
+            key_type = entry.get("key_type")
+            key_name = entry.get("key_name")
+            seen_values = []
+            for value in values:
+                if value in seen_values:
+                    continue
+                seen_values.append(value)
+                next_kwargs = dict(current_kwargs)
+                next_filters = dict(current_filters)
+                if key_type == "kwargs":
+                    next_kwargs[key_name] = value
+                else:
+                    next_filters[key_name] = value
+                expand(index + 1, next_kwargs, next_filters)
+
+        expand(0, dict(base_kwargs), dict(base_filters))
+    else:
+        search_parameter_sets.append(build_search_kwargs(base_kwargs, base_filters))
+
+    if not search_parameter_sets:
+        search_parameter_sets.append(build_search_kwargs(base_kwargs, base_filters))
+
+    if logger and logger.isEnabledFor(logging.DEBUG):
+        for idx, params in enumerate(search_parameter_sets, start=1):
+            logger.debug(
+                "Server-side filter query %d/%d: %s",
+                idx,
+                len(search_parameter_sets),
+                {k: v for k, v in params.items() if k != "libtype"},
+            )
+
+    request_count = len(search_parameter_sets)
+
+    def execute_search(params: Dict[str, Any]) -> List[Any]:
+        result = library.search(**params)
+        return list(result)
+
+    if request_count == 1:
+        results = [execute_search(search_parameter_sets[0])]
+    else:
+        try:
+            configured_workers = int(MAX_WORKERS)
+        except (TypeError, ValueError):
+            configured_workers = 1
+        worker_count = max(1, min(request_count, max(configured_workers, 1)))
+
+        results = [None] * request_count  # type: ignore[assignment]
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {
+                executor.submit(library.search, **params): idx
+                for idx, params in enumerate(search_parameter_sets)
+            }
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                results[idx] = list(future.result())
+
+    combined: List[Any] = []
+    seen_keys: Set[Any] = set()
+    total_before = 0
+    duplicates_removed = 0
+
+    def identity(track: Any) -> Any:
+        rating_key = getattr(track, "ratingKey", None)
+        if rating_key is not None:
+            return ("ratingKey", str(rating_key))
+        guid = getattr(track, "guid", None)
+        if guid:
+            return ("guid", str(guid))
+        return ("id", id(track))
+
+    for track_list in results:
+        if not track_list:
+            continue
+        for track in track_list:
+            total_before += 1
+            key = identity(track)
+            if key in seen_keys:
+                duplicates_removed += 1
+                continue
+            seen_keys.add(key)
+            combined.append(track)
+
+    stats = {
+        "requests": request_count,
+        "original_count": total_before,
+        "duplicates_removed": duplicates_removed,
+    }
+
+    return combined, stats
+
 
 
 def _determine_metadata_levels_for_filters(filters: Sequence[CompiledFilter]) -> Set[str]:
@@ -3206,34 +3342,51 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 name,
             )
 
-    server_kwargs, server_filter_dict = _build_server_side_search_filters(regular_filters)
+    server_kwargs, server_filter_dict, multi_value_filters = _build_server_side_search_filters(regular_filters)
 
     fetch_start = time.perf_counter()
-    if server_kwargs or server_filter_dict:
-        search_kwargs = dict(server_kwargs)
-        search_kwargs["libtype"] = "track"
-        if server_filter_dict:
-            search_kwargs["filters"] = server_filter_dict
+    fetch_stats = None
+    if server_kwargs or server_filter_dict or multi_value_filters:
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
-                "Fetching tracks for '%s' with server-side filters: kwargs=%s, filters=%s",
+                "Fetching tracks for '%s' with server-side filters: kwargs=%s, filters=%s, multi_value=%s",
                 name,
                 server_kwargs,
                 server_filter_dict,
+                multi_value_filters,
             )
-        all_tracks = library.search(**search_kwargs)
+        all_tracks, fetch_stats = _fetch_tracks_with_server_filters(
+            library,
+            server_kwargs,
+            server_filter_dict,
+            multi_value_filters,
+            logger=log,
+        )
     else:
         all_tracks = library.searchTracks()
 
     total_tracks = len(all_tracks)
     fetch_duration = time.perf_counter() - fetch_start
 
-    if server_kwargs or server_filter_dict:
+    if fetch_stats:
+        meta_parts: List[str] = []
+        request_count = fetch_stats.get("requests", 0)
+        duplicates_removed = fetch_stats.get("duplicates_removed", 0)
+        if request_count:
+            plural = "query" if request_count == 1 else "queries"
+            meta_parts.append(f"using server-side filters across {request_count} {plural}")
+        else:
+            meta_parts.append("using server-side filters")
+        if duplicates_removed:
+            plural = "track" if duplicates_removed == 1 else "tracks"
+            meta_parts.append(f"removed {duplicates_removed} duplicate {plural}")
+        meta_suffix = f" ({'; '.join(meta_parts)})" if meta_parts else ""
         log.info(
-            "Fetched %s tracks from %s in %.2fs using server-side filters",
+            "Fetched %s tracks from %s in %.2fs%s",
             total_tracks,
             config.get("library", LIBRARY_NAME),
             fetch_duration,
+            meta_suffix,
         )
     else:
         log.info(
