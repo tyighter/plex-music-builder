@@ -5626,6 +5626,9 @@
           if (typeof playlist._boostsOpen !== "boolean") {
             playlist._boostsOpen = false;
           }
+          if (typeof playlist.after_sort !== "string") {
+            playlist.after_sort = "";
+          }
 
           const card = document.createElement("div");
           card.className = "card playlist-card";
@@ -5810,6 +5813,11 @@
           ) {
             playlist.sort_by = options.sort_fields[0].value;
           }
+          const allowedAfterSortValues = new Set(sortFieldValues);
+          allowedAfterSortValues.add("");
+          if (!allowedAfterSortValues.has(playlist.after_sort)) {
+            playlist.after_sort = "";
+          }
           options.sort_fields.forEach((opt) => {
             const option = document.createElement("option");
             option.value = opt.value;
@@ -5821,6 +5829,22 @@
             playlist.sort_by = event.target.value;
           });
           sortLabel.appendChild(sortSelect);
+
+          const afterSortLabel = document.createElement("label");
+          afterSortLabel.textContent = "After Sort";
+          const afterSortSelect = document.createElement("select");
+          const afterSortOptions = [{ value: "", label: "None" }, ...options.sort_fields];
+          afterSortOptions.forEach((opt) => {
+            const option = document.createElement("option");
+            option.value = opt.value;
+            option.textContent = opt.label;
+            afterSortSelect.appendChild(option);
+          });
+          afterSortSelect.value = playlist.after_sort || "";
+          afterSortSelect.addEventListener("change", (event) => {
+            playlist.after_sort = event.target.value;
+          });
+          afterSortLabel.appendChild(afterSortSelect);
 
           const top5BoostLabel = document.createElement("label");
           top5BoostLabel.textContent = "Top 5 Boost";
@@ -5930,6 +5954,7 @@
           grid.appendChild(sortLabel);
           grid.appendChild(top5BoostLabel);
           grid.appendChild(coverField);
+          grid.appendChild(afterSortLabel);
 
           details.appendChild(grid);
 
@@ -6104,6 +6129,7 @@
               artist_limit: playlist.artist_limit ?? 0,
               album_limit: playlist.album_limit ?? 0,
               sort_by: playlist.sort_by || "",
+              after_sort: playlist.after_sort || "",
               top_5_boost: normalizeTop5Boost(
                 playlist.top_5_boost ?? 1.0
               ),
@@ -6201,6 +6227,7 @@
             artist_limit: playlist.artist_limit ?? 0,
             album_limit: playlist.album_limit ?? 0,
             sort_by: playlist.sort_by || "",
+            after_sort: playlist.after_sort || "",
             top_5_boost: normalizeTop5Boost(
               playlist.top_5_boost ?? 1.0
             ),
@@ -6265,6 +6292,7 @@
             artist_limit: playlist.artist_limit ?? 0,
             album_limit: playlist.album_limit ?? 0,
             sort_by: playlist.sort_by || "",
+            after_sort: playlist.after_sort || "",
             top_5_boost: normalizeTop5Boost(
               playlist.top_5_boost ?? 1.0
             ),
@@ -6498,6 +6526,7 @@
           artist_limit: 0,
           album_limit: 0,
           sort_by: defaultSort,
+          after_sort: "",
           top_5_boost: 1.0,
           plex_filter: [],
           popularity_boosts: [],

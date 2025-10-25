@@ -2319,6 +2319,7 @@ def load_playlists() -> Dict[str, Any]:
                 "artist_limit",
                 "album_limit",
                 "sort_by",
+                "after_sort",
                 "plex_filter",
                 "top_5_boost",
                 "popularity_boosts",
@@ -2331,6 +2332,7 @@ def load_playlists() -> Dict[str, Any]:
                 "artist_limit": config.get("artist_limit", 0) or 0,
                 "album_limit": config.get("album_limit", 0) or 0,
                 "sort_by": config.get("sort_by", ""),
+                "after_sort": config.get("after_sort", "") or "",
                 "top_5_boost": top_5_boost,
                 "plex_filter": serialize_filters(config.get("plex_filter")),
                 "popularity_boosts": serialize_boosts(
@@ -2516,6 +2518,7 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         artist_limit = to_int(playlist_entry.get("artist_limit", 0))
         album_limit = to_int(playlist_entry.get("album_limit", 0))
         sort_by = playlist_entry.get("sort_by") or None
+        after_sort = playlist_entry.get("after_sort") or None
         raw_top_5_boost = playlist_entry.get("top_5_boost", 1.0)
         top_5_boost = to_float(raw_top_5_boost, default=1.0)
         if top_5_boost < 0:
@@ -2531,6 +2534,8 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         playlist_config["top_5_boost"] = top_5_boost
         if sort_by:
             playlist_config["sort_by"] = sort_by
+        if after_sort:
+            playlist_config["after_sort"] = after_sort
 
         playlist_filters = []
         for filter_entry in playlist_entry.get("plex_filter", []):
@@ -2576,6 +2581,7 @@ def save_single_playlist(
     artist_limit = to_int(playlist_payload.get("artist_limit", 0))
     album_limit = to_int(playlist_payload.get("album_limit", 0))
     sort_by = (playlist_payload.get("sort_by") or "").strip() or None
+    after_sort = (playlist_payload.get("after_sort") or "").strip() or None
     raw_top_5_boost = playlist_payload.get("top_5_boost", 1.0)
     top_5_boost = to_float(raw_top_5_boost, default=1.0)
     if top_5_boost < 0:
@@ -2587,6 +2593,8 @@ def save_single_playlist(
     playlist_config["top_5_boost"] = top_5_boost
     if sort_by:
         playlist_config["sort_by"] = sort_by
+    if after_sort:
+        playlist_config["after_sort"] = after_sort
 
     playlist_filters = []
     for filter_entry in playlist_payload.get("plex_filter", []):

@@ -3376,6 +3376,223 @@ def _warm_metadata_cache(
     return len(pending), failures
 
 
+def _sort_tracks_in_place(
+    tracks,
+    resolved_sort_by,
+    sort_desc,
+    log,
+    dedup_popularity_cache,
+    album_popularity_cache,
+    album_popularity_cache_by_object,
+    *,
+    debug_logging=False,
+):
+    if not tracks or not resolved_sort_by:
+        return 0.0
+
+    sort_value_cache: Dict[str, Any] = {}
+    sort_value_cache_by_object: Dict[int, Any] = {}
+
+    def _get_sort_value(track):
+        cache_key = getattr(track, "ratingKey", None)
+        cache_key_str = str(cache_key) if cache_key is not None else None
+        object_cache_key = id(track)
+        if cache_key_str and cache_key_str in sort_value_cache:
+            return sort_value_cache[cache_key_str]
+
+        if cache_key_str is None and object_cache_key in sort_value_cache_by_object:
+            return sort_value_cache_by_object[object_cache_key]
+
+        if resolved_sort_by == "__rating_count__":
+            popularity_value, _ = _resolve_popularity_for_sort(
+                track,
+                cache_key_str,
+                object_cache_key,
+                dedup_popularity_cache,
+                album_popularity_cache,
+                album_popularity_cache_by_object,
+                playlist_logger=log,
+                sort_desc=sort_desc,
+            )
+
+            if cache_key_str:
+                sort_value_cache[cache_key_str] = popularity_value
+            else:
+                sort_value_cache_by_object[object_cache_key] = popularity_value
+            return popularity_value
+
+        if resolved_sort_by == "__alphabetical__":
+            raw_title = getattr(track, "title", "") or ""
+            raw_artist = getattr(track, "grandparentTitle", "") or ""
+            normalized_title = unicodedata.normalize("NFKD", str(raw_title)).casefold()
+            normalized_artist = unicodedata.normalize("NFKD", str(raw_artist)).casefold()
+            sort_value = (normalized_title, normalized_artist, str(raw_title))
+            if cache_key_str:
+                sort_value_cache[cache_key_str] = sort_value
+            else:
+                sort_value_cache_by_object[object_cache_key] = sort_value
+            return sort_value
+
+        if resolved_sort_by in {"ratingCount", "parentRatingCount"}:
+            if debug_logging:
+                log.debug(
+                    "Evaluating %s for track '%s' (album='%s', ratingKey=%s)",
+                    resolved_sort_by,
+                    getattr(track, "title", "<unknown>"),
+                    getattr(track, "parentTitle", "<unknown>"),
+                    cache_key,
+                )
+
+            def _coerce_numeric(value):
+                if value is None:
+                    return None
+                if isinstance(value, (int, float)):
+                    return float(value)
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if not stripped:
+                        return None
+                    try:
+                        return float(stripped)
+                    except ValueError:
+                        return None
+                return None
+
+            direct_value = getattr(track, resolved_sort_by, None)
+            if callable(direct_value):
+                try:
+                    direct_value = direct_value()
+                except TypeError:
+                    direct_value = None
+
+            direct_numeric = _coerce_numeric(direct_value)
+
+            if direct_numeric is not None:
+                if debug_logging:
+                    log.debug(
+                        "Chosen %s=%s for track '%s'",
+                        resolved_sort_by,
+                        direct_numeric,
+                        getattr(track, "title", "<unknown>"),
+                    )
+                if cache_key_str:
+                    sort_value_cache[cache_key_str] = direct_numeric
+                return direct_numeric
+
+        value = getattr(track, resolved_sort_by, None)
+        if value is not None:
+            if isinstance(value, str):
+                stripped_value = value.strip()
+                if stripped_value:
+                    try:
+                        value = float(stripped_value)
+                    except ValueError:
+                        pass
+            if cache_key_str:
+                sort_value_cache[cache_key_str] = value
+            return value
+
+        try:
+            xml_text = fetch_full_metadata(track.ratingKey)
+        except Exception as exc:  # pragma: no cover - network errors handled earlier
+            log.debug(
+                "Failed to fetch metadata for sorting field '%s' on ratingKey=%s: %s",
+                resolved_sort_by,
+                getattr(track, "ratingKey", "<no-key>"),
+                exc,
+            )
+            if cache_key_str:
+                sort_value_cache[cache_key_str] = None
+            return None
+
+        xml_value = parse_field_from_xml(xml_text, resolved_sort_by)
+
+        if isinstance(xml_value, (list, set, tuple)):
+            xml_value = next(iter(xml_value), None)
+
+        if isinstance(xml_value, str):
+            stripped = xml_value.strip()
+            if stripped:
+                try:
+                    if cache_key_str:
+                        sort_value_cache[cache_key_str] = float(stripped)
+                        return sort_value_cache[cache_key_str]
+                except ValueError:
+                    if cache_key_str:
+                        sort_value_cache[cache_key_str] = stripped
+                        return sort_value_cache[cache_key_str]
+            if cache_key_str:
+                sort_value_cache[cache_key_str] = None
+            return None
+
+        if isinstance(xml_value, (int, float)):
+            if cache_key_str:
+                sort_value_cache[cache_key_str] = float(xml_value)
+                return sort_value_cache[cache_key_str]
+
+        if cache_key_str:
+            sort_value_cache[cache_key_str] = xml_value
+        return xml_value
+
+    def _normalize_sort_value(value):
+        if value is None:
+            return None
+        if isinstance(value, tuple):
+            return tuple(_normalize_sort_value(item) for item in value)
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            return value.lower()
+        if hasattr(value, "timestamp"):
+            try:
+                return float(value.timestamp())
+            except Exception:  # pragma: no cover - defensive
+                pass
+        if hasattr(value, "isoformat"):
+            try:
+                return value.isoformat()
+            except Exception:  # pragma: no cover - defensive
+                pass
+        return str(value)
+
+    def _compare_tracks(left, right):
+        left_val = _get_sort_value(left)
+        right_val = _get_sort_value(right)
+
+        if left_val is None and right_val is None:
+            return 0
+        if left_val is None:
+            return 1
+        if right_val is None:
+            return -1
+
+        left_key = _normalize_sort_value(left_val)
+        right_key = _normalize_sort_value(right_val)
+
+        try:
+            if left_key < right_key:
+                result = -1
+            elif left_key > right_key:
+                result = 1
+            else:
+                result = 0
+        except TypeError:
+            left_key = str(left_key)
+            right_key = str(right_key)
+            if left_key < right_key:
+                result = -1
+            elif left_key > right_key:
+                result = 1
+            else:
+                result = 0
+
+        return -result if sort_desc else result
+
+    sort_start = time.perf_counter()
+    tracks.sort(key=cmp_to_key(_compare_tracks))
+    return time.perf_counter() - sort_start
+
+
 def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     if playlist_handler:
         log.debug(
@@ -3394,10 +3611,14 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     library = plex_server.library.section(config.get("library", LIBRARY_NAME))
     limit = config.get("limit")
     sort_by = config.get("sort_by")
+    after_sort = config.get("after_sort")
     cover_path = config.get("cover")
     resolved_sort_by = sort_by
+    resolved_after_sort = after_sort
     sort_desc_in_config = "sort_desc" in config
     sort_desc = config.get("sort_desc", True)
+    after_sort_desc_in_config = "after_sort_desc" in config
+    after_sort_desc = config.get("after_sort_desc", True)
     if sort_by == "popularity":
         resolved_sort_by = "__rating_count__"
         if log.isEnabledFor(logging.DEBUG):
@@ -3419,6 +3640,24 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         resolved_sort_by = "originallyAvailableAt"
         if not sort_desc_in_config:
             sort_desc = True
+    if after_sort == "popularity":
+        resolved_after_sort = "__rating_count__"
+    if after_sort == "alphabetical":
+        resolved_after_sort = "__alphabetical__"
+        if not after_sort_desc_in_config:
+            after_sort_desc = False
+    elif after_sort == "reverse_alphabetical":
+        resolved_after_sort = "__alphabetical__"
+        if not after_sort_desc_in_config:
+            after_sort_desc = True
+    elif after_sort == "oldest_first":
+        resolved_after_sort = "originallyAvailableAt"
+        if not after_sort_desc_in_config:
+            after_sort_desc = False
+    elif after_sort == "newest_first":
+        resolved_after_sort = "originallyAvailableAt"
+        if not after_sort_desc_in_config:
+            after_sort_desc = True
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
     top_5_boost_raw = config.get("top_5_boost", 1.0)
     top_5_boost_value = _coerce_non_negative_float(top_5_boost_raw)
@@ -3675,9 +3914,12 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 name,
             )
 
-    album_popularity_cache = {}
-    album_popularity_cache_by_object = {}
-    if resolved_sort_by == "__rating_count__":
+    album_popularity_cache: Dict[str, Any] = {}
+    album_popularity_cache_by_object: Dict[int, Any] = {}
+    needs_popularity_sort = (
+        resolved_sort_by == "__rating_count__" or resolved_after_sort == "__rating_count__"
+    )
+    if needs_popularity_sort:
         (
             album_popularity_cache,
             album_popularity_cache_by_object,
@@ -3687,232 +3929,27 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             playlist_logger=log,
             top_5_boost=top_5_boost_value,
         )
-        if boost_rules:
-            _apply_configured_popularity_boosts(
-                matched_tracks,
-                boost_rules,
-                dedup_popularity_cache,
-                album_popularity_cache,
-                album_popularity_cache_by_object,
-                playlist_logger=log,
-            )
-    elif boost_rules:
+    if boost_rules:
         _apply_configured_popularity_boosts(
             matched_tracks,
             boost_rules,
             dedup_popularity_cache,
-            {},
-            {},
+            album_popularity_cache if needs_popularity_sort else {},
+            album_popularity_cache_by_object if needs_popularity_sort else {},
             playlist_logger=log,
         )
     match_count = len(matched_tracks)
 
-    sort_duration = 0.0
-    if resolved_sort_by:
-        sort_value_cache = {}
-        sort_value_cache_by_object = {}
-
-        def _get_sort_value(track):
-            cache_key = getattr(track, "ratingKey", None)
-            cache_key_str = str(cache_key) if cache_key is not None else None
-            object_cache_key = id(track)
-            if cache_key_str and cache_key_str in sort_value_cache:
-                return sort_value_cache[cache_key_str]
-
-            if cache_key_str is None and object_cache_key in sort_value_cache_by_object:
-                return sort_value_cache_by_object[object_cache_key]
-
-            if resolved_sort_by == "__rating_count__":
-                popularity_value, _ = _resolve_popularity_for_sort(
-                    track,
-                    cache_key_str,
-                    object_cache_key,
-                    dedup_popularity_cache,
-                    album_popularity_cache,
-                    album_popularity_cache_by_object,
-                    playlist_logger=log,
-                    sort_desc=sort_desc,
-                )
-
-                if cache_key_str:
-                    sort_value_cache[cache_key_str] = popularity_value
-                else:
-                    sort_value_cache_by_object[object_cache_key] = popularity_value
-                return popularity_value
-
-            if resolved_sort_by == "__alphabetical__":
-                raw_title = getattr(track, "title", "") or ""
-                raw_artist = getattr(track, "grandparentTitle", "") or ""
-                normalized_title = unicodedata.normalize("NFKD", str(raw_title)).casefold()
-                normalized_artist = unicodedata.normalize("NFKD", str(raw_artist)).casefold()
-                sort_value = (normalized_title, normalized_artist, str(raw_title))
-                if cache_key_str:
-                    sort_value_cache[cache_key_str] = sort_value
-                else:
-                    sort_value_cache_by_object[object_cache_key] = sort_value
-                return sort_value
-
-            if resolved_sort_by in {"ratingCount", "parentRatingCount"}:
-                if debug_logging:
-                    log.debug(
-                        "Evaluating %s for track '%s' (album='%s', ratingKey=%s)",
-                        resolved_sort_by,
-                        getattr(track, "title", "<unknown>"),
-                        getattr(track, "parentTitle", "<unknown>"),
-                        cache_key,
-                    )
-
-                def _coerce_numeric(value):
-                    if value is None:
-                        return None
-                    if isinstance(value, (int, float)):
-                        return float(value)
-                    if isinstance(value, str):
-                        stripped = value.strip()
-                        if not stripped:
-                            return None
-                        try:
-                            return float(stripped)
-                        except ValueError:
-                            return None
-                    return None
-
-                direct_value = getattr(track, resolved_sort_by, None)
-                if callable(direct_value):
-                    try:
-                        direct_value = direct_value()
-                    except TypeError:
-                        direct_value = None
-
-                direct_numeric = _coerce_numeric(direct_value)
-
-                if direct_numeric is not None:
-                    if debug_logging:
-                        log.debug(
-                            "Chosen %s=%s for track '%s'",
-                            resolved_sort_by,
-                            direct_numeric,
-                            getattr(track, "title", "<unknown>"),
-                        )
-                    if cache_key_str:
-                        sort_value_cache[cache_key_str] = direct_numeric
-                    return direct_numeric
-
-            value = getattr(track, resolved_sort_by, None)
-            if value is not None:
-                if isinstance(value, str):
-                    stripped_value = value.strip()
-                    if stripped_value:
-                        try:
-                            value = float(stripped_value)
-                        except ValueError:
-                            pass
-                if cache_key_str:
-                    sort_value_cache[cache_key_str] = value
-                return value
-
-            try:
-                xml_text = fetch_full_metadata(track.ratingKey)
-            except Exception as exc:
-                log.debug(
-                    "Failed to fetch metadata for sorting field '%s' on ratingKey=%s: %s",
-                    resolved_sort_by,
-                    getattr(track, "ratingKey", "<no-key>"),
-                    exc,
-                )
-                if cache_key_str:
-                    sort_value_cache[cache_key_str] = None
-                return None
-
-            xml_value = parse_field_from_xml(xml_text, resolved_sort_by)
-
-            if isinstance(xml_value, (list, set, tuple)):
-                xml_value = next(iter(xml_value), None)
-
-            if isinstance(xml_value, str):
-                stripped = xml_value.strip()
-                if stripped:
-                    try:
-                        if cache_key_str:
-                            sort_value_cache[cache_key_str] = float(stripped)
-                            return sort_value_cache[cache_key_str]
-                    except ValueError:
-                        if cache_key_str:
-                            sort_value_cache[cache_key_str] = stripped
-                            return sort_value_cache[cache_key_str]
-                if cache_key_str:
-                    sort_value_cache[cache_key_str] = None
-                return None
-
-            if isinstance(xml_value, (int, float)):
-                if cache_key_str:
-                    sort_value_cache[cache_key_str] = float(xml_value)
-                    return sort_value_cache[cache_key_str]
-
-            if cache_key_str:
-                sort_value_cache[cache_key_str] = xml_value
-            return xml_value
-
-        def _normalize_sort_value(value):
-            """Return a comparable representation for sorting, handling mixed types safely."""
-            if value is None:
-                return None
-            if isinstance(value, tuple):
-                return tuple(_normalize_sort_value(item) for item in value)
-            if isinstance(value, (int, float)):
-                return float(value)
-            if isinstance(value, str):
-                return value.lower()
-            # Support datetime-like objects
-            if hasattr(value, "timestamp"):
-                try:
-                    return float(value.timestamp())
-                except Exception:
-                    pass
-            if hasattr(value, "isoformat"):
-                try:
-                    return value.isoformat()
-                except Exception:
-                    pass
-            return str(value)
-
-        def _compare_tracks(left, right):
-            left_val = _get_sort_value(left)
-            right_val = _get_sort_value(right)
-
-            if left_val is None and right_val is None:
-                return 0
-            if left_val is None:
-                return 1
-            if right_val is None:
-                return -1
-
-            left_key = _normalize_sort_value(left_val)
-            right_key = _normalize_sort_value(right_val)
-
-            try:
-                if left_key < right_key:
-                    result = -1
-                elif left_key > right_key:
-                    result = 1
-                else:
-                    result = 0
-            except TypeError:
-                left_key = str(left_key)
-                right_key = str(right_key)
-                if left_key < right_key:
-                    result = -1
-                elif left_key > right_key:
-                    result = 1
-                else:
-                    result = 0
-
-            return -result if sort_desc else result
-
-        sort_start = time.perf_counter()
-        matched_tracks.sort(key=cmp_to_key(_compare_tracks))
-        sort_duration = time.perf_counter() - sort_start
-
+    sort_duration = _sort_tracks_in_place(
+        matched_tracks,
+        resolved_sort_by,
+        sort_desc,
+        log,
+        dedup_popularity_cache,
+        album_popularity_cache,
+        album_popularity_cache_by_object,
+        debug_logging=debug_logging,
+    )
     artist_limit_raw = config.get("artist_limit")
     if artist_limit_raw is not None:
         try:
@@ -4031,6 +4068,18 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     if limit:
         matched_tracks = matched_tracks[:limit]
         match_count = len(matched_tracks)
+
+    after_sort_duration = _sort_tracks_in_place(
+        matched_tracks,
+        resolved_after_sort,
+        after_sort_desc,
+        log,
+        dedup_popularity_cache,
+        album_popularity_cache,
+        album_popularity_cache_by_object,
+        debug_logging=debug_logging,
+    )
+    sort_duration += after_sort_duration
 
     log.info(f"Playlist '{name}' → {match_count} matching tracks")
 
