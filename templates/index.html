@@ -82,6 +82,57 @@
         flex: 0 0 auto;
       }
 
+      .defaults-popover {
+        position: fixed;
+        top: 96px;
+        right: 48px;
+        width: min(420px, calc(100% - 32px));
+        background: var(--card-bg);
+        border-radius: 18px;
+        border: 1px solid rgba(229, 160, 13, 0.22);
+        box-shadow: 0 24px 50px rgba(0, 0, 0, 0.55);
+        display: none;
+        flex-direction: column;
+        z-index: 1600;
+        overflow: hidden;
+      }
+
+      .defaults-popover.show {
+        display: flex;
+      }
+
+      .defaults-popover-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 20px;
+        border-bottom: 1px solid rgba(229, 160, 13, 0.16);
+        background: rgba(14, 14, 14, 0.6);
+      }
+
+      .defaults-popover-header h2 {
+        margin: 0;
+        font-size: 18px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .defaults-popover-body {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 20px;
+        max-height: min(60vh, 480px);
+        overflow-y: auto;
+      }
+
+      .defaults-description {
+        margin: 0;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.72);
+      }
+
       .config-overlay {
         position: fixed;
         inset: 0;
@@ -460,16 +511,6 @@
         flex-wrap: wrap;
       }
 
-      .default-filters-header-title {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-
-      .collapsible-card.collapsed {
-        display: none;
-      }
-
       h2 {
         margin: 0 0 16px;
         font-size: 22px;
@@ -602,14 +643,25 @@
 
       .playlist-header {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, 1fr) minmax(200px, 260px) auto;
         grid-template-areas:
-          "title actions"
-          "status actions"
-          "message message";
+          "title search actions"
+          "status search actions"
+          "message message message";
         align-items: start;
         gap: 12px 16px;
         margin-bottom: 18px;
+      }
+
+      .playlist-search {
+        grid-area: search;
+        align-self: stretch;
+        display: flex;
+        align-items: center;
+      }
+
+      .playlist-search input {
+        width: 100%;
       }
 
       .playlist-list-controls {
@@ -703,8 +755,7 @@
         display: none;
       }
 
-      .playlist-collapse-btn,
-      .default-filters-collapse-btn {
+      .playlist-collapse-btn {
         font-size: 18px;
         line-height: 1;
       }
@@ -755,6 +806,7 @@
       }
 
       input[type="text"],
+      input[type="search"],
       input[type="number"],
       select,
       textarea {
@@ -991,6 +1043,24 @@
 
       button.cover-picker-button:active {
         transform: translateY(1px);
+      }
+
+      .cover-clear-button {
+        background: rgba(233, 65, 70, 0.18);
+        border-color: rgba(233, 65, 70, 0.32);
+      }
+
+      .cover-clear-button:hover,
+      .cover-clear-button:focus {
+        background: rgba(233, 65, 70, 0.28);
+        border-color: rgba(233, 65, 70, 0.45);
+      }
+
+      .cover-clear-button:disabled {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.12);
+        cursor: not-allowed;
+        opacity: 0.5;
       }
 
       .cover-preview {
@@ -1665,24 +1735,36 @@
           right: 24px;
         }
 
+        .defaults-popover {
+          top: 140px;
+          right: 24px;
+          left: 24px;
+          width: auto;
+        }
+
         .playlist-header {
-          grid-template-columns: minmax(0, 1fr) auto;
+          grid-template-columns: minmax(0, 1fr);
           grid-template-areas:
-            "title actions"
-            "status actions"
-            "message message";
+            "title"
+            "search"
+            "status"
+            "actions"
+            "message";
         }
 
-        .playlist-header-title {
+        .playlist-header-title,
+        .playlist-status,
+        .playlist-action-buttons,
+        .playlist-search {
           align-items: flex-start;
         }
 
-        .playlist-status {
-          align-items: flex-start;
+        .playlist-search {
+          width: 100%;
         }
 
         .playlist-action-buttons {
-          justify-content: flex-end;
+          justify-content: flex-start;
         }
 
         .playlist-status-line,
@@ -1740,6 +1822,17 @@
       <h1><span class="icon">▶</span>Plex Playlist Builder</h1>
       <div class="action-bar">
         <button
+          id="defaultsBtn"
+          class="secondary"
+          type="button"
+          title="Open default playlist settings"
+          aria-label="Open default playlist settings"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          Defaults
+        </button>
+        <button
           id="configBtn"
           class="icon-only secondary"
           type="button"
@@ -1780,6 +1873,54 @@
         <span id="message" class="message"></span>
       </div>
     </header>
+    <div
+      id="defaultsPopover"
+      class="defaults-popover"
+      role="dialog"
+      aria-modal="false"
+      aria-hidden="true"
+      hidden
+    >
+      <div class="defaults-popover-header">
+        <h2><span class="section-icon">⚙</span>Defaults</h2>
+        <button
+          id="defaultsCloseBtn"
+          class="icon-only secondary"
+          type="button"
+          title="Close defaults menu"
+          aria-label="Close defaults menu"
+          data-defaults-initial-focus
+        >
+          ✕
+        </button>
+      </div>
+      <div class="defaults-popover-body">
+        <p class="defaults-description">
+          Configure filters and popularity boosts that apply to every playlist
+          by default. Changes here are saved along with your playlists.
+        </p>
+        <div id="defaultFilters" class="filters-container"></div>
+        <button id="addDefaultFilter" class="secondary" type="button">
+          ＋ Add Default Filter
+        </button>
+        <details id="defaultBoostsPopout" class="boosts-popout">
+          <summary aria-label="Toggle default popularity boost rules">
+            ⚡ Popularity Boosts
+          </summary>
+          <div class="boosts-panel">
+            <p>
+              Boost multipliers adjust the popularity score of matching
+              tracks. Uncheck Match All to treat comma-separated values as
+              match-any.
+            </p>
+            <div id="defaultPopularityBoosts" class="boosts-container"></div>
+            <button id="addDefaultBoost" class="secondary" type="button">
+              ＋ Add Boost Rule
+            </button>
+          </div>
+        </details>
+      </div>
+    </div>
     <div
       id="configOverlay"
       class="config-overlay"
@@ -1940,54 +2081,16 @@
       </section>
 
       <section>
-        <div class="section-header default-filters-header">
-          <div class="default-filters-header-title">
-            <button
-              id="toggleDefaultFilters"
-              class="icon-only secondary default-filters-collapse-btn"
-              type="button"
-              aria-expanded="false"
-              aria-controls="defaultFiltersCard"
-              aria-label="Expand default filters"
-              title="Expand default filters"
-            >
-              ▸
-            </button>
-            <h2><span class="section-icon">⚙</span>Default Plex Filters</h2>
-          </div>
-        </div>
-        <div
-          id="defaultFiltersCard"
-          class="card collapsible-card collapsed"
-          hidden
-          aria-hidden="true"
-        >
-          <div id="defaultFilters" class="filters-container"></div>
-          <button id="addDefaultFilter" class="secondary" type="button">＋ Add Default Filter</button>
-          <details id="defaultBoostsPopout" class="boosts-popout">
-            <summary aria-label="Toggle default popularity boost rules">
-              ⚡ Popularity Boosts
-            </summary>
-            <div class="boosts-panel">
-              <p>
-                Boost multipliers adjust the popularity score of matching tracks. Uncheck
-                Match All to treat comma-separated values as match-any.
-              </p>
-              <div
-                id="defaultPopularityBoosts"
-                class="boosts-container"
-              ></div>
-              <button id="addDefaultBoost" class="secondary" type="button">
-                ＋ Add Boost Rule
-              </button>
-            </div>
-          </details>
-        </div>
-      </section>
-
-      <section>
         <div class="playlist-header">
           <h2><span class="section-icon">🎵</span>Playlists</h2>
+          <div class="playlist-search">
+            <input
+              id="playlistSearch"
+              type="search"
+              placeholder="Search playlists…"
+              aria-label="Search playlists"
+            />
+          </div>
           <div class="playlist-list-controls">
             <button id="expandAllPlaylists" class="secondary" type="button">
               Expand All
@@ -2033,8 +2136,10 @@
       const defaultBoostsContainer = document.getElementById(
         "defaultPopularityBoosts"
       );
-      const defaultFiltersCard = document.getElementById("defaultFiltersCard");
-      const toggleDefaultFiltersBtn = document.getElementById("toggleDefaultFilters");
+      const defaultsBtn = document.getElementById("defaultsBtn");
+      const defaultsPopover = document.getElementById("defaultsPopover");
+      const defaultsCloseBtn = document.getElementById("defaultsCloseBtn");
+      const playlistSearchInput = document.getElementById("playlistSearch");
       const buildStatusIndicator = document.getElementById("buildStatusIndicator");
       const buildStatusText = document.getElementById("buildStatusText");
       const buildStatusMessage = document.getElementById("buildStatusMessage");
@@ -2050,8 +2155,8 @@
       let latestBuildStatus = null;
       let buildStatusTimer = null;
       let isActivityCollapsed = false;
-      let isDefaultFiltersCollapsed = true;
       let isDefaultBoostsOpen = false;
+      let isDefaultsPopoverOpen = false;
       const playlistCancellationMessages = new Map();
       const playlistCancellationCutoffs = new Map();
       const playlistActivityOrder = new Map();
@@ -2110,6 +2215,7 @@
         scrollLocked: false,
       };
       let lastFocusedBeforeConfig = null;
+      let defaultsLastFocused = null;
       const configFieldElements = new Map();
       const configOriginalValues = new Map();
       let configSectionsPayload = [];
@@ -2119,6 +2225,7 @@
       let configLoading = false;
       const dismissedActivityKeys = new Set(loadDismissedActivityKeys());
       const activityEntryLastSeen = new Map();
+      let playlistSearchTerm = "";
 
       function setConfigStatusMessage(text, isError = false) {
         if (!configStatusMessage) {
@@ -5432,32 +5539,82 @@
         }
       }
 
-      function updateDefaultFiltersCollapse() {
-        if (!defaultFiltersCard || !toggleDefaultFiltersBtn) {
+      function openDefaultsPopover() {
+        if (!defaultsPopover || isDefaultsPopoverOpen) {
           return;
         }
 
-        const isCollapsed = !!isDefaultFiltersCollapsed;
-        const label = isCollapsed
-          ? "Expand default filters"
-          : "Collapse default filters";
+        defaultsLastFocused = document.activeElement;
+        defaultsPopover.classList.add("show");
+        defaultsPopover.removeAttribute("hidden");
+        defaultsPopover.setAttribute("aria-hidden", "false");
+        isDefaultsPopoverOpen = true;
 
-        defaultFiltersCard.classList.toggle("collapsed", isCollapsed);
-        if (isCollapsed) {
-          defaultFiltersCard.setAttribute("hidden", "");
-          defaultFiltersCard.setAttribute("aria-hidden", "true");
-        } else {
-          defaultFiltersCard.removeAttribute("hidden");
-          defaultFiltersCard.setAttribute("aria-hidden", "false");
+        if (defaultsBtn) {
+          defaultsBtn.setAttribute("aria-expanded", "true");
         }
 
-        toggleDefaultFiltersBtn.textContent = isCollapsed ? "▸" : "▾";
-        toggleDefaultFiltersBtn.setAttribute(
-          "aria-expanded",
-          isCollapsed ? "false" : "true"
-        );
-        toggleDefaultFiltersBtn.setAttribute("aria-label", label);
-        toggleDefaultFiltersBtn.title = label;
+        const focusTarget =
+          defaultsPopover.querySelector("[data-defaults-initial-focus]") ||
+          defaultsPopover.querySelector("button, [href], input, select, textarea") ||
+          defaultsPopover;
+        if (focusTarget && typeof focusTarget.focus === "function") {
+          focusTarget.focus();
+        }
+
+        document.addEventListener("mousedown", handleDefaultsOutsideInteraction);
+        document.addEventListener("focusin", handleDefaultsOutsideInteraction);
+      }
+
+      function closeDefaultsPopover({ skipFocusRestore } = {}) {
+        if (!defaultsPopover || !isDefaultsPopoverOpen) {
+          return;
+        }
+
+        defaultsPopover.classList.remove("show");
+        defaultsPopover.setAttribute("aria-hidden", "true");
+        defaultsPopover.setAttribute("hidden", "");
+        isDefaultsPopoverOpen = false;
+
+        if (defaultsBtn) {
+          defaultsBtn.setAttribute("aria-expanded", "false");
+        }
+
+        document.removeEventListener("mousedown", handleDefaultsOutsideInteraction);
+        document.removeEventListener("focusin", handleDefaultsOutsideInteraction);
+
+        if (!skipFocusRestore && defaultsLastFocused) {
+          try {
+            if (typeof defaultsLastFocused.focus === "function") {
+              defaultsLastFocused.focus();
+            }
+          } catch (error) {
+            // Ignore focus restoration failures.
+          }
+        }
+        defaultsLastFocused = null;
+      }
+
+      function toggleDefaultsPopover() {
+        if (isDefaultsPopoverOpen) {
+          closeDefaultsPopover();
+        } else {
+          openDefaultsPopover();
+        }
+      }
+
+      function handleDefaultsOutsideInteraction(event) {
+        if (!defaultsPopover || !isDefaultsPopoverOpen) {
+          return;
+        }
+
+        const isInsidePopover = defaultsPopover.contains(event.target);
+        const isToggleButton =
+          event.target === defaultsBtn || defaultsBtn?.contains(event.target);
+
+        if (!isInsidePopover && !isToggleButton) {
+          closeDefaultsPopover({ skipFocusRestore: true });
+        }
       }
 
       function scrollPlaylistIntoView(playlist) {
@@ -5585,31 +5742,116 @@
       }
 
 
+      function playlistMatchesSearch(playlist, normalizedTerm) {
+        if (!normalizedTerm) {
+          return true;
+        }
+
+        if (!playlist || typeof playlist !== "object") {
+          return false;
+        }
+
+        const haystacks = [];
+        const collect = (value) => {
+          if (typeof value !== "string") {
+            return;
+          }
+          const trimmed = value.trim();
+          if (trimmed) {
+            haystacks.push(trimmed.toLowerCase());
+          }
+        };
+
+        collect(playlist.name);
+        collect(playlist._originalName);
+        collect(playlist.summary);
+        collect(playlist.description);
+
+        if (playlist.extras && typeof playlist.extras === "object") {
+          Object.values(playlist.extras).forEach((value) => {
+            if (value === undefined || value === null) {
+              return;
+            }
+            collect(String(value));
+          });
+        }
+
+        if (Array.isArray(playlist.plex_filter)) {
+          playlist.plex_filter.forEach((filter) => {
+            if (!filter || typeof filter !== "object") {
+              return;
+            }
+            collect(filter.field);
+            collect(filter.operator);
+            if (filter.value !== undefined && filter.value !== null) {
+              if (Array.isArray(filter.value)) {
+                collect(filter.value.join(", "));
+              } else {
+                collect(String(filter.value));
+              }
+            }
+          });
+        }
+
+        if (Array.isArray(playlist.popularity_boosts)) {
+          playlist.popularity_boosts.forEach((boost) => {
+            if (!boost || typeof boost !== "object") {
+              return;
+            }
+            collect(boost.name);
+            if (Array.isArray(boost.conditions)) {
+              boost.conditions.forEach((condition) => {
+                if (!condition || typeof condition !== "object") {
+                  return;
+                }
+                collect(condition.field);
+                collect(condition.operator);
+                if (condition.value !== undefined && condition.value !== null) {
+                  collect(String(condition.value));
+                }
+              });
+            }
+          });
+        }
+
+        return haystacks.some((text) => text.includes(normalizedTerm));
+      }
+
       function renderPlaylists() {
         if (coverPickerOverlay?.classList.contains("show")) {
           closeCoverPicker();
         }
         playlistsContainer.innerHTML = "";
-
-        const hasPlaylists = state.playlists.length > 0;
+        const totalPlaylists = state.playlists.length;
+        const normalizedSearch = (playlistSearchTerm || "").trim().toLowerCase();
+        const visiblePlaylists = !normalizedSearch
+          ? state.playlists.slice()
+          : state.playlists.filter((playlist) =>
+              playlistMatchesSearch(playlist, normalizedSearch)
+            );
+        const hasVisiblePlaylists = visiblePlaylists.length > 0;
 
         if (expandAllPlaylistsBtn) {
-          expandAllPlaylistsBtn.disabled = !hasPlaylists;
+          expandAllPlaylistsBtn.disabled = !hasVisiblePlaylists;
         }
 
         if (collapseAllPlaylistsBtn) {
-          collapseAllPlaylistsBtn.disabled = !hasPlaylists;
+          collapseAllPlaylistsBtn.disabled = !hasVisiblePlaylists;
         }
 
-        if (!hasPlaylists) {
+        if (!hasVisiblePlaylists) {
           const empty = document.createElement("p");
           empty.className = "no-filters";
-          empty.textContent = "No playlists yet. Add one to get started.";
+          empty.textContent = totalPlaylists
+            ? "No playlists match your search."
+            : "No playlists yet. Add one to get started.";
           playlistsContainer.appendChild(empty);
           return;
         }
 
-        state.playlists.forEach((playlist, index) => {
+        visiblePlaylists.forEach((playlist) => {
+          const playlistIndex = state.playlists.indexOf(playlist);
+
           if (typeof playlist._collapsed !== "boolean") {
             playlist._collapsed = false;
           }
@@ -5687,7 +5929,8 @@
           duplicateBtn.title = "Duplicate playlist";
           duplicateBtn.addEventListener("click", () => {
             const duplicate = createPlaylistDuplicate(playlist);
-            state.playlists.splice(index + 1, 0, duplicate);
+            const insertIndex = playlistIndex >= 0 ? playlistIndex + 1 : state.playlists.length;
+            state.playlists.splice(insertIndex, 0, duplicate);
             renderPlaylists();
             scrollPlaylistIntoView(duplicate);
           });
@@ -5709,7 +5952,9 @@
 
             delete playlist._statusElements;
             delete playlist._collapseElements;
-            state.playlists.splice(index, 1);
+            if (playlistIndex >= 0) {
+              state.playlists.splice(playlistIndex, 1);
+            }
             renderPlaylists();
           });
 
@@ -5890,6 +6135,7 @@
           coverPreviewContainer.appendChild(coverPreviewCaption);
           coverField.appendChild(coverPreviewContainer);
 
+          let coverClearBtn = null;
           const coverInput = document.createElement("input");
           coverInput.type = "hidden";
           coverInput.id = coverInputId;
@@ -5904,6 +6150,9 @@
               value,
               CARD_COVER_PREVIEW_TEXTS
             );
+            if (coverClearBtn) {
+              coverClearBtn.disabled = !(value || "").trim();
+            }
           });
           coverField.appendChild(coverInput);
 
@@ -5936,6 +6185,21 @@
             coverUploadInput.click();
           });
           coverInputRow.appendChild(coverUploadBtn);
+
+          coverClearBtn = document.createElement("button");
+          coverClearBtn.type = "button";
+          coverClearBtn.className = "cover-picker-button cover-clear-button";
+          coverClearBtn.textContent = "Clear Cover";
+          coverClearBtn.disabled = !((extras.cover || "").trim());
+          coverClearBtn.addEventListener("click", () => {
+            coverInput.value = "";
+            coverInput.dispatchEvent(new Event("input", { bubbles: true }));
+            coverUploadInput.value = "";
+            if (coverPickerBtn && typeof coverPickerBtn.focus === "function") {
+              coverPickerBtn.focus();
+            }
+          });
+          coverInputRow.appendChild(coverClearBtn);
 
           coverUploadInput.addEventListener("change", async (event) => {
             const fileList = event.target.files;
@@ -6523,40 +6787,82 @@
         );
       }
 
+      if (defaultsBtn) {
+        defaultsBtn.addEventListener("click", () => {
+          toggleDefaultsPopover();
+        });
+      }
+
+      if (defaultsCloseBtn) {
+        defaultsCloseBtn.addEventListener("click", () => {
+          closeDefaultsPopover();
+        });
+      }
+
+      if (playlistSearchInput) {
+        playlistSearchInput.addEventListener("input", (event) => {
+          playlistSearchTerm = event.target.value || "";
+          renderPlaylists();
+        });
+
+        playlistSearchInput.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && playlistSearchTerm.trim()) {
+            event.preventDefault();
+            playlistSearchInput.value = "";
+            playlistSearchTerm = "";
+            renderPlaylists();
+          }
+        });
+      }
+
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") {
           return;
         }
+
+        if (
+          playlistSearchInput &&
+          document.activeElement === playlistSearchInput &&
+          playlistSearchTerm.trim()
+        ) {
+          event.preventDefault();
+          playlistSearchInput.value = "";
+          playlistSearchTerm = "";
+          renderPlaylists();
+          return;
+        }
+
         if (coverPickerOverlay?.classList.contains("show")) {
           event.preventDefault();
           closeCoverPicker();
           return;
         }
+
         if (configOverlay?.classList.contains("show")) {
           event.preventDefault();
           closeConfigMenu();
+          return;
+        }
+
+        if (isDefaultsPopoverOpen) {
+          event.preventDefault();
+          closeDefaultsPopover();
         }
       });
 
-      if (toggleDefaultFiltersBtn) {
-        toggleDefaultFiltersBtn.addEventListener("click", () => {
-          isDefaultFiltersCollapsed = !isDefaultFiltersCollapsed;
-          updateDefaultFiltersCollapse();
+      const addDefaultFilterBtn = document.getElementById("addDefaultFilter");
+      if (addDefaultFilterBtn) {
+        addDefaultFilterBtn.addEventListener("click", () => {
+          state.defaults.plex_filter.push({
+            field: "",
+            operator: "equals",
+            value: "",
+            match_all: true,
+            wildcard: false,
+          });
+          renderDefaultFilters();
         });
       }
-
-      updateDefaultFiltersCollapse();
-
-      document.getElementById("addDefaultFilter").addEventListener("click", () => {
-        state.defaults.plex_filter.push({
-          field: "",
-          operator: "equals",
-          value: "",
-          match_all: true,
-          wildcard: false,
-        });
-        renderDefaultFilters();
-      });
 
       const addDefaultBoostBtn = document.getElementById("addDefaultBoost");
       if (addDefaultBoostBtn) {
