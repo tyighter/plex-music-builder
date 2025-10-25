@@ -5318,33 +5318,27 @@
               flagsWrapper.appendChild(matchAllLabel);
               conditionRow.appendChild(flagsWrapper);
 
-              const shouldShowRemoveCondition =
-                boost.conditions.length > 1 ||
-                !isBoostConditionEmpty(current);
-
-              if (shouldShowRemoveCondition) {
-                const removeConditionBtn = document.createElement("button");
-                removeConditionBtn.type = "button";
-                removeConditionBtn.className = "icon-only danger remove-control";
-                removeConditionBtn.textContent = "✕";
-                removeConditionBtn.title = "Remove condition";
-                removeConditionBtn.addEventListener("click", () => {
-                  if (boost.conditions.length > 1) {
-                    boost.conditions.splice(conditionIndex, 1);
-                    renderConditions();
-                    return;
-                  }
-
-                  if (typeof onRemove === "function") {
-                    onRemove(index);
-                    return;
-                  }
-
-                  boost.conditions[0] = createEmptyBoostCondition();
+              const removeConditionBtn = document.createElement("button");
+              removeConditionBtn.type = "button";
+              removeConditionBtn.className = "icon-only danger remove-control";
+              removeConditionBtn.textContent = "✕";
+              removeConditionBtn.title = "Remove condition";
+              removeConditionBtn.addEventListener("click", () => {
+                if (boost.conditions.length > 1) {
+                  boost.conditions.splice(conditionIndex, 1);
                   renderConditions();
-                });
-                flagsWrapper.appendChild(removeConditionBtn);
-              }
+                  return;
+                }
+
+                if (typeof onRemove === "function") {
+                  onRemove(index);
+                  return;
+                }
+
+                boost.conditions[0] = createEmptyBoostCondition();
+                renderConditions();
+              });
+              flagsWrapper.appendChild(removeConditionBtn);
 
               conditionsContainer.appendChild(conditionRow);
             });
