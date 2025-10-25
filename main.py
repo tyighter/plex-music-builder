@@ -2634,6 +2634,11 @@ def _compile_filter_entry(filter_entry: Any) -> CompiledFilter:
     match_all = _coerce_match_all_flag(match_all_raw, default=True)
 
     expected_values = _coerce_expected_values(expected)
+    if match_all_raw is None and len(expected_values) > 1:
+        # Historically multiple expected values behaved as OR conditions.
+        # Preserve that behaviour unless the playlist explicitly opts-in to
+        # matching every value via ``match_all``.
+        match_all = False
     expected_lowers = tuple(str(value).lower() for value in expected_values)
 
     numeric_values: Optional[Tuple[Any, ...]] = None
