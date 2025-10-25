@@ -643,6 +643,16 @@
         font-size: 13px;
         color: rgba(255, 255, 255, 0.7);
         white-space: nowrap;
+        cursor: pointer;
+      }
+
+      .boost-condition .filter-flag {
+        cursor: pointer;
+      }
+
+      .filter-row button.icon-only,
+      .boost-condition button.icon-only {
+        align-self: center;
       }
 
       .path-input {
@@ -871,29 +881,45 @@
         color: rgba(255, 255, 255, 0.85);
       }
 
-      .config-checkbox input {
+      .config-checkbox input,
+      .filter-flag input {
         width: 18px;
         height: 18px;
-        border-radius: 6px;
-        border: 1px solid rgba(229, 160, 13, 0.35);
+        border-radius: 4px;
+        border: 2px solid rgba(229, 160, 13, 0.35);
         appearance: none;
-        background: rgba(14, 14, 14, 0.6);
+        background: transparent;
         position: relative;
+        transition: background 0.2s ease, border-color 0.2s ease,
+          box-shadow 0.2s ease;
       }
 
-      .config-checkbox input:checked {
-        background: var(--plex-orange);
-        border-color: var(--plex-orange);
-      }
-
-      .config-checkbox input:checked::after {
-        content: "✓";
+      .config-checkbox input::after,
+      .filter-flag input::after {
+        content: "";
         position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -55%);
-        font-size: 12px;
-        color: #111;
+        inset: 3px;
+        border-radius: 2px;
+        background: transparent;
+        transition: background 0.2s ease;
+      }
+
+      .config-checkbox input:checked,
+      .filter-flag input:checked {
+        border-color: var(--plex-orange);
+        box-shadow: 0 0 0 2px rgba(229, 160, 13, 0.2);
+        background: rgba(229, 160, 13, 0.1);
+      }
+
+      .config-checkbox input:checked::after,
+      .filter-flag input:checked::after {
+        background: linear-gradient(135deg, var(--plex-orange), #ffce4a);
+      }
+
+      .config-checkbox input:focus-visible,
+      .filter-flag input:focus-visible {
+        outline: 2px solid rgba(229, 160, 13, 0.45);
+        outline-offset: 2px;
       }
 
       .config-input-with-toggle {
@@ -1608,17 +1634,19 @@
       let isActivityCollapsed = false;
       let isDefaultFiltersCollapsed = true;
       let isDefaultBoostsOpen = false;
-      const dismissedActivityKeys = new Set();
       const playlistCancellationMessages = new Map();
       const playlistCancellationCutoffs = new Map();
       const playlistActivityOrder = new Map();
       let nextPlaylistActivityOrder = 1;
       const pendingActivityStopRequests = new Map();
-      const ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
       const GENERAL_ACTIVITY_RETENTION_MS = 5 * 60 * 1000;
       const MESSAGE_DISPLAY_DURATION = 5 * 1000;
       const PLAYLIST_INLINE_MESSAGE_DURATION = 4 * 1000;
       const PLAYLIST_CANCELLATION_MESSAGE_TTL = 2 * 60 * 1000;
+      const ACTIVITY_ENTRY_TTL_MS = 30 * 1000;
+      const DISMISSED_ACTIVITY_STORAGE_KEY =
+        "plexMusicBuilder.dismissedActivity";
+      const MAX_DISMISSED_ACTIVITY_KEYS = 500;
       let messageHideTimeout = null;
       const waitingPlaylistOrder = new Map();
       let nextWaitingOrderValue = 1;
@@ -1630,6 +1658,8 @@
       let configSearchPaths = [];
       let configSupportsRestart = true;
       let configLoading = false;
+      const dismissedActivityKeys = new Set(loadDismissedActivityKeys());
+      const activityEntryLastSeen = new Map();
 
       function setConfigStatusMessage(text, isError = false) {
         if (!configStatusMessage) {
@@ -1650,6 +1680,59 @@
 
       function clearConfigStatusMessage() {
         setConfigStatusMessage("");
+      }
+
+      function loadDismissedActivityKeys() {
+        if (typeof window === "undefined") {
+          return [];
+        }
+
+        try {
+          const storage = window.localStorage;
+          if (!storage) {
+            return [];
+          }
+          const rawValue = storage.getItem(DISMISSED_ACTIVITY_STORAGE_KEY);
+          if (!rawValue) {
+            return [];
+          }
+          const parsed = JSON.parse(rawValue);
+          if (!Array.isArray(parsed)) {
+            return [];
+          }
+          return parsed.filter((key) => typeof key === "string" && key.length);
+        } catch (error) {
+          console.warn("Unable to load dismissed activity keys", error);
+          return [];
+        }
+      }
+
+      function persistDismissedActivityKeys() {
+        if (typeof window === "undefined") {
+          return;
+        }
+
+        try {
+          const storage = window.localStorage;
+          if (!storage) {
+            return;
+          }
+          const values = Array.from(dismissedActivityKeys);
+          let keysToStore = values;
+          if (values.length > MAX_DISMISSED_ACTIVITY_KEYS) {
+            keysToStore = values.slice(
+              values.length - MAX_DISMISSED_ACTIVITY_KEYS
+            );
+            dismissedActivityKeys.clear();
+            keysToStore.forEach((key) => dismissedActivityKeys.add(key));
+          }
+          storage.setItem(
+            DISMISSED_ACTIVITY_STORAGE_KEY,
+            JSON.stringify(keysToStore)
+          );
+        } catch (error) {
+          console.warn("Unable to persist dismissed activity keys", error);
+        }
       }
 
       function buildConfigFieldKey(sectionId, fieldKey) {
@@ -2316,6 +2399,7 @@
         button.addEventListener("click", (event) => {
           event.preventDefault();
           dismissedActivityKeys.add(activityKey);
+          persistDismissedActivityKeys();
 
           const entryEl = button.closest(".playlist-log-entry");
           if (entryEl && entryEl.parentElement) {
@@ -2592,6 +2676,7 @@
           }
           if (activityKey) {
             dismissedActivityKeys.delete(activityKey);
+            persistDismissedActivityKeys();
           }
           updateBuildLogsUi(latestBuildStatus);
         } finally {
@@ -2906,12 +2991,12 @@
         } else if (isWaitingThisPlaylist) {
           indicatorState = "waiting";
         } else if (lastResult) {
-          if (lastResult.state === "success") {
-            indicatorState = "success";
-          } else if (lastResult.state === "error") {
+          if (lastResult.state === "error") {
             indicatorState = "error";
           } else if (lastResult.state === "stopped") {
             indicatorState = "stopped";
+          } else {
+            indicatorState = "idle";
           }
         } else {
           indicatorState = "idle";
@@ -3125,7 +3210,7 @@
           }
         });
 
-        const activeActivityKeys = new Set();
+        const seenActivityKeys = new Set();
 
         const playlistNames = [];
         const seenNames = new Set();
@@ -3273,78 +3358,100 @@
             const entry = normalizedEntries[normalizedEntries.length - 1];
             const entryKey = getPlaylistActivityKey(trimmedName, entry);
             if (entryKey) {
-              activeActivityKeys.add(entryKey);
+              seenActivityKeys.add(entryKey);
             }
-            if (!entryKey || !dismissedActivityKeys.has(entryKey)) {
-              const item = document.createElement("div");
-              item.className = "playlist-log-entry";
-              if (entryKey) {
-                item.dataset.activityKey = entryKey;
+
+            const percentValue = normalizeProgressPercent(entry);
+            const isProgressEntry =
+              entry && entry.type === "progress" && percentValue !== null;
+            const isWaitingActive = isWaiting && running;
+            const isProgressActive =
+              isProgressEntry && entry?.is_final !== true && running;
+            const showSpinner =
+              (isActivePlaylist || isWaitingActive) &&
+              !isProgressEntry &&
+              entry?.is_final !== true;
+            const isEntryActive =
+              showSpinner ||
+              isProgressActive ||
+              isActivePlaylist ||
+              isWaitingActive;
+
+            if (entryKey) {
+              const previousTimestamp = activityEntryLastSeen.get(entryKey);
+              if (isEntryActive || previousTimestamp === undefined) {
+                activityEntryLastSeen.set(entryKey, nowMs);
               }
-
-              const percentValue = normalizeProgressPercent(entry);
-              const isProgressEntry =
-                entry && entry.type === "progress" && percentValue !== null;
-              const showSpinner =
-                (isActivePlaylist || (isWaiting && running)) &&
-                !isProgressEntry &&
-                entry?.is_final !== true;
-
-              if (isProgressEntry) {
-                item.classList.add("progress-entry");
-                const progressWrapper = document.createElement("div");
-                progressWrapper.className = "playlist-log-bar";
-                progressWrapper.setAttribute("role", "progressbar");
-                progressWrapper.setAttribute("aria-valuemin", "0");
-                progressWrapper.setAttribute("aria-valuemax", "100");
-                const progressFill = document.createElement("span");
-                const sanitizedPercent = Math.max(0, Math.min(100, percentValue));
-                progressWrapper.setAttribute(
-                  "aria-valuenow",
-                  String(Math.round(sanitizedPercent))
-                );
-                progressFill.style.setProperty(
-                  "--progress",
-                  `${sanitizedPercent}%`
-                );
-                progressFill.style.width = `${sanitizedPercent}%`;
-                progressWrapper.appendChild(progressFill);
-                item.appendChild(progressWrapper);
+              const lastTimestamp = activityEntryLastSeen.get(entryKey);
+              if (
+                !isEntryActive &&
+                lastTimestamp !== undefined &&
+                nowMs - lastTimestamp > ACTIVITY_ENTRY_TTL_MS
+              ) {
+                return;
               }
-
-              const messageRow = document.createElement("div");
-              messageRow.className = "playlist-log-message";
-
-              if (showSpinner) {
-                item.classList.add("is-active-step");
-                const spinner = document.createElement("div");
-                spinner.className = "playlist-log-spinner";
-                messageRow.appendChild(spinner);
+              if (dismissedActivityKeys.has(entryKey)) {
+                return;
               }
-
-              const text = document.createElement("div");
-              text.className = "playlist-log-text";
-              text.textContent = entry?.text || "";
-              messageRow.appendChild(text);
-
-              if (entryKey) {
-                const dismissOptions = { playlistName: trimmedName };
-                if (isActivePlaylist || (isWaiting && running)) {
-                  dismissOptions.onDismiss = () => {
-                    requestStopPlaylistFromActivity(trimmedName, entryKey, {
-                      isWaiting,
-                    });
-                  };
-                }
-                messageRow.appendChild(
-                  createDismissButton(entryKey, dismissOptions)
-                );
-              }
-
-              item.appendChild(messageRow);
-              listEl.appendChild(item);
-              hasContent = true;
             }
+
+            const item = document.createElement("div");
+            item.className = "playlist-log-entry";
+            if (entryKey) {
+              item.dataset.activityKey = entryKey;
+            }
+
+            if (isProgressEntry) {
+              item.classList.add("progress-entry");
+              const progressWrapper = document.createElement("div");
+              progressWrapper.className = "playlist-log-bar";
+              progressWrapper.setAttribute("role", "progressbar");
+              progressWrapper.setAttribute("aria-valuemin", "0");
+              progressWrapper.setAttribute("aria-valuemax", "100");
+              const progressFill = document.createElement("span");
+              const sanitizedPercent = Math.max(0, Math.min(100, percentValue));
+              progressWrapper.setAttribute(
+                "aria-valuenow",
+                String(Math.round(sanitizedPercent))
+              );
+              progressFill.style.setProperty("--progress", `${sanitizedPercent}%`);
+              progressFill.style.width = `${sanitizedPercent}%`;
+              progressWrapper.appendChild(progressFill);
+              item.appendChild(progressWrapper);
+            }
+
+            const messageRow = document.createElement("div");
+            messageRow.className = "playlist-log-message";
+
+            if (showSpinner) {
+              item.classList.add("is-active-step");
+              const spinner = document.createElement("div");
+              spinner.className = "playlist-log-spinner";
+              messageRow.appendChild(spinner);
+            }
+
+            const text = document.createElement("div");
+            text.className = "playlist-log-text";
+            text.textContent = entry?.text || "";
+            messageRow.appendChild(text);
+
+            if (entryKey) {
+              const dismissOptions = { playlistName: trimmedName };
+              if (isActivePlaylist || isWaitingActive) {
+                dismissOptions.onDismiss = () => {
+                  requestStopPlaylistFromActivity(trimmedName, entryKey, {
+                    isWaiting,
+                  });
+                };
+              }
+              messageRow.appendChild(
+                createDismissButton(entryKey, dismissOptions)
+              );
+            }
+
+            item.appendChild(messageRow);
+            listEl.appendChild(item);
+            hasContent = true;
           } else if (!hasCancellationMessage && !hadAnyRawEntries) {
             const placeholder = document.createElement("div");
             placeholder.className = "playlist-log-entry";
@@ -3466,7 +3573,19 @@
           normalizedGeneralEntries.forEach((entry) => {
             const entryKey = getGeneralActivityKey(entry);
             if (entryKey) {
-              activeActivityKeys.add(entryKey);
+              seenActivityKeys.add(entryKey);
+              const previousTimestamp = activityEntryLastSeen.get(entryKey);
+              if (running || previousTimestamp === undefined) {
+                activityEntryLastSeen.set(entryKey, nowMs);
+              }
+              const lastTimestamp = activityEntryLastSeen.get(entryKey);
+              if (
+                !running &&
+                lastTimestamp !== undefined &&
+                nowMs - lastTimestamp > ACTIVITY_ENTRY_TTL_MS
+              ) {
+                return;
+              }
               if (dismissedActivityKeys.has(entryKey)) {
                 return;
               }
@@ -3502,10 +3621,10 @@
 
         blocksToRender.forEach((block) => buildLogContainer.appendChild(block));
 
-        if (dismissedActivityKeys.size) {
-          dismissedActivityKeys.forEach((key) => {
-            if (!activeActivityKeys.has(key)) {
-              dismissedActivityKeys.delete(key);
+        if (activityEntryLastSeen.size) {
+          activityEntryLastSeen.forEach((timestamp, key) => {
+            if (!seenActivityKeys.has(key)) {
+              activityEntryLastSeen.delete(key);
             }
           });
         }
