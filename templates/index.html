@@ -1743,6 +1743,36 @@
         }
       }
 
+      function dismissAllActivityEntries() {
+        if (!buildLogContainer) {
+          return;
+        }
+
+        const entries = Array.from(
+          buildLogContainer.querySelectorAll(".playlist-log-entry")
+        );
+        if (!entries.length) {
+          activityEntryLastSeen.clear();
+          return;
+        }
+
+        let shouldPersist = false;
+        entries.forEach((entry) => {
+          const activityKey = entry?.dataset?.activityKey;
+          if (activityKey && !dismissedActivityKeys.has(activityKey)) {
+            dismissedActivityKeys.add(activityKey);
+            shouldPersist = true;
+          }
+        });
+
+        activityEntryLastSeen.clear();
+        buildLogContainer.innerHTML = "";
+
+        if (shouldPersist) {
+          persistDismissedActivityKeys();
+        }
+      }
+
       function buildConfigFieldKey(sectionId, fieldKey) {
         return `${sectionId}.${fieldKey}`;
       }
@@ -2194,6 +2224,7 @@
               : "Restart requested. The application will exit shortly.";
           setConfigStatusMessage(message);
           showMessage(message, false);
+          dismissAllNotifications({ keepBanner: true, keepConfigStatus: true });
         } catch (error) {
           console.error(error);
           const message =
@@ -2596,6 +2627,25 @@
           }, duration);
           playlistMessageTimeouts.set(playlist, timeoutId);
         }
+      }
+
+      function dismissAllNotifications(options = {}) {
+        const keepBanner = Boolean(options?.keepBanner);
+        const keepConfigStatus = Boolean(options?.keepConfigStatus);
+        if (!keepBanner) {
+          hideMessage();
+        }
+        if (!keepConfigStatus) {
+          clearConfigStatusMessage();
+        }
+
+        if (Array.isArray(state.playlists)) {
+          state.playlists.forEach((playlist) => {
+            hidePlaylistInlineMessage(playlist);
+          });
+        }
+
+        dismissAllActivityEntries();
       }
 
       function registerPlaylistCancellation(playlistName, customMessage) {
@@ -4248,6 +4298,26 @@
         );
       }
 
+      function isBoostRuleEmpty(boost) {
+        if (!boost || typeof boost !== "object") {
+          return true;
+        }
+
+        const hasMultiplier =
+          boost.boost !== undefined &&
+          boost.boost !== null &&
+          String(boost.boost).trim() !== "";
+
+        const conditions = Array.isArray(boost.conditions)
+          ? boost.conditions
+          : [];
+        const hasNonEmptyCondition = conditions.length
+          ? conditions.some((condition) => !isBoostConditionEmpty(condition))
+          : !isBoostConditionEmpty(boost);
+
+        return !(hasMultiplier || hasNonEmptyCondition);
+      }
+
       function normalizeBoostConditionForClient(condition) {
         if (!condition || typeof condition !== "object") {
           return createEmptyBoostCondition();
@@ -4484,17 +4554,22 @@
           footerSpacer.className = "spacer";
           footer.appendChild(footerSpacer);
 
-          const removeBtn = document.createElement("button");
-          removeBtn.type = "button";
-          removeBtn.className = "icon-only danger";
-          removeBtn.textContent = "✕";
-          removeBtn.title = "Remove popularity boost rule";
-          removeBtn.addEventListener("click", () => {
-            if (typeof onRemove === "function") {
-              onRemove(index);
-            }
-          });
-          footer.appendChild(removeBtn);
+          const shouldShowRemoveButton =
+            boosts.length > 1 || !isBoostRuleEmpty(boost);
+
+          if (shouldShowRemoveButton) {
+            const removeBtn = document.createElement("button");
+            removeBtn.type = "button";
+            removeBtn.className = "icon-only danger";
+            removeBtn.textContent = "✕";
+            removeBtn.title = "Remove popularity boost rule";
+            removeBtn.addEventListener("click", () => {
+              if (typeof onRemove === "function") {
+                onRemove(index);
+              }
+            });
+            footer.appendChild(removeBtn);
+          }
 
           row.appendChild(footer);
 
@@ -5504,6 +5579,13 @@
       if (buildToggleBtn) {
         buildToggleBtn.addEventListener("click", toggleBuild);
       }
+
+      const containerLifecycleEvents = ["pagehide", "beforeunload"];
+      containerLifecycleEvents.forEach((eventName) => {
+        window.addEventListener(eventName, () => {
+          dismissAllNotifications();
+        });
+      });
 
       refreshBuildStatus();
       buildStatusTimer = setInterval(() => refreshBuildStatus(), 5000);
