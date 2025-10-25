@@ -11,7 +11,7 @@ import json
 import time
 import threading
 import copy
-from datetime import datetime, timezone
+import datetime
 from pathlib import Path
 from collections import defaultdict, OrderedDict
 from dataclasses import dataclass
@@ -1029,6 +1029,62 @@ def _resolve_popularity_for_sort(
         album_popularity_cache_by_object[object_cache_key] = popularity_value
 
     return popularity_value, True
+
+
+def _normalize_release_date(value):
+    if not value:
+        return None
+
+    if isinstance(value, datetime.datetime):
+        return value.date()
+
+    if isinstance(value, datetime.date):
+        return value
+
+    text = str(value)
+
+    match = re.search(r"(\d{4})[-/](\d{2})[-/](\d{2})", text)
+    if match:
+        try:
+            return datetime.date(
+                int(match.group(1)),
+                int(match.group(2)),
+                int(match.group(3)),
+            )
+        except ValueError:
+            pass
+
+    match = re.search(r"(\d{4})[-/](\d{2})", text)
+    if match:
+        try:
+            return datetime.date(int(match.group(1)), int(match.group(2)), 1)
+        except ValueError:
+            pass
+
+    match = re.search(r"(\d{4})", text)
+    if match:
+        try:
+            return datetime.date(int(match.group(1)), 1, 1)
+        except ValueError:
+            pass
+
+    return None
+
+
+def _resolve_album_release_date(track):
+    """Return the best-known release date for the provided track's album."""
+
+    date_candidates = [
+        getattr(track, "parentOriginallyAvailableAt", None),
+        getattr(track, "originallyAvailableAt", None),
+    ]
+
+    for candidate in date_candidates:
+        normalized = _normalize_release_date(candidate)
+        if normalized:
+            return normalized
+
+    return None
 
 
 def _resolve_album_year(track):
@@ -3451,8 +3507,17 @@ def _sort_tracks_in_place(
                 except (TypeError, ValueError):
                     numeric_year = year_token
 
+                release_date = _resolve_album_release_date(track)
+                if release_date is None:
+                    release_component = (
+                        datetime.date.max if not sort_desc else datetime.date.min
+                    )
+                else:
+                    release_component = release_date
+
                 sort_value = (
                     numeric_year,
+                    release_component,
                     getattr(track, "title", ""),
                     getattr(track, "grandparentTitle", ""),
                 )
