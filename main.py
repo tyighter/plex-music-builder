@@ -1051,12 +1051,91 @@ def _match_spotify_tracks_to_library(spotify_tracks, library, log):
     return matched_tracks, unmatched_count
 
 
+def _summarize_spotify_response(response, preview_limit=200):
+    """Return a compact string describing a Spotify HTTP response."""
+
+    status_code = getattr(response, "status_code", "<unknown>")
+    content_length = "<unknown>"
+    try:
+        content = response.content
+    except Exception:  # pragma: no cover - defensive fallback
+        content = b""
+    else:
+        if content is not None:
+            content_length = len(content)
+
+    content_type = None
+    try:
+        content_type = response.headers.get("Content-Type")
+    except Exception:  # pragma: no cover - headers behave like dict normally
+        content_type = None
+
+    preview = ""
+    if content:
+        try:
+            text_preview = response.text
+        except Exception:  # pragma: no cover - rare decode issue
+            text_preview = ""
+        if text_preview:
+            preview = re.sub(r"\s+", " ", text_preview).strip()
+            if len(preview) > preview_limit:
+                preview = preview[:preview_limit] + "..."
+
+    parts = [f"status={status_code}"]
+    if content_type:
+        parts.append(f"content_type={content_type}")
+    parts.append(f"bytes={content_length}")
+    if preview:
+        parts.append(f"preview={preview}")
+
+    return ", ".join(parts)
+
+
 def _collect_spotify_tracks(spotify_url, library, log):
     normalized_url = _normalize_spotify_playlist_url(spotify_url)
-    response = requests.get(normalized_url, headers=_SPOTIFY_REQUEST_HEADERS, timeout=30)
-    response.raise_for_status()
 
-    entity_payload = _extract_spotify_entity_payload(response.text)
+    if log.isEnabledFor(logging.DEBUG):
+        if spotify_url == normalized_url:
+            log.debug("Fetching Spotify playlist from %s", normalized_url)
+        else:
+            log.debug(
+                "Fetching Spotify playlist from %s (normalized from %s)",
+                normalized_url,
+                spotify_url,
+            )
+
+    try:
+        response = requests.get(
+            normalized_url, headers=_SPOTIFY_REQUEST_HEADERS, timeout=30
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Spotify request failed for {normalized_url}: {exc}"
+        ) from exc
+
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug(
+            "Spotify response for %s: %s",
+            normalized_url,
+            _summarize_spotify_response(response),
+        )
+
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(
+            "Spotify request returned an error for %s: %s"
+            % (normalized_url, _summarize_spotify_response(response))
+        ) from exc
+
+    try:
+        entity_payload = _extract_spotify_entity_payload(response.text)
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to parse Spotify playlist metadata from %s: %s (response %s)"
+            % (normalized_url, exc, _summarize_spotify_response(response))
+        ) from exc
+
     spotify_tracks = _parse_spotify_entity_tracks(entity_payload)
     matched_tracks, unmatched_count = _match_spotify_tracks_to_library(
         spotify_tracks,
