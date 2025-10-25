@@ -2582,6 +2582,25 @@ class CompiledFilter:
     expected_numeric: Optional[Tuple[Any, ...]]
 
 
+def _coerce_match_all_flag(value: Any, default: bool = True) -> bool:
+    """Coerce truthy/falsey configuration values into a boolean flag."""
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+
+    if value is None:
+        return default
+
+    return bool(value)
+
+
 def _coerce_expected_values(raw_expected: Any) -> Tuple[Any, ...]:
     if isinstance(raw_expected, str) and "," in raw_expected:
         return tuple(segment.strip() for segment in raw_expected.split(","))
@@ -2607,11 +2626,12 @@ def _compile_filter_entry(filter_entry: Any) -> CompiledFilter:
         filter_entry.get("operator") if isinstance(filter_entry, dict) else getattr(filter_entry, "operator", "")
     )
     expected = filter_entry.get("value") if isinstance(filter_entry, dict) else getattr(filter_entry, "expected", None)
-    match_all = (
-        filter_entry.get("match_all", True)
-        if isinstance(filter_entry, dict)
-        else getattr(filter_entry, "match_all", True)
-    )
+    if isinstance(filter_entry, dict):
+        match_all_raw = filter_entry.get("match_all")
+    else:
+        match_all_raw = getattr(filter_entry, "match_all", None)
+
+    match_all = _coerce_match_all_flag(match_all_raw, default=True)
 
     expected_values = _coerce_expected_values(expected)
     expected_lowers = tuple(str(value).lower() for value in expected_values)
