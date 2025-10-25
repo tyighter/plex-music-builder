@@ -2526,6 +2526,79 @@
         playlistCancellationCutoffs.set(trimmedName, nowMs);
       }
 
+      async function requestStopPlaylistFromActivity(
+        playlistName,
+        activityKey,
+        options = {}
+      ) {
+        const trimmedName =
+          typeof playlistName === "string" ? playlistName.trim() : "";
+        if (!trimmedName) {
+          return;
+        }
+
+        const pendingKey = trimmedName.toLowerCase();
+        if (pendingActivityStopRequests.has(pendingKey)) {
+          return;
+        }
+
+        const wasAlreadyCancelled = playlistCancellationMessages.has(trimmedName);
+        const isWaiting = Boolean(options && options.isWaiting);
+
+        pendingActivityStopRequests.set(pendingKey, true);
+
+        const cancellationMessage = isWaiting
+          ? `Cancellation requested for '${trimmedName}'.`
+          : undefined;
+        registerPlaylistCancellation(trimmedName, cancellationMessage);
+        updateBuildLogsUi(latestBuildStatus);
+
+        try {
+          const response = await fetch("/api/build/stop_playlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ playlist: trimmedName }),
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(
+              result.message || "Failed to stop playlist build."
+            );
+          }
+
+          if (result.status) {
+            updateBuildStatusUi(result.status);
+          } else {
+            await refreshBuildStatus();
+          }
+
+          if (result.message) {
+            showMessage(result.message);
+          } else {
+            showMessage(
+              isWaiting
+                ? `Cancelling queued build for '${trimmedName}'...`
+                : `Stopping '${trimmedName}'...`
+            );
+          }
+        } catch (error) {
+          console.error(error);
+          const errorMessage =
+            (error && error.message) || `Failed to stop '${trimmedName}'.`;
+          showMessage(errorMessage, true);
+          if (!wasAlreadyCancelled) {
+            playlistCancellationMessages.delete(trimmedName);
+            playlistCancellationCutoffs.delete(trimmedName);
+          }
+          if (activityKey) {
+            dismissedActivityKeys.delete(activityKey);
+          }
+          updateBuildLogsUi(latestBuildStatus);
+        } finally {
+          pendingActivityStopRequests.delete(pendingKey);
+        }
+      }
+
       function normalizeProgressPercent(entry) {
         if (!entry || typeof entry !== "object") {
           return null;
@@ -3255,8 +3328,16 @@
               messageRow.appendChild(text);
 
               if (entryKey) {
+                const dismissOptions = { playlistName: trimmedName };
+                if (isActivePlaylist || (isWaiting && running)) {
+                  dismissOptions.onDismiss = () => {
+                    requestStopPlaylistFromActivity(trimmedName, entryKey, {
+                      isWaiting,
+                    });
+                  };
+                }
                 messageRow.appendChild(
-                  createDismissButton(entryKey, { playlistName: trimmedName })
+                  createDismissButton(entryKey, dismissOptions)
                 );
               }
 
