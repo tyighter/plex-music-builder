@@ -593,10 +593,27 @@ def _strip_parenthetical(value):
     return re.sub(r"\s*\([^)]*\)\s*", " ", str(value)).strip()
 
 
+_APOSTROPHE_TRANSLATION_MAP = str.maketrans(
+    {
+        "\u2018": "'",  # left single quotation mark
+        "\u2019": "'",  # right single quotation mark
+        "\u201B": "'",  # single high-reversed-9 quotation mark
+        "\u2032": "'",  # prime
+        "\u2035": "'",  # reversed prime
+        "\u02BC": "'",  # modifier letter apostrophe
+        "\u055A": "'",  # armenian apostrophe
+        "\uFF07": "'",  # fullwidth apostrophe
+    }
+)
+
+
 def _normalize_compare_value(value):
     if not value:
         return ""
-    normalized = re.sub(r"\s+", " ", str(value)).strip().lower()
+
+    text = unicodedata.normalize("NFKC", str(value))
+    text = text.translate(_APOSTROPHE_TRANSLATION_MAP)
+    normalized = re.sub(r"\s+", " ", text).strip().lower()
     return normalized
 
 

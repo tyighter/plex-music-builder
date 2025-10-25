@@ -22,6 +22,12 @@ def test_normalize_spotify_playlist_url_variants():
         main._normalize_spotify_playlist_url("https://example.com/not-spotify")
 
 
+def test_normalize_compare_value_handles_apostrophes():
+    straight = main._normalize_compare_value("Don't Leave Me This Way")
+    curly = main._normalize_compare_value("Don’t Leave Me This Way")
+    assert straight == curly == "don't leave me this way"
+
+
 def test_parse_spotify_entity_tracks_skips_local_and_missing():
     entity = {
         "tracks": {
