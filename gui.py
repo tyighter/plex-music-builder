@@ -2965,7 +2965,7 @@ def create_app() -> Flask:
         except OSError:
             candidates = []
 
-        for candidate in candidates[:50]:
+        for candidate in candidates:
             try:
                 is_dir = candidate.is_dir()
             except OSError:
