@@ -2962,6 +2962,78 @@ _SERVER_FILTER_FIELD_MAP: Dict[str, Tuple[str, str]] = {
 }
 
 
+_SERVER_FILTER_TAG_LEVEL_GROUPS: Dict[str, Dict[str, str]] = {
+    "album": {
+        "track.genre": "album.genre",
+        "track.mood": "album.mood",
+    },
+    "artist": {
+        "track.genre": "artist.genre",
+        "track.mood": "artist.mood",
+    },
+}
+
+
+def _expand_tag_level_server_filters(
+    parameter_sets: Sequence[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Expand track-level genre/mood filters to album and artist level queries."""
+
+    if not parameter_sets:
+        return list(parameter_sets)
+
+    expanded: List[Dict[str, Any]] = []
+
+    for params in parameter_sets:
+        filters = dict(params.get("filters") or {})
+        if not filters:
+            expanded.append(dict(params))
+            continue
+
+        override_entries: List[Tuple[str, Any, str]] = []
+        for key, value in filters.items():
+            base_key = key[:-1] if key.endswith("&") else key
+            for group_mapping in _SERVER_FILTER_TAG_LEVEL_GROUPS.values():
+                if base_key in group_mapping:
+                    override_entries.append((key, value, base_key))
+                    break
+
+        if not override_entries:
+            expanded.append(dict(params))
+            continue
+
+        override_keys = {entry[0] for entry in override_entries}
+        base_filters = {k: v for k, v in filters.items() if k not in override_keys}
+
+        level_parameter_sets: List[Dict[str, Any]] = []
+        for mapping in _SERVER_FILTER_TAG_LEVEL_GROUPS.values():
+            replaced_filters = dict(base_filters)
+            missing_mapping = False
+            for original_key, value, base_key in override_entries:
+                replacement_base = mapping.get(base_key)
+                if not replacement_base:
+                    missing_mapping = True
+                    break
+                suffix = "&" if original_key.endswith("&") else ""
+                replaced_filters[f"{replacement_base}{suffix}"] = value
+            if missing_mapping:
+                continue
+
+            new_params = dict(params)
+            if replaced_filters:
+                new_params["filters"] = replaced_filters
+            else:
+                new_params.pop("filters", None)
+            level_parameter_sets.append(new_params)
+
+        if level_parameter_sets:
+            expanded.extend(level_parameter_sets)
+        else:
+            expanded.append(dict(params))
+
+    return expanded
+
+
 def _normalize_filter_values_for_server(values: Sequence[Any]) -> List[Any]:
     normalized: List[Any] = []
     for value in values:
@@ -3093,6 +3165,8 @@ def _fetch_tracks_with_server_filters(
 
     if not search_parameter_sets:
         search_parameter_sets.append(build_search_kwargs(base_kwargs, base_filters))
+
+    search_parameter_sets = _expand_tag_level_server_filters(search_parameter_sets)
 
     if logger and logger.isEnabledFor(logging.DEBUG):
         for idx, params in enumerate(search_parameter_sets, start=1):
