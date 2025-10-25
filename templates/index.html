@@ -70,6 +70,8 @@
         gap: 12px;
         flex-wrap: nowrap;
         align-items: center;
+        margin-left: auto;
+        justify-content: flex-end;
       }
 
       .action-bar button {
@@ -386,9 +388,11 @@
         font-size: 13px;
         background: rgba(229, 160, 13, 0.18);
         color: var(--plex-light);
-        flex-basis: 100%;
         margin-top: 0;
         grid-area: message;
+        justify-self: end;
+        margin-left: auto;
+        text-align: right;
       }
 
       .playlist-inline-message.show {
@@ -4682,13 +4686,6 @@
           statusGroup.appendChild(statusIndicator);
           statusGroup.appendChild(statusTextWrapper);
 
-          const saveBtn = document.createElement("button");
-          saveBtn.type = "button";
-          saveBtn.className = "icon-only";
-          saveBtn.textContent = "💾";
-          saveBtn.setAttribute("aria-label", "Save playlist");
-          saveBtn.title = "Save this playlist to playlists.yml";
-
           const buildBtn = document.createElement("button");
           buildBtn.type = "button";
           buildBtn.className = "playlist-build-btn icon-only";
@@ -4696,6 +4693,13 @@
           buildBtn.setAttribute("aria-label", "Build this playlist");
           buildBtn.title = "Build this playlist.";
           buildBtn.addEventListener("click", () => togglePlaylistBuild(playlist));
+
+          const saveBtn = document.createElement("button");
+          saveBtn.type = "button";
+          saveBtn.className = "icon-only";
+          saveBtn.textContent = "💾";
+          saveBtn.setAttribute("aria-label", "Save playlist");
+          saveBtn.title = "Save this playlist to playlists.yml";
 
           const duplicateBtn = document.createElement("button");
           duplicateBtn.type = "button";
@@ -4735,8 +4739,8 @@
           header.appendChild(statusGroup);
           const actionButtons = document.createElement("div");
           actionButtons.className = "playlist-action-buttons";
-          actionButtons.appendChild(saveBtn);
           actionButtons.appendChild(buildBtn);
+          actionButtons.appendChild(saveBtn);
           actionButtons.appendChild(duplicateBtn);
           actionButtons.appendChild(removeBtn);
           header.appendChild(actionButtons);
