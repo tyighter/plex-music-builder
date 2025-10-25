@@ -80,8 +80,12 @@ class _RecordingLibrary:
 
     def search(self, **kwargs):
         self.calls.append(kwargs)
-        key = kwargs.get("filters", {}).get("track.genre")
-        return list(self._responses.get(key, []))
+        filters = kwargs.get("filters", {})
+        for field in ("album.genre", "artist.genre", "track.genre"):
+            if field in filters:
+                lookup_key = (field, filters[field])
+                return list(self._responses.get(lookup_key, []))
+        return []
 
 
 class _CombinationLibrary:
@@ -91,18 +95,31 @@ class _CombinationLibrary:
     def search(self, **kwargs):
         self.calls.append(kwargs)
         filters = kwargs.get("filters", {})
-        genre = filters.get("track.genre", "")
-        mood = filters.get("track.mood", "")
-        key = f"{genre}-{mood}"
-        return [_DummyTrack(key)]
+        genre_field = None
+        mood_field = None
+        for field in ("album.genre", "artist.genre", "track.genre"):
+            if field in filters:
+                genre_field = field
+                genre = filters[field]
+                break
+        for field in ("album.mood", "artist.mood", "track.mood"):
+            if field in filters:
+                mood_field = field
+                mood = filters[field]
+                break
+
+        if genre_field == "album.genre" and mood_field == "album.mood":
+            key = f"{genre}-{mood}"
+            return [_DummyTrack(key)]
+        return []
 
 
 def test_fetch_tracks_expands_multi_value_filters_and_deduplicates():
     main = _load_main_module()
 
     responses = {
-        "Rock": [_DummyTrack("1"), _DummyTrack("2")],
-        "Metal": [_DummyTrack("2"), _DummyTrack("3")],
+        ("album.genre", "Rock"): [_DummyTrack("1"), _DummyTrack("2")],
+        ("album.genre", "Metal"): [_DummyTrack("2"), _DummyTrack("3")],
     }
     library = _RecordingLibrary(responses)
 
@@ -113,10 +130,27 @@ def test_fetch_tracks_expands_multi_value_filters_and_deduplicates():
     tracks, stats = main._fetch_tracks_with_server_filters(library, {}, {}, multi_filters)
 
     assert [track.ratingKey for track in tracks] == ["1", "2", "3"]
-    assert stats["requests"] == 2
+    assert stats["requests"] == 4
     assert stats["original_count"] == 4
     assert stats["duplicates_removed"] == 1
-    assert [call.get("filters", {}).get("track.genre") for call in library.calls] == ["Rock", "Metal"]
+    assert [
+        (
+            next(
+                field for field in ("album.genre", "artist.genre") if field in call.get("filters", {})
+            ),
+            call["filters"][
+                next(
+                    field for field in ("album.genre", "artist.genre") if field in call.get("filters", {})
+                )
+            ],
+        )
+        for call in library.calls
+    ] == [
+        ("album.genre", "Rock"),
+        ("artist.genre", "Rock"),
+        ("album.genre", "Metal"),
+        ("artist.genre", "Metal"),
+    ]
 
 
 def test_fetch_tracks_generates_combinations_for_multiple_multi_filters():
@@ -138,10 +172,24 @@ def test_fetch_tracks_generates_combinations_for_multiple_multi_filters():
     ]
 
     assert [track.ratingKey for track in tracks] == expected_order
-    assert stats["requests"] == 4
+    assert stats["requests"] == 8
     assert stats["duplicates_removed"] == 0
     assert {
-        (call.get("filters", {}).get("track.genre"), call.get("filters", {}).get("track.mood"))
+        (
+            call.get("filters", {}).get("album.genre"),
+            call.get("filters", {}).get("album.mood"),
+            call.get("filters", {}).get("artist.genre"),
+            call.get("filters", {}).get("artist.mood"),
+        )
         for call in library.calls
-    } == {("Rock", "Happy"), ("Rock", "Moody"), ("Metal", "Happy"), ("Metal", "Moody")}
+    } == {
+        ("Rock", "Happy", None, None),
+        ("Rock", "Moody", None, None),
+        ("Metal", "Happy", None, None),
+        ("Metal", "Moody", None, None),
+        (None, None, "Rock", "Happy"),
+        (None, None, "Rock", "Moody"),
+        (None, None, "Metal", "Happy"),
+        (None, None, "Metal", "Moody"),
+    }
 
