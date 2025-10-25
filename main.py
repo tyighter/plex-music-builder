@@ -2912,6 +2912,15 @@ class FilteringProgressReporter:
 
 
 _SERVER_FILTER_FIELD_MAP: Dict[str, Tuple[str, str]] = {
+    # Artist level
+    "artist": ("filters", "artist.title"),
+    "artist.title": ("filters", "artist.title"),
+    "grandparenttitle": ("filters", "artist.title"),
+    "artist.id": ("filters", "artist.id"),
+    "artist.ratingkey": ("filters", "artist.id"),
+    "grandparentratingkey": ("filters", "artist.id"),
+    "artist.guid": ("filters", "artist.guid"),
+    "grandparentguid": ("filters", "artist.guid"),
     "title": ("filters", "track.title"),
     "track.title": ("filters", "track.title"),
     "track": ("filters", "track.title"),

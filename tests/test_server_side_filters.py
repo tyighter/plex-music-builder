@@ -67,6 +67,24 @@ def test_server_filters_default_to_any_match_for_multiple_values():
     ]
 
 
+def test_server_filters_map_artist_title_to_server_query():
+    main = _load_main_module()
+
+    compiled = main._compile_filter_entry(
+        {
+            "field": "artist",
+            "operator": "equals",
+            "value": "The Beatles",
+        }
+    )
+
+    server_kwargs, server_filters, multi_filters = main._build_server_side_search_filters([compiled])
+
+    assert server_kwargs == {}
+    assert server_filters == {"artist.title": "The Beatles"}
+    assert multi_filters == []
+
+
 class _DummyTrack:
     def __init__(self, rating_key: str):
         self.ratingKey = rating_key
