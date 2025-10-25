@@ -945,47 +945,6 @@
         align-self: center;
       }
 
-      .path-input {
-        position: relative;
-        display: flex;
-        flex-direction: column;
-      }
-
-      .path-suggestions {
-        position: absolute;
-        top: calc(100% + 6px);
-        left: 0;
-        right: 0;
-        background: rgba(18, 18, 18, 0.95);
-        border: 1px solid rgba(229, 160, 13, 0.25);
-        border-radius: 10px;
-        box-shadow: 0 18px 32px rgba(0, 0, 0, 0.45);
-        max-height: 220px;
-        overflow-y: auto;
-        display: none;
-        flex-direction: column;
-        z-index: 20;
-      }
-
-      .path-suggestions.show {
-        display: flex;
-      }
-
-      .path-suggestions button {
-        background: transparent;
-        border: none;
-        text-align: left;
-        padding: 10px 12px;
-        color: var(--plex-light);
-        font-size: 14px;
-        cursor: pointer;
-        transition: background 0.15s ease;
-      }
-
-      .path-suggestions button:hover {
-        background: rgba(229, 160, 13, 0.18);
-      }
-
       .cover-field {
         display: flex;
         flex-direction: column;
@@ -1006,11 +965,6 @@
         flex-wrap: wrap;
         gap: 12px;
         align-items: stretch;
-      }
-
-      .cover-input-row .path-input {
-        flex: 1 1 220px;
-        min-width: 0;
       }
 
       button.cover-picker-button {
@@ -4611,101 +4565,6 @@
         return normalized.slice(0, lastSlash + 1);
       }
 
-      function setupPathAutocomplete(inputEl, suggestionsEl, playlist, extrasKey) {
-        const extras = ensureExtras(playlist);
-        let debounceTimer = null;
-        let controller = null;
-
-        function hideSuggestions() {
-          suggestionsEl.classList.remove("show");
-          suggestionsEl.innerHTML = "";
-        }
-
-        function renderSuggestions(entries) {
-          if (!entries.length) {
-            hideSuggestions();
-            return;
-          }
-          suggestionsEl.innerHTML = "";
-          entries.forEach((entry) => {
-            const optionBtn = document.createElement("button");
-            optionBtn.type = "button";
-            optionBtn.textContent = entry.display;
-            optionBtn.addEventListener("mousedown", (event) => {
-              event.preventDefault();
-              const suggestion = entry.suggestion;
-              inputEl.value = suggestion;
-              extras[extrasKey] = suggestion;
-              inputEl.dispatchEvent(new Event("input", { bubbles: true }));
-              hideSuggestions();
-            });
-            suggestionsEl.appendChild(optionBtn);
-          });
-          suggestionsEl.classList.add("show");
-        }
-
-        async function requestSuggestions(value) {
-          if (controller) {
-            controller.abort();
-          }
-
-          controller = new AbortController();
-          const { signal } = controller;
-
-          const params = new URLSearchParams();
-          if (value) {
-            params.set("path", value);
-          }
-          const query = params.toString();
-          const url = query
-            ? `/api/list_directory?${query}`
-            : "/api/list_directory";
-
-          try {
-            const response = await fetch(url, {
-              signal,
-            });
-            if (!response.ok) {
-              throw new Error("Unable to fetch directory suggestions");
-            }
-            const data = await response.json();
-            if (signal.aborted) {
-              return;
-            }
-            renderSuggestions(data.entries || []);
-          } catch (error) {
-            if (signal.aborted) {
-              return;
-            }
-            console.error(error);
-            hideSuggestions();
-          }
-        }
-
-        function scheduleSuggestions(value) {
-          if (debounceTimer) {
-            clearTimeout(debounceTimer);
-          }
-          debounceTimer = setTimeout(() => {
-            requestSuggestions(value);
-          }, 180);
-        }
-
-        inputEl.addEventListener("input", (event) => {
-          const value = event.target.value;
-          extras[extrasKey] = value;
-          scheduleSuggestions(value);
-        });
-
-        inputEl.addEventListener("focus", () => {
-          scheduleSuggestions(inputEl.value);
-        });
-
-        inputEl.addEventListener("blur", () => {
-          setTimeout(hideSuggestions, 150);
-        });
-      }
-
       function renderCoverPickerDirectories(entries) {
         if (!coverPickerDirectories) {
           return false;
@@ -4945,6 +4804,76 @@
           new Event("input", { bubbles: true })
         );
         closeCoverPicker();
+      }
+
+      async function uploadCoverImage({
+        file,
+        playlist,
+        inputEl,
+        extrasKey,
+        preview,
+      }) {
+        if (!file) {
+          throw new Error("No cover image selected.");
+        }
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        let response;
+        try {
+          response = await fetch("/api/upload_cover", {
+            method: "POST",
+            body: formData,
+          });
+        } catch (error) {
+          throw new Error("Unable to upload cover image.");
+        }
+
+        let payload = {};
+        try {
+          payload = await response.json();
+        } catch (error) {
+          payload = {};
+        }
+
+        if (!response.ok) {
+          const message =
+            (payload && (payload.error || payload.message)) ||
+            `Upload failed with status ${response.status}.`;
+          throw new Error(message);
+        }
+
+        const savedPath =
+          typeof payload.path === "string" ? payload.path.trim() : "";
+        if (!savedPath) {
+          throw new Error(
+            "Upload succeeded but no cover path was returned."
+          );
+        }
+
+        if (inputEl) {
+          inputEl.value = savedPath;
+          inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+        } else if (playlist && extrasKey) {
+          const extras = ensureExtras(playlist);
+          extras[extrasKey] = savedPath;
+          if (
+            preview?.container &&
+            preview?.image &&
+            preview?.label
+          ) {
+            updateImagePreview(
+              preview.container,
+              preview.image,
+              preview.label,
+              savedPath,
+              CARD_COVER_PREVIEW_TEXTS
+            );
+          }
+        }
+
+        return { path: savedPath, response: payload };
       }
 
       function openCoverPicker(playlist, inputEl, extrasKey, previewElements) {
@@ -5940,51 +5869,8 @@
             .slice(2, 10)}`;
           const coverLabel = document.createElement("label");
           coverLabel.className = "cover-field-label";
-          coverLabel.setAttribute("for", coverInputId);
           coverLabel.textContent = "Cover Image";
           coverField.appendChild(coverLabel);
-
-          const coverInputRow = document.createElement("div");
-          coverInputRow.className = "cover-input-row";
-
-          const coverWrapper = document.createElement("div");
-          coverWrapper.className = "path-input";
-          const coverInput = document.createElement("input");
-          coverInput.type = "text";
-          coverInput.id = coverInputId;
-          coverInput.placeholder = "/images/cover.png";
-          coverInput.value = extras.cover || "";
-          coverInput.addEventListener("input", (event) => {
-            const value = event.target.value;
-            extras.cover = value;
-            updateImagePreview(
-              coverPreviewContainer,
-              coverPreviewImage,
-              coverPreviewCaption,
-              value,
-              CARD_COVER_PREVIEW_TEXTS
-            );
-          });
-          const suggestionsList = document.createElement("div");
-          suggestionsList.className = "path-suggestions";
-          coverWrapper.appendChild(coverInput);
-          coverWrapper.appendChild(suggestionsList);
-          coverInputRow.appendChild(coverWrapper);
-
-          const coverPickerBtn = document.createElement("button");
-          coverPickerBtn.type = "button";
-          coverPickerBtn.className = "cover-picker-button";
-          coverPickerBtn.textContent = "Browse Covers";
-          coverPickerBtn.addEventListener("click", () => {
-            openCoverPicker(playlist, coverInput, "cover", {
-              container: coverPreviewContainer,
-              image: coverPreviewImage,
-              label: coverPreviewCaption,
-            });
-          });
-          coverInputRow.appendChild(coverPickerBtn);
-
-          coverField.appendChild(coverInputRow);
 
           const coverPreviewContainer = document.createElement("div");
           coverPreviewContainer.className = "cover-preview";
@@ -6003,6 +5889,97 @@
           coverPreviewContainer.appendChild(coverPreviewFrame);
           coverPreviewContainer.appendChild(coverPreviewCaption);
           coverField.appendChild(coverPreviewContainer);
+
+          const coverInput = document.createElement("input");
+          coverInput.type = "hidden";
+          coverInput.id = coverInputId;
+          coverInput.value = extras.cover || "";
+          coverInput.addEventListener("input", (event) => {
+            const value = event.target.value || "";
+            extras.cover = value;
+            updateImagePreview(
+              coverPreviewContainer,
+              coverPreviewImage,
+              coverPreviewCaption,
+              value,
+              CARD_COVER_PREVIEW_TEXTS
+            );
+          });
+          coverField.appendChild(coverInput);
+
+          const coverInputRow = document.createElement("div");
+          coverInputRow.className = "cover-input-row";
+
+          const coverPickerBtn = document.createElement("button");
+          coverPickerBtn.type = "button";
+          coverPickerBtn.className = "cover-picker-button";
+          coverPickerBtn.textContent = "Browse Covers";
+          coverPickerBtn.addEventListener("click", () => {
+            openCoverPicker(playlist, coverInput, "cover", {
+              container: coverPreviewContainer,
+              image: coverPreviewImage,
+              label: coverPreviewCaption,
+            });
+          });
+          coverInputRow.appendChild(coverPickerBtn);
+
+          const coverUploadInput = document.createElement("input");
+          coverUploadInput.type = "file";
+          coverUploadInput.accept = "image/*";
+          coverUploadInput.style.display = "none";
+
+          const coverUploadBtn = document.createElement("button");
+          coverUploadBtn.type = "button";
+          coverUploadBtn.className = "cover-picker-button";
+          coverUploadBtn.textContent = "Upload Cover";
+          coverUploadBtn.addEventListener("click", () => {
+            coverUploadInput.click();
+          });
+          coverInputRow.appendChild(coverUploadBtn);
+
+          coverUploadInput.addEventListener("change", async (event) => {
+            const fileList = event.target.files;
+            const file = fileList && fileList[0];
+            if (!file) {
+              return;
+            }
+
+            coverUploadBtn.disabled = true;
+            showPlaylistInlineMessage(
+              playlist,
+              `Uploading "${file.name}"...`,
+              { persist: true }
+            );
+
+            try {
+              await uploadCoverImage({
+                file,
+                playlist,
+                inputEl: coverInput,
+                extrasKey: "cover",
+              });
+              showPlaylistInlineMessage(
+                playlist,
+                "Cover uploaded successfully."
+              );
+            } catch (error) {
+              console.error(error);
+              const message =
+                (error && error.message) ||
+                "Failed to upload cover image.";
+              showPlaylistInlineMessage(playlist, message, {
+                isError: true,
+                duration: 8000,
+              });
+            } finally {
+              coverUploadBtn.disabled = false;
+              coverUploadBtn.blur();
+              coverUploadInput.value = "";
+            }
+          });
+
+          coverField.appendChild(coverInputRow);
+          coverField.appendChild(coverUploadInput);
 
           updateImagePreview(
             coverPreviewContainer,
@@ -6113,7 +6090,6 @@
             updatePlaylistCollapseUi(playlist);
           });
 
-          setupPathAutocomplete(coverInput, suggestionsList, playlist, "cover");
 
           playlistsContainer.appendChild(card);
         });

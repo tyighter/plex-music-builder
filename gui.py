@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from typing import Any, Dict, IO, Iterable, List, Optional, Set, Tuple
 
 import yaml
 from flask import Flask, abort, jsonify, render_template, request, send_file
+from werkzeug.utils import secure_filename
 
 
 def _represent_ordered_dict(dumper: yaml.Dumper, data: OrderedDict) -> Any:
@@ -2692,6 +2694,73 @@ def _is_image_file(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_EXTENSIONS
 
 
+def _cover_upload_directories() -> List[Path]:
+    candidates: List[Path] = []
+    env_override = os.environ.get("PMB_COVER_UPLOAD_DIR")
+    if env_override:
+        candidate = Path(env_override).expanduser()
+        if not candidate.is_absolute():
+            candidate = (CONFIG_DIR / candidate).resolve()
+        candidates.append(candidate)
+
+    candidates.append(Path("/images"))
+    candidates.append((CONFIG_DIR / "images").resolve())
+
+    return candidates
+
+
+def _ensure_cover_upload_dir() -> Path:
+    last_error: Optional[Exception] = None
+    for candidate in _cover_upload_directories():
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            last_error = exc
+            continue
+
+        try:
+            return candidate.resolve()
+        except OSError:
+            return candidate
+
+    raise OSError("Unable to prepare cover upload directory.") from last_error
+
+
+def _generate_unique_cover_name(directory: Path, base_name: str, suffix: str) -> str:
+    sanitized_base = base_name or "cover"
+    sanitized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    candidate = f"{sanitized_base}{sanitized_suffix}"
+    if not (directory / candidate).exists():
+        return candidate
+
+    for index in range(1, 1000):
+        candidate = f"{sanitized_base}_{index}{sanitized_suffix}"
+        if not (directory / candidate).exists():
+            return candidate
+
+    unique_fragment = uuid.uuid4().hex[:8]
+    return f"{sanitized_base}_{unique_fragment}{sanitized_suffix}"
+
+
+def _format_cover_upload_path(path: Path) -> str:
+    try:
+        resolved_path = path.resolve()
+    except OSError:
+        resolved_path = path
+
+    try:
+        base_dir = PLAYLISTS_PATH.parent.resolve()
+    except OSError:
+        base_dir = PLAYLISTS_PATH.parent
+
+    try:
+        relative = resolved_path.relative_to(base_dir)
+    except ValueError:
+        return resolved_path.as_posix()
+
+    return relative.as_posix()
+
+
 def _find_existing_directory(path: Path) -> Optional[Path]:
     current = path
     visited = set()
@@ -3002,6 +3071,71 @@ def create_app() -> Flask:
             "directory": str(directory),
             "entries": entries,
         })
+
+    @app.route("/api/upload_cover", methods=["POST"])
+    def upload_cover() -> Any:
+        file_storage = request.files.get("file")
+        if file_storage is None or not file_storage.filename:
+            return jsonify({"error": "No file provided."}), 400
+
+        filename = secure_filename(file_storage.filename or "")
+        if not filename:
+            return jsonify({"error": "Invalid file name."}), 400
+
+        suffix = Path(filename).suffix.lower()
+        if suffix not in IMAGE_EXTENSIONS:
+            return (
+                jsonify(
+                    {
+                        "error": "Unsupported image format. Please upload a valid image file.",
+                    }
+                ),
+                400,
+            )
+
+        try:
+            upload_dir = _ensure_cover_upload_dir()
+        except OSError:
+            return (
+                jsonify({"error": "Unable to prepare cover upload directory."}),
+                500,
+            )
+
+        base_name = Path(filename).stem or "cover"
+        unique_name = _generate_unique_cover_name(upload_dir, base_name, suffix)
+        target_path = upload_dir / unique_name
+
+        try:
+            file_storage.save(target_path)
+        except Exception as exc:  # pragma: no cover - protective logging only
+            app.logger.exception("Failed to save uploaded cover image: %s", exc)
+            return (
+                jsonify({"error": "Failed to save uploaded cover image."}),
+                500,
+            )
+
+        if not _is_image_file(target_path):
+            try:
+                target_path.unlink()
+            except OSError:
+                pass
+            return (
+                jsonify({"error": "Unsupported image format."}),
+                400,
+            )
+
+        response_path = _format_cover_upload_path(target_path)
+
+        return (
+            jsonify(
+                {
+                    "status": "uploaded",
+                    "path": response_path,
+                    "filename": unique_name,
+                }
+            ),
+            201,
+        )
 
     @app.route("/api/cover_preview", methods=["GET"])
     def cover_preview() -> Any:
