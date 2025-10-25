@@ -643,7 +643,7 @@
 
       .playlist-header {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(200px, 260px) auto;
+        grid-template-columns: minmax(0, 1fr) minmax(200px, 260px) minmax(0, 1fr);
         grid-template-areas:
           "title search actions"
           "status search actions"
@@ -715,6 +715,7 @@
         gap: 8px;
         flex-wrap: wrap;
         justify-content: flex-end;
+        justify-self: end;
         align-self: start;
         grid-area: actions;
       }
@@ -5000,10 +5001,8 @@
         );
         if (directoryHint) {
           coverPickerState.currentRawPath = directoryHint;
-        } else if (!coverPickerState.selectedPath) {
-          coverPickerState.currentRawPath = COVER_PICKER_DEFAULT_DIRECTORY;
         } else {
-          coverPickerState.currentRawPath = "";
+          coverPickerState.currentRawPath = COVER_PICKER_DEFAULT_DIRECTORY;
         }
         coverPickerState.lastFocus = document.activeElement;
         coverPickerOverlay.classList.add("show");
