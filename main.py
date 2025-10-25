@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from collections import defaultdict, OrderedDict
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import cmp_to_key, lru_cache
 from xml.etree import ElementTree as ET
@@ -511,9 +511,48 @@ def _build_track_cache_key(track):
         return f"track:{rating_key}"
     return f"object:{id(track)}"
 
-def save_cache():
+metadata_cache_lock = threading.Lock()
+metadata_cache_dirty = False
+_metadata_cache_inserts_since_save = 0
+
+
+def _write_metadata_cache_locked():
+    cache_dir = os.path.dirname(CACHE_FILE)
+    if cache_dir and not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(metadata_cache, f)
+
+
+def _mark_metadata_cache_dirty_locked():
+    global metadata_cache_dirty, _metadata_cache_inserts_since_save
+
+    metadata_cache_dirty = True
+    _metadata_cache_inserts_since_save += 1
+
+    if SAVE_INTERVAL and SAVE_INTERVAL > 0 and _metadata_cache_inserts_since_save >= SAVE_INTERVAL:
+        _write_metadata_cache_locked()
+        metadata_cache_dirty = False
+        _metadata_cache_inserts_since_save = 0
+
+
+def flush_metadata_cache(force=False):
+    """Persist the metadata cache to disk if new entries were added."""
+
+    global metadata_cache_dirty, _metadata_cache_inserts_since_save
+
+    with metadata_cache_lock:
+        if not metadata_cache_dirty and not force:
+            return
+
+        _write_metadata_cache_locked()
+        metadata_cache_dirty = False
+        _metadata_cache_inserts_since_save = 0
+
+
+def save_cache():
+    flush_metadata_cache(force=True)
 def _strip_parenthetical(value):
     if not value:
         return ""
@@ -2233,16 +2272,31 @@ def apply_playlist_cover(playlist_obj, cover):
 
 def fetch_full_metadata(rating_key):
     """Fetch and cache full metadata for a Plex item (track, album, or artist)."""
-    if rating_key in metadata_cache:
-        return metadata_cache[rating_key]
+    if rating_key is None:
+        return None
 
-    url = f"{PLEX_URL}/library/metadata/{rating_key}"
+    key_str = str(rating_key)
+
+    with metadata_cache_lock:
+        cached = metadata_cache.get(key_str)
+        if cached is not None:
+            return cached
+
+    url = f"{PLEX_URL}/library/metadata/{key_str}"
     headers = {"X-Plex-Token": PLEX_TOKEN}
     response = requests.get(url, headers=headers)
     response.raise_for_status()
+    xml_text = response.text
 
-    metadata_cache[rating_key] = response.text
-    return metadata_cache[rating_key]
+    with metadata_cache_lock:
+        cached = metadata_cache.get(key_str)
+        if cached is not None:
+            return cached
+
+        metadata_cache[key_str] = xml_text
+        _mark_metadata_cache_dirty_locked()
+
+    return xml_text
 
 
 @lru_cache(maxsize=1024)
@@ -2346,6 +2400,9 @@ def _extract_metadata_values(source_key, field_name):
 
     try:
         xml_text = fetch_full_metadata(source_key)
+        if not xml_text:
+            _set_cache_entry(_METADATA_FIELD_CACHE, cache_key, tuple(), _METADATA_FIELD_CACHE_MAX_SIZE)
+            return []
         xml_val = parse_field_from_xml(xml_text, field_name)
     except Exception as exc:
         logger.debug(f"Metadata error for key {source_key}: {exc}")
@@ -2813,6 +2870,186 @@ class FilteringProgressReporter:
         self.update(count, force=True)
 
 
+_SERVER_FILTER_FIELD_MAP: Dict[str, Tuple[str, str]] = {
+    "title": ("kwargs", "title"),
+    "track.title": ("kwargs", "title"),
+    "track": ("kwargs", "title"),
+    "grandparenttitle": ("kwargs", "artist"),
+    "artist": ("kwargs", "artist"),
+    "artist.title": ("kwargs", "artist"),
+    "parenttitle": ("kwargs", "album"),
+    "album": ("kwargs", "album"),
+    "album.title": ("kwargs", "album"),
+    "genre": ("kwargs", "genre"),
+    "genres": ("kwargs", "genre"),
+    "mood": ("kwargs", "mood"),
+    "moods": ("kwargs", "mood"),
+    "style": ("kwargs", "style"),
+    "styles": ("kwargs", "style"),
+    "year": ("kwargs", "year"),
+    "originallyavailableat": ("kwargs", "originallyAvailableAt"),
+    "parentyear": ("filters", "album.year"),
+    "album.year": ("filters", "album.year"),
+    "country": ("kwargs", "country"),
+    "collection": ("kwargs", "collection"),
+    "label": ("kwargs", "label"),
+}
+
+
+def _normalize_filter_values_for_server(values: Sequence[Any]) -> List[Any]:
+    normalized: List[Any] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                continue
+            normalized.append(stripped)
+        else:
+            normalized.append(value)
+    return normalized
+
+
+def _build_server_side_search_filters(
+    filters: Sequence[CompiledFilter],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Translate simple filters into Plex server-side search parameters."""
+
+    server_kwargs: Dict[str, Any] = {}
+    server_filters: Dict[str, Any] = {}
+
+    for compiled in filters:
+        operator = (compiled.operator or "").lower()
+        if operator not in {"equals", "contains"}:
+            continue
+
+        normalized = FIELD_ALIASES.get(compiled.field, compiled.field)
+        normalized_lower = str(normalized or "").lower()
+        mapping = _SERVER_FILTER_FIELD_MAP.get(normalized_lower)
+        if not mapping:
+            continue
+
+        values = _normalize_filter_values_for_server(compiled.expected_values)
+        if not values:
+            continue
+
+        key_type, key_name = mapping
+        effective_key = key_name
+
+        if compiled.match_all and len(values) > 1:
+            if key_type != "filters":
+                continue
+            effective_key = f"{key_name}&"
+            payload: Any = list(values)
+        elif not compiled.match_all and len(values) > 1:
+            payload = list(values)
+        else:
+            payload = values[0]
+
+        target = server_kwargs if key_type == "kwargs" else server_filters
+        if effective_key in target:
+            # Conflicting filter definitions; fall back to client-side evaluation.
+            return {}, {}
+
+        target[effective_key] = payload
+
+    return server_kwargs, server_filters
+
+
+def _determine_metadata_levels_for_filters(filters: Sequence[CompiledFilter]) -> Set[str]:
+    """Return which Plex objects (track/album/artist) require metadata prefetching."""
+
+    levels: Set[str] = set()
+    for compiled in filters:
+        field = (compiled.field or "").strip()
+        if not field:
+            continue
+
+        normalized = FIELD_ALIASES.get(field, field) or ""
+        lower_field = field.lower()
+        normalized_lower = str(normalized).lower()
+
+        levels.add("track")
+
+        if field == "album.type" or lower_field.startswith("album.") or normalized_lower.startswith("parent"):
+            levels.add("album")
+
+        if lower_field.startswith("artist.") or normalized_lower.startswith("grandparent"):
+            levels.add("artist")
+
+    return levels
+
+
+def _warm_metadata_cache(
+    tracks: Sequence[Any],
+    wildcard_filters: Sequence[CompiledFilter],
+    regular_filters: Sequence[CompiledFilter],
+    log,
+) -> Tuple[int, int]:
+    """Pre-fetch Plex XML metadata required by the configured filters."""
+
+    compiled_filters: List[CompiledFilter] = []
+    if regular_filters:
+        compiled_filters.extend(regular_filters)
+    if wildcard_filters:
+        compiled_filters.extend(wildcard_filters)
+
+    if not compiled_filters or not tracks:
+        return 0, 0
+
+    levels = _determine_metadata_levels_for_filters(compiled_filters)
+    if not levels:
+        return 0, 0
+
+    rating_keys: Set[str] = set()
+    for track in tracks:
+        if track is None:
+            continue
+        if "track" in levels:
+            track_key = getattr(track, "ratingKey", None)
+            if track_key:
+                rating_keys.add(str(track_key))
+        if "album" in levels:
+            album_key = getattr(track, "parentRatingKey", None)
+            if album_key:
+                rating_keys.add(str(album_key))
+        if "artist" in levels:
+            artist_key = getattr(track, "grandparentRatingKey", None)
+            if artist_key:
+                rating_keys.add(str(artist_key))
+
+    if not rating_keys:
+        return 0, 0
+
+    with metadata_cache_lock:
+        pending = [key for key in rating_keys if key not in metadata_cache]
+
+    if not pending:
+        return 0, 0
+
+    try:
+        configured_workers = int(MAX_WORKERS)
+    except (TypeError, ValueError):
+        configured_workers = 1
+
+    worker_count = max(1, min(len(pending), max(configured_workers, 1)))
+
+    failures = 0
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_map = {executor.submit(fetch_full_metadata, key): key for key in pending}
+        for future in as_completed(future_map):
+            key = future_map[future]
+            try:
+                future.result()
+            except Exception as exc:  # pragma: no cover - network errors handled gracefully
+                failures += 1
+                if log.isEnabledFor(logging.DEBUG):
+                    log.debug("Failed to pre-fetch metadata for ratingKey=%s: %s", key, exc)
+
+    return len(pending), failures
+
+
 def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     if playlist_handler:
         log.debug(
@@ -2897,17 +3134,76 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 name,
             )
 
+    server_kwargs, server_filter_dict = _build_server_side_search_filters(regular_filters)
+
     fetch_start = time.perf_counter()
-    all_tracks = library.searchTracks()
+    if server_kwargs or server_filter_dict:
+        search_kwargs = dict(server_kwargs)
+        search_kwargs["libtype"] = "track"
+        if server_filter_dict:
+            search_kwargs["filters"] = server_filter_dict
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "Fetching tracks for '%s' with server-side filters: kwargs=%s, filters=%s",
+                name,
+                server_kwargs,
+                server_filter_dict,
+            )
+        all_tracks = library.search(**search_kwargs)
+    else:
+        all_tracks = library.searchTracks()
+
     total_tracks = len(all_tracks)
-    progress_reporter = FilteringProgressReporter(log, name, total_tracks)
     fetch_duration = time.perf_counter() - fetch_start
-    log.info(
-        "Fetched %s tracks from %s in %.2fs",
-        total_tracks,
-        config.get("library", LIBRARY_NAME),
-        fetch_duration,
-    )
+
+    if server_kwargs or server_filter_dict:
+        log.info(
+            "Fetched %s tracks from %s in %.2fs using server-side filters",
+            total_tracks,
+            config.get("library", LIBRARY_NAME),
+            fetch_duration,
+        )
+    else:
+        log.info(
+            "Fetched %s tracks from %s in %.2fs",
+            total_tracks,
+            config.get("library", LIBRARY_NAME),
+            fetch_duration,
+        )
+
+    warm_requests = warm_failures = 0
+    warm_duration = 0.0
+    if total_tracks and (regular_filters or wildcard_filters):
+        warm_start = time.perf_counter()
+        warm_requests, warm_failures = _warm_metadata_cache(
+            all_tracks,
+            wildcard_filters,
+            regular_filters,
+            log,
+        )
+        if warm_requests:
+            warm_duration = time.perf_counter() - warm_start
+            successful = warm_requests - warm_failures
+            if warm_failures:
+                log.warning(
+                    "Prefetched %d/%d metadata entries for '%s' in %.2fs (failures=%d)",
+                    successful,
+                    warm_requests,
+                    name,
+                    warm_duration,
+                    warm_failures,
+                )
+            else:
+                log.info(
+                    "Prefetched %d metadata entries for '%s' in %.2fs",
+                    successful,
+                    name,
+                    warm_duration,
+                )
+        elif log.isEnabledFor(logging.DEBUG):
+            log.debug("Metadata cache already warm for '%s'", name)
+
+    progress_reporter = FilteringProgressReporter(log, name, total_tracks)
 
     try:
         existing = plex.playlist(name)
@@ -3007,9 +3303,10 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             log.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
         total_duration = time.perf_counter() - build_start
         log.info(
-            "Performance summary for '%s': fetch=%.2fs, filter=%.2fs (%.1f track/s), update=%.2fs, total=%.2fs",
+            "Performance summary for '%s': fetch=%.2fs, prefetch=%.2fs, filter=%.2fs (%.1f track/s), update=%.2fs, total=%.2fs",
             name,
             fetch_duration,
+            warm_duration,
             filter_duration,
             filter_rate,
             playlist_update_duration,
@@ -3403,9 +3700,10 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         log.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
         total_duration = time.perf_counter() - build_start
         log.info(
-            "Performance summary for '%s': fetch=%.2fs, filter=%.2fs (%.1f track/s), dedup=%.2fs, sort=%.2fs, update=%.2fs, total=%.2fs",
+            "Performance summary for '%s': fetch=%.2fs, prefetch=%.2fs, filter=%.2fs (%.1f track/s), dedup=%.2fs, sort=%.2fs, update=%.2fs, total=%.2fs",
             name,
             fetch_duration,
+            warm_duration,
             filter_duration,
             filter_rate,
             dedup_duration,
@@ -3432,9 +3730,10 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     total_duration = time.perf_counter() - build_start
     update_rate = (match_count / playlist_update_duration) if playlist_update_duration > 0 else 0.0
     log.info(
-        "Performance summary for '%s': fetch=%.2fs, filter=%.2fs (%.1f track/s), dedup=%.2fs, sort=%.2fs, update=%.2fs (%.1f track/s), total=%.2fs",
+        "Performance summary for '%s': fetch=%.2fs, prefetch=%.2fs, filter=%.2fs (%.1f track/s), dedup=%.2fs, sort=%.2fs, update=%.2fs (%.1f track/s), total=%.2fs",
         name,
         fetch_duration,
+        warm_duration,
         filter_duration,
         filter_rate,
         dedup_duration,
@@ -3472,6 +3771,7 @@ def process_playlist(name, config):
             else:
                 _thread_local_logger.current = previous_thread_logger
     finally:
+        flush_metadata_cache()
         AllMusicPopularityProvider.save_shared_cache()
         if playlist_handler:
             log.debug(
