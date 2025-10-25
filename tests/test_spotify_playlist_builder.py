@@ -63,6 +63,114 @@ def test_extract_spotify_entity_payload_handles_json_parse_string():
     assert parsed == payload
 
 
+def test_extract_spotify_entity_payload_handles_next_data_tracks():
+    next_data = {
+        "props": {
+            "pageProps": {
+                "dehydratedState": {
+                    "queries": [
+                        {
+                            "state": {
+                                "data": {
+                                    "playlistV2": {
+                                        "trackList": {
+                                            "items": [
+                                                {
+                                                    "itemV2": {
+                                                        "data": {
+                                                            "__typename": "Track",
+                                                            "uri": "spotify:track:123",
+                                                            "name": "Next Song",
+                                                            "albumOfTrack": {
+                                                                "name": "Next Album",
+                                                                "artists": {
+                                                                    "items": [
+                                                                        {
+                                                                            "profile": {
+                                                                                "name": "Next Artist"
+                                                                            }
+                                                                        }
+                                                                    ]
+                                                                },
+                                                            },
+                                                        }
+                                                    }
+                                                },
+                                                {
+                                                    "itemV2": {
+                                                        "data": {
+                                                            "__typename": "Track",
+                                                            "uri": "spotify:track:456",
+                                                            "name": "Another Song",
+                                                            "albumOfTrack": {"name": "Another Album"},
+                                                            "artists": {
+                                                                "items": [
+                                                                    {
+                                                                        "profile": {
+                                                                            "name": "Another Artist"
+                                                                        }
+                                                                    }
+                                                                ]
+                                                            },
+                                                        }
+                                                    }
+                                                },
+                                            ]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    html = (
+        '<html><body><script id="__NEXT_DATA__" type="application/json">'
+        f"{json.dumps(next_data)}</script></body></html>"
+    )
+
+    parsed = main._extract_spotify_entity_payload(html)
+
+    assert parsed == {
+        "tracks": {
+            "items": [
+                {
+                    "track": {
+                        "name": "Next Song",
+                        "album": {
+                            "name": "Next Album",
+                            "artists": [{"name": "Next Artist"}],
+                        },
+                        "artists": [{"name": "Next Artist"}],
+                        "uri": "spotify:track:123",
+                    }
+                },
+                {
+                    "track": {
+                        "name": "Another Song",
+                        "album": {
+                            "name": "Another Album",
+                            "artists": [{"name": "Another Artist"}],
+                        },
+                        "artists": [{"name": "Another Artist"}],
+                        "uri": "spotify:track:456",
+                    }
+                },
+            ]
+        }
+    }
+
+    tracks = main._parse_spotify_entity_tracks(parsed)
+
+    assert tracks == [
+        {"title": "Next Song", "album": "Next Album", "artist": "Next Artist"},
+        {"title": "Another Song", "album": "Another Album", "artist": "Another Artist"},
+    ]
+
+
 class _DummyTrack:
     def __init__(self, title, album, artist, rating_count, rating_key):
         self.title = title
