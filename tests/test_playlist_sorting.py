@@ -468,6 +468,48 @@ def test_run_playlist_build_sort_by_oldest_uses_album_year(monkeypatch):
     assert titles == ["Classic", "Recent", "Modern"]
 
 
+def test_run_playlist_build_sort_by_oldest_uses_release_date_for_ties(monkeypatch):
+    class StubTrack:
+        def __init__(
+            self,
+            rating_key,
+            title,
+            parent_year,
+            parent_release,
+        ):
+            self.ratingKey = rating_key
+            self.title = title
+            self.grandparentTitle = "Artist"
+            self.parentTitle = f"Album {title}"
+            self.parentYear = parent_year
+            self.year = parent_year
+            self.parentOriginallyAvailableAt = parent_release
+            self.originallyAvailableAt = parent_release
+
+    tracks = [
+        StubTrack("1", "Late", 2020, "2020-11-11"),
+        StubTrack("2", "Early", 2020, "2020-01-01"),
+        StubTrack("3", "Middle", 2020, "2020-06-06"),
+    ]
+
+    main, server = _prepare_playlist_build(monkeypatch, tracks)
+    main._ALBUM_YEAR_CACHE.clear()
+    main._ALBUM_YEAR_MISS_KEYS.clear()
+
+    config = {
+        "sort_by": "oldest_first",
+    }
+
+    logger = logging.getLogger("test_sort_by_album_release_date")
+    logger.setLevel(logging.INFO)
+
+    main._run_playlist_build("Test", config, logger, None, None)
+
+    assert server.created_playlist is not None
+    titles = [track.title for track in server.created_playlist.items]
+    assert titles == ["Early", "Middle", "Late"]
+
+
 def test_run_playlist_build_after_sort_newest_uses_album_year(monkeypatch):
     class StubTrack:
         def __init__(self, rating_key, title, parent_year, track_year):
@@ -503,3 +545,46 @@ def test_run_playlist_build_after_sort_newest_uses_album_year(monkeypatch):
     assert server.created_playlist is not None
     titles = [track.title for track in server.created_playlist.items]
     assert titles == ["Modern", "Contemporary", "Vintage"]
+
+
+def test_run_playlist_build_after_sort_newest_uses_release_date_for_ties(monkeypatch):
+    class StubTrack:
+        def __init__(
+            self,
+            rating_key,
+            title,
+            parent_year,
+            parent_release,
+        ):
+            self.ratingKey = rating_key
+            self.title = title
+            self.grandparentTitle = "Artist"
+            self.parentTitle = f"Album {title}"
+            self.parentYear = parent_year
+            self.year = parent_year
+            self.parentOriginallyAvailableAt = parent_release
+            self.originallyAvailableAt = parent_release
+
+    tracks = [
+        StubTrack("1", "Spring", 2020, "2020-03-03"),
+        StubTrack("2", "Winter", 2020, "2020-12-12"),
+        StubTrack("3", "Summer", 2020, "2020-07-07"),
+    ]
+
+    main, server = _prepare_playlist_build(monkeypatch, tracks)
+    main._ALBUM_YEAR_CACHE.clear()
+    main._ALBUM_YEAR_MISS_KEYS.clear()
+
+    config = {
+        "sort_by": "alphabetical",
+        "after_sort": "newest_first",
+    }
+
+    logger = logging.getLogger("test_after_sort_release_date")
+    logger.setLevel(logging.INFO)
+
+    main._run_playlist_build("Test", config, logger, None, None)
+
+    assert server.created_playlist is not None
+    titles = [track.title for track in server.created_playlist.items]
+    assert titles == ["Winter", "Summer", "Spring"]
