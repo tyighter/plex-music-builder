@@ -3003,13 +3003,18 @@ def _build_server_side_search_filters(
         key_type, key_name = mapping
         effective_key = key_name
 
-        if compiled.match_all and len(values) > 1:
-            if key_type != "filters":
+        if len(values) > 1:
+            if compiled.match_all:
+                if key_type != "filters":
+                    continue
+                effective_key = f"{key_name}&"
+                payload = list(values)
+            else:
+                # Plex server-side filters treat multiple values as an AND condition,
+                # which is stricter than the client-side behaviour (OR). To avoid
+                # accidentally discarding valid tracks, skip pushing this filter to the
+                # server and fall back to client-side evaluation instead.
                 continue
-            effective_key = f"{key_name}&"
-            payload: Any = list(values)
-        elif not compiled.match_all and len(values) > 1:
-            payload = list(values)
         else:
             payload = values[0]
 
