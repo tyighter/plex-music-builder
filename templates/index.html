@@ -4757,6 +4757,55 @@
         return true;
       }
 
+      function applyCoverPickerWheelScroll(event, container) {
+        if (!container || !coverPickerOverlay?.classList.contains("show")) {
+          return false;
+        }
+
+        const maxScrollTop = container.scrollHeight - container.clientHeight;
+        const maxScrollLeft = container.scrollWidth - container.clientWidth;
+        const hasVertical = maxScrollTop > 0;
+        const hasHorizontal = maxScrollLeft > 0;
+
+        if (!hasVertical && !hasHorizontal) {
+          return false;
+        }
+
+        const deltaY = event.deltaY || 0;
+        const deltaX = event.deltaX || 0;
+        let didScroll = false;
+
+        if (hasVertical && deltaY) {
+          const previousTop = container.scrollTop;
+          const nextTop = Math.max(
+            0,
+            Math.min(maxScrollTop, previousTop + deltaY)
+          );
+          if (nextTop !== previousTop) {
+            container.scrollTop = nextTop;
+            didScroll = true;
+          }
+        }
+
+        if (hasHorizontal && deltaX) {
+          const previousLeft = container.scrollLeft;
+          const nextLeft = Math.max(
+            0,
+            Math.min(maxScrollLeft, previousLeft + deltaX)
+          );
+          if (nextLeft !== previousLeft) {
+            container.scrollLeft = nextLeft;
+            didScroll = true;
+          }
+        }
+
+        if (didScroll) {
+          event.preventDefault();
+        }
+
+        return didScroll;
+      }
+
       function updateCoverPickerUpButton() {
         if (!coverPickerUpBtn) {
           return;
@@ -6410,7 +6459,10 @@
         coverPickerOverlay.addEventListener(
           "wheel",
           (event) => {
-            if (!coverPickerOverlay.classList.contains("show")) {
+            if (
+              !coverPickerOverlay.classList.contains("show") ||
+              event.defaultPrevented
+            ) {
               return;
             }
 
@@ -6422,24 +6474,14 @@
               return;
             }
 
-            const scrollCandidates = [coverPickerGrid, coverPickerDirectories];
-            const scrollContainer = scrollCandidates.find(
-              (container) =>
-                container &&
-                container.scrollHeight > container.clientHeight + 1
+            const scrollTargets = [coverPickerGrid, coverPickerDirectories];
+            const didScroll = scrollTargets.some((container) =>
+              applyCoverPickerWheelScroll(event, container)
             );
 
-            if (!scrollContainer) {
-              return;
+            if (!didScroll) {
+              event.preventDefault();
             }
-
-            scrollContainer.scrollTop += event.deltaY;
-
-            if (event.deltaX) {
-              scrollContainer.scrollLeft += event.deltaX;
-            }
-
-            event.preventDefault();
           },
           { passive: false }
         );
@@ -6461,11 +6503,32 @@
       }
 
       if (coverPickerGrid) {
+        coverPickerGrid.addEventListener(
+          "wheel",
+          (event) => {
+            if (!event.defaultPrevented) {
+              applyCoverPickerWheelScroll(event, coverPickerGrid);
+            }
+          },
+          { passive: false }
+        );
         coverPickerGrid.addEventListener("mouseleave", () => {
           if (coverPickerOverlay?.classList.contains("show")) {
             previewCoverCandidate(coverPickerState.selectedPath);
           }
         });
+      }
+
+      if (coverPickerDirectories) {
+        coverPickerDirectories.addEventListener(
+          "wheel",
+          (event) => {
+            if (!event.defaultPrevented) {
+              applyCoverPickerWheelScroll(event, coverPickerDirectories);
+            }
+          },
+          { passive: false }
+        );
       }
 
       document.addEventListener("keydown", (event) => {
