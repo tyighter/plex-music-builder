@@ -2917,6 +2917,9 @@ _SERVER_FILTER_FIELD_MAP: Dict[str, Tuple[str, str]] = {
     "track": ("filters", "track.title"),
     "genre": ("filters", "track.genre"),
     "genres": ("filters", "track.genre"),
+    "style": ("filters", "track.style"),
+    "styles": ("filters", "track.style"),
+    "track.style": ("filters", "track.style"),
     "mood": ("filters", "track.mood"),
     "moods": ("filters", "track.mood"),
     "label": ("filters", "track.label"),
@@ -2966,10 +2969,12 @@ _SERVER_FILTER_TAG_LEVEL_GROUPS: Dict[str, Dict[str, str]] = {
     "album": {
         "track.genre": "album.genre",
         "track.mood": "album.mood",
+        "track.style": "album.style",
     },
     "artist": {
         "track.genre": "artist.genre",
         "track.mood": "artist.mood",
+        "track.style": "artist.style",
     },
 }
 
@@ -2977,7 +2982,7 @@ _SERVER_FILTER_TAG_LEVEL_GROUPS: Dict[str, Dict[str, str]] = {
 def _expand_tag_level_server_filters(
     parameter_sets: Sequence[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
-    """Expand track-level genre/mood filters to album and artist level queries."""
+    """Expand track-level genre/mood/style filters to album and artist level queries."""
 
     if not parameter_sets:
         return list(parameter_sets)
