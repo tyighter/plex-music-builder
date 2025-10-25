@@ -389,6 +389,42 @@
         }
       }
 
+      @media (max-width: 720px) {
+        .cover-picker-body {
+          padding: 16px 18px 20px;
+        }
+
+        .cover-picker-content {
+          gap: 12px;
+          align-items: stretch;
+        }
+
+        .cover-picker-grid {
+          order: 1;
+        }
+
+        .cover-picker-preview {
+          order: 2;
+          flex-direction: row;
+          align-items: center;
+          width: 100%;
+          max-width: none;
+          padding: 12px 14px;
+          gap: 12px;
+        }
+
+        .cover-picker-preview-frame {
+          width: 96px;
+          padding-top: 96px;
+          margin: 0;
+        }
+
+        .cover-picker-preview-label,
+        .cover-picker-status {
+          flex: 1 1 auto;
+        }
+      }
+
       main {
         flex: 1;
         padding: 32px 48px 120px;
@@ -859,10 +895,6 @@
 
       .boost-row-footer .boost-input {
         flex: 0 0 160px;
-      }
-
-      .boost-row-footer .spacer {
-        flex: 1 1 auto;
       }
 
       .filter-row .value-input {
@@ -1741,9 +1773,6 @@
           flex: 1 1 auto;
         }
 
-        .boost-row-footer .spacer {
-          display: none;
-        }
       }
     </style>
   </head>
@@ -5302,9 +5331,16 @@
                 removeConditionBtn.addEventListener("click", () => {
                   if (boost.conditions.length > 1) {
                     boost.conditions.splice(conditionIndex, 1);
-                  } else {
-                    boost.conditions[0] = createEmptyBoostCondition();
+                    renderConditions();
+                    return;
                   }
+
+                  if (typeof onRemove === "function") {
+                    onRemove(index);
+                    return;
+                  }
+
+                  boost.conditions[0] = createEmptyBoostCondition();
                   renderConditions();
                 });
                 flagsWrapper.appendChild(removeConditionBtn);
@@ -5377,27 +5413,6 @@
           });
           boostWrapper.appendChild(boostInput);
           footer.appendChild(boostWrapper);
-
-          const footerSpacer = document.createElement("div");
-          footerSpacer.className = "spacer";
-          footer.appendChild(footerSpacer);
-
-          const shouldShowRemoveButton =
-            boosts.length > 1 || !isBoostRuleEmpty(boost);
-
-          if (shouldShowRemoveButton) {
-            const removeBtn = document.createElement("button");
-            removeBtn.type = "button";
-            removeBtn.className = "icon-only danger";
-            removeBtn.textContent = "✕";
-            removeBtn.title = "Remove popularity boost rule";
-            removeBtn.addEventListener("click", () => {
-              if (typeof onRemove === "function") {
-                onRemove(index);
-              }
-            });
-            footer.appendChild(removeBtn);
-          }
 
           row.appendChild(footer);
 
