@@ -376,7 +376,23 @@ def _create_playlist_log_handler(playlist_name):
 # ----------------------------
 # Connect to Plex
 # ----------------------------
-plex = PlexServer(PLEX_URL, PLEX_TOKEN)
+plex = None
+
+
+def get_plex_server():
+    """Return a cached ``PlexServer`` instance.
+
+    The CLI argument parsing happens near the bottom of this module. Import
+    side-effects that immediately talk to Plex make even ``--help`` fail when
+    credentials point to an unavailable server. Lazily initialising the client
+    avoids that situation while keeping backwards compatibility for code that
+    still relies on the ``main.plex`` attribute.
+    """
+
+    global plex
+    if plex is None:
+        plex = PlexServer(PLEX_URL, PLEX_TOKEN)
+    return plex
 
 # ----------------------------
 # Load Playlists Definition
@@ -3064,7 +3080,8 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     boost_rules = config.get("popularity_boosts", []) or []
     wildcard_filters = [_compile_filter_entry(f) for f in filters if bool(f.get("wildcard"))]
     regular_filters = [_compile_filter_entry(f) for f in filters if not bool(f.get("wildcard"))]
-    library = plex.library.section(config.get("library", LIBRARY_NAME))
+    plex_server = get_plex_server()
+    library = plex_server.library.section(config.get("library", LIBRARY_NAME))
     limit = config.get("limit")
     sort_by = config.get("sort_by")
     cover_path = config.get("cover")
@@ -3206,7 +3223,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     progress_reporter = FilteringProgressReporter(log, name, total_tracks)
 
     try:
-        existing = plex.playlist(name)
+        existing = plex_server.playlist(name)
     except Exception:
         existing = None
     deleted_existing = False
@@ -3231,7 +3248,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         flush_start = time.perf_counter()
         try:
             if playlist_obj is None:
-                playlist_obj = plex.createPlaylist(name, items=list(stream_buffer))
+                playlist_obj = plex_server.createPlaylist(name, items=list(stream_buffer))
             else:
                 playlist_obj.addItems(list(stream_buffer))
         except Exception as exc:
@@ -3718,7 +3735,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     for chunk in chunked(matched_tracks, chunk_size):
         try:
             if playlist_obj is None:
-                playlist_obj = plex.createPlaylist(name, items=chunk)
+                playlist_obj = plex_server.createPlaylist(name, items=chunk)
             else:
                 playlist_obj.addItems(chunk)
         except Exception as exc:
