@@ -21,6 +21,7 @@ from functools import cmp_to_key, lru_cache
 from xml.etree import ElementTree as ET
 from html import unescape
 import unicodedata
+import ast
 from urllib.parse import unquote, quote, urlparse
 
 from plexapi.server import PlexServer
@@ -602,6 +603,10 @@ _SPOTIFY_PLAYLIST_ID_RE = re.compile(
     r"(?:https?://open\.spotify\.com/playlist/|spotify:playlist:)([A-Za-z0-9]+)"
 )
 _SPOTIFY_ENTITY_PATTERN = re.compile(r"Spotify\.Entity\s*=\s*({.*?})\s*;", re.DOTALL)
+_SPOTIFY_ENTITY_JSON_PARSE_PATTERN = re.compile(
+    r"Spotify\.Entity\s*=\s*JSON\.parse\(\s*(?P<decoder>decodeURIComponent\()?(?P<quoted>\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*')\s*\)?\s*\)\s*;",
+    re.DOTALL,
+)
 _SPOTIFY_REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -643,9 +648,22 @@ def _extract_spotify_entity_payload(html_text):
 
     match = _SPOTIFY_ENTITY_PATTERN.search(html_text)
     if not match:
-        raise ValueError("Unable to locate Spotify playlist metadata in page contents")
+        json_parse_match = _SPOTIFY_ENTITY_JSON_PARSE_PATTERN.search(html_text)
+        if not json_parse_match:
+            raise ValueError("Unable to locate Spotify playlist metadata in page contents")
 
-    payload = match.group(1)
+        quoted_payload = json_parse_match.group("quoted")
+        try:
+            string_payload = ast.literal_eval(quoted_payload)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError("Failed to parse Spotify playlist metadata") from exc
+
+        if json_parse_match.group("decoder"):
+            string_payload = unquote(string_payload)
+
+        payload = string_payload
+    else:
+        payload = match.group(1)
 
     try:
         return json.loads(payload)

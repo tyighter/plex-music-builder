@@ -1,3 +1,6 @@
+import json
+from urllib.parse import quote
+
 import pytest
 
 import main
@@ -38,6 +41,26 @@ def test_parse_spotify_entity_tracks_skips_local_and_missing():
     assert parsed == [
         {"title": "Cloud Song", "album": "Great Album", "artist": "Artist"}
     ]
+
+
+def test_extract_spotify_entity_payload_handles_json_parse_decode():
+    payload = {"tracks": {"items": []}}
+    encoded = quote(json.dumps(payload))
+    html = f'<script>Spotify.Entity = JSON.parse(decodeURIComponent("{encoded}"));</script>'
+
+    parsed = main._extract_spotify_entity_payload(html)
+
+    assert parsed == payload
+
+
+def test_extract_spotify_entity_payload_handles_json_parse_string():
+    payload = {"tracks": {"items": []}}
+    html_literal = json.dumps(json.dumps(payload))
+    html = f"<script>Spotify.Entity = JSON.parse({html_literal});</script>"
+
+    parsed = main._extract_spotify_entity_payload(html)
+
+    assert parsed == payload
 
 
 class _DummyTrack:
