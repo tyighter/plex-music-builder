@@ -125,7 +125,7 @@
       .cover-picker-panel {
         background: var(--card-bg);
         border-radius: 24px;
-        width: min(960px, 100%);
+        width: min(1040px, 100%);
         max-height: 90vh;
         display: flex;
         flex-direction: column;
@@ -213,10 +213,11 @@
         gap: 18px;
         flex: 1;
         min-height: 0;
+        align-items: flex-start;
       }
 
       .cover-picker-grid {
-        flex: 2;
+        flex: 3;
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         gap: 14px;
@@ -268,25 +269,27 @@
       }
 
       .cover-picker-preview {
-        flex: 1;
+        flex: 0 1 240px;
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(229, 160, 13, 0.18);
         border-radius: 16px;
-        padding: 16px;
+        padding: 14px;
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 10px;
         align-items: stretch;
-        min-width: 220px;
+        min-width: 0;
+        max-width: 260px;
       }
 
       .cover-picker-preview-frame {
         position: relative;
-        width: 100%;
-        padding-top: 100%;
+        width: min(180px, 100%);
+        padding-top: 70%;
         border-radius: 14px;
         overflow: hidden;
         background: rgba(0, 0, 0, 0.45);
+        margin: 0 auto;
       }
 
       .cover-picker-preview-frame img {
