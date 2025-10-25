@@ -2965,18 +2965,18 @@ _SERVER_FILTER_FIELD_MAP: Dict[str, Tuple[str, str]] = {
 }
 
 
-_SERVER_FILTER_TAG_LEVEL_GROUPS: Dict[str, Dict[str, str]] = {
-    "album": {
-        "track.genre": "album.genre",
-        "track.mood": "album.mood",
-        "track.style": "album.style",
+_SERVER_FILTER_TAG_LEVEL_GROUPS: Sequence[Dict[str, Tuple[str, ...]]] = (
+    {
+        "track.genre": ("album.genre", "album.style"),
+        "track.mood": ("album.mood",),
+        "track.style": ("album.style",),
     },
-    "artist": {
-        "track.genre": "artist.genre",
-        "track.mood": "artist.mood",
-        "track.style": "artist.style",
+    {
+        "track.genre": ("artist.genre", "artist.style"),
+        "track.mood": ("artist.mood",),
+        "track.style": ("artist.style",),
     },
-}
+)
 
 
 def _expand_tag_level_server_filters(
@@ -2995,12 +2995,13 @@ def _expand_tag_level_server_filters(
             expanded.append(dict(params))
             continue
 
-        override_entries: List[Tuple[str, Any, str]] = []
+        override_entries: List[Tuple[str, Any, str, str]] = []
         for key, value in filters.items():
             base_key = key[:-1] if key.endswith("&") else key
-            for group_mapping in _SERVER_FILTER_TAG_LEVEL_GROUPS.values():
+            suffix = "&" if key.endswith("&") else ""
+            for group_mapping in _SERVER_FILTER_TAG_LEVEL_GROUPS:
                 if base_key in group_mapping:
-                    override_entries.append((key, value, base_key))
+                    override_entries.append((key, value, base_key, suffix))
                     break
 
         if not override_entries:
@@ -3011,27 +3012,43 @@ def _expand_tag_level_server_filters(
         base_filters = {k: v for k, v in filters.items() if k not in override_keys}
 
         level_parameter_sets: List[Dict[str, Any]] = []
-        for mapping in _SERVER_FILTER_TAG_LEVEL_GROUPS.values():
-            replaced_filters = dict(base_filters)
-            missing_mapping = False
-            for original_key, value, base_key in override_entries:
-                replacement_base = mapping.get(base_key)
-                if not replacement_base:
-                    missing_mapping = True
+        for mapping in _SERVER_FILTER_TAG_LEVEL_GROUPS:
+            replacement_options: List[Tuple[str, Any, str, Tuple[str, ...]]] = []
+            for original_key, value, base_key, suffix in override_entries:
+                replacements = mapping.get(base_key)
+                if not replacements:
+                    replacement_options = []
                     break
-                suffix = "&" if original_key.endswith("&") else ""
-                replaced_filters[f"{replacement_base}{suffix}"] = value
-            if missing_mapping:
+                replacement_options.append((base_key, value, suffix, replacements))
+
+            if not replacement_options:
                 continue
 
-            new_params = dict(params)
-            if replaced_filters:
-                new_params["filters"] = replaced_filters
-            else:
-                new_params.pop("filters", None)
-            level_parameter_sets.append(new_params)
+            def apply_replacements(
+                index: int, current_filters: Dict[str, Any]
+            ) -> None:
+                if index >= len(replacement_options):
+                    combined_filters = dict(base_filters)
+                    combined_filters.update(current_filters)
+                    new_params = dict(params)
+                    if combined_filters:
+                        new_params["filters"] = combined_filters
+                    else:
+                        new_params.pop("filters", None)
+                    level_parameter_sets.append(new_params)
+                    return
+
+                _, value, suffix, replacements = replacement_options[index]
+                for replacement_base in replacements:
+                    key_name = f"{replacement_base}{suffix}"
+                    next_filters = dict(current_filters)
+                    next_filters[key_name] = value
+                    apply_replacements(index + 1, next_filters)
+
+            apply_replacements(0, {})
 
         if level_parameter_sets:
+            expanded.append(dict(params))
             expanded.extend(level_parameter_sets)
         else:
             expanded.append(dict(params))

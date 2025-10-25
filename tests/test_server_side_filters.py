@@ -81,7 +81,14 @@ class _RecordingLibrary:
     def search(self, **kwargs):
         self.calls.append(kwargs)
         filters = kwargs.get("filters", {})
-        for field in ("album.genre", "artist.genre", "track.genre"):
+        for field in (
+            "album.genre",
+            "artist.genre",
+            "track.genre",
+            "album.style",
+            "artist.style",
+            "track.style",
+        ):
             if field in filters:
                 lookup_key = (field, filters[field])
                 return list(self._responses.get(lookup_key, []))
@@ -120,6 +127,8 @@ def test_fetch_tracks_expands_multi_value_filters_and_deduplicates():
     responses = {
         ("album.genre", "Rock"): [_DummyTrack("1"), _DummyTrack("2")],
         ("album.genre", "Metal"): [_DummyTrack("2"), _DummyTrack("3")],
+        ("album.style", "Rock"): [_DummyTrack("1"), _DummyTrack("4")],
+        ("artist.genre", "Metal"): [_DummyTrack("5")],
     }
     library = _RecordingLibrary(responses)
 
@@ -129,27 +138,21 @@ def test_fetch_tracks_expands_multi_value_filters_and_deduplicates():
 
     tracks, stats = main._fetch_tracks_with_server_filters(library, {}, {}, multi_filters)
 
-    assert [track.ratingKey for track in tracks] == ["1", "2", "3"]
-    assert stats["requests"] == 4
-    assert stats["original_count"] == 4
-    assert stats["duplicates_removed"] == 1
-    assert [
-        (
-            next(
-                field for field in ("album.genre", "artist.genre") if field in call.get("filters", {})
-            ),
-            call["filters"][
-                next(
-                    field for field in ("album.genre", "artist.genre") if field in call.get("filters", {})
-                )
-            ],
-        )
-        for call in library.calls
-    ] == [
-        ("album.genre", "Rock"),
-        ("artist.genre", "Rock"),
-        ("album.genre", "Metal"),
-        ("artist.genre", "Metal"),
+    assert [track.ratingKey for track in tracks] == ["1", "2", "4", "3", "5"]
+    assert stats["requests"] == 10
+    assert stats["original_count"] == 7
+    assert stats["duplicates_removed"] == 2
+    assert library.calls == [
+        {"libtype": "track", "filters": {"track.genre": "Rock"}},
+        {"libtype": "track", "filters": {"album.genre": "Rock"}},
+        {"libtype": "track", "filters": {"album.style": "Rock"}},
+        {"libtype": "track", "filters": {"artist.genre": "Rock"}},
+        {"libtype": "track", "filters": {"artist.style": "Rock"}},
+        {"libtype": "track", "filters": {"track.genre": "Metal"}},
+        {"libtype": "track", "filters": {"album.genre": "Metal"}},
+        {"libtype": "track", "filters": {"album.style": "Metal"}},
+        {"libtype": "track", "filters": {"artist.genre": "Metal"}},
+        {"libtype": "track", "filters": {"artist.style": "Metal"}},
     ]
 
 
@@ -172,24 +175,59 @@ def test_fetch_tracks_generates_combinations_for_multiple_multi_filters():
     ]
 
     assert [track.ratingKey for track in tracks] == expected_order
-    assert stats["requests"] == 8
+    assert stats["requests"] == 20
     assert stats["duplicates_removed"] == 0
-    assert {
-        (
-            call.get("filters", {}).get("album.genre"),
-            call.get("filters", {}).get("album.mood"),
-            call.get("filters", {}).get("artist.genre"),
-            call.get("filters", {}).get("artist.mood"),
-        )
-        for call in library.calls
-    } == {
-        ("Rock", "Happy", None, None),
-        ("Rock", "Moody", None, None),
-        ("Metal", "Happy", None, None),
-        ("Metal", "Moody", None, None),
-        (None, None, "Rock", "Happy"),
-        (None, None, "Rock", "Moody"),
-        (None, None, "Metal", "Happy"),
-        (None, None, "Metal", "Moody"),
-    }
+    assert library.calls == [
+        {"libtype": "track", "filters": {"track.genre": "Rock", "track.mood": "Happy"}},
+        {"libtype": "track", "filters": {"album.genre": "Rock", "album.mood": "Happy"}},
+        {"libtype": "track", "filters": {"album.style": "Rock", "album.mood": "Happy"}},
+        {"libtype": "track", "filters": {"artist.genre": "Rock", "artist.mood": "Happy"}},
+        {"libtype": "track", "filters": {"artist.style": "Rock", "artist.mood": "Happy"}},
+        {"libtype": "track", "filters": {"track.genre": "Rock", "track.mood": "Moody"}},
+        {"libtype": "track", "filters": {"album.genre": "Rock", "album.mood": "Moody"}},
+        {"libtype": "track", "filters": {"album.style": "Rock", "album.mood": "Moody"}},
+        {"libtype": "track", "filters": {"artist.genre": "Rock", "artist.mood": "Moody"}},
+        {"libtype": "track", "filters": {"artist.style": "Rock", "artist.mood": "Moody"}},
+        {"libtype": "track", "filters": {"track.genre": "Metal", "track.mood": "Happy"}},
+        {"libtype": "track", "filters": {"album.genre": "Metal", "album.mood": "Happy"}},
+        {"libtype": "track", "filters": {"album.style": "Metal", "album.mood": "Happy"}},
+        {"libtype": "track", "filters": {"artist.genre": "Metal", "artist.mood": "Happy"}},
+        {"libtype": "track", "filters": {"artist.style": "Metal", "artist.mood": "Happy"}},
+        {"libtype": "track", "filters": {"track.genre": "Metal", "track.mood": "Moody"}},
+        {"libtype": "track", "filters": {"album.genre": "Metal", "album.mood": "Moody"}},
+        {"libtype": "track", "filters": {"album.style": "Metal", "album.mood": "Moody"}},
+        {"libtype": "track", "filters": {"artist.genre": "Metal", "artist.mood": "Moody"}},
+        {"libtype": "track", "filters": {"artist.style": "Metal", "artist.mood": "Moody"}},
+    ]
+
+
+def test_fetch_tracks_includes_track_level_queries_for_styles():
+    main = _load_main_module()
+
+    library = _RecordingLibrary(
+        {
+            ("track.style", "Shoegaze"): [_DummyTrack("track-1")],
+            ("album.style", "Shoegaze"): [_DummyTrack("album-1")],
+            ("artist.style", "Shoegaze"): [_DummyTrack("artist-1")],
+        }
+    )
+
+    server_kwargs = {}
+    server_filters = {"track.style": "Shoegaze"}
+    multi_filters = []
+
+    tracks, stats = main._fetch_tracks_with_server_filters(
+        library,
+        server_kwargs,
+        server_filters,
+        multi_filters,
+    )
+
+    assert [track.ratingKey for track in tracks] == ["track-1", "album-1", "artist-1"]
+    assert stats["requests"] == 3
+    assert library.calls == [
+        {"libtype": "track", "filters": {"track.style": "Shoegaze"}},
+        {"libtype": "track", "filters": {"album.style": "Shoegaze"}},
+        {"libtype": "track", "filters": {"artist.style": "Shoegaze"}},
+    ]
 
