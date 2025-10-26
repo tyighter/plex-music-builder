@@ -809,6 +809,7 @@
       input[type="text"],
       input[type="search"],
       input[type="number"],
+      input[type="url"],
       select,
       textarea {
         width: 100%;
@@ -4968,11 +4969,8 @@
           const extras = ensureExtras(playlist);
           delete extras.source;
           delete extras.spotify_url;
-          delete extras.tidal_url;
-
           playlist.source = normalizePlaylistSource(playlist.source);
           playlist.spotify_url = sanitizeSpotifyUrl(playlist.spotify_url);
-          playlist.tidal_url = sanitizeTidalUrl(playlist.tidal_url);
           extras[extrasKey] = savedPath;
           if (
             preview?.container &&
@@ -5658,7 +5656,7 @@
 
       function normalizePlaylistSource(value) {
         const normalized = String(value || "").toLowerCase();
-        if (normalized === "spotify" || normalized === "tidal") {
+        if (normalized === "spotify") {
           return normalized;
         }
         return "plex";
@@ -5671,12 +5669,6 @@
         return String(value).trim();
       }
 
-      function sanitizeTidalUrl(value) {
-        if (value === undefined || value === null) {
-          return "";
-        }
-        return String(value).trim();
-      }
 
       function normalizePopularityBoostMultiplier(value) {
         const parsed = Number.parseFloat(value);
@@ -6053,7 +6045,6 @@
           [
             { value: "plex", label: "Plex" },
             { value: "spotify", label: "Spotify" },
-            { value: "tidal", label: "Tidal" },
           ].forEach((optionData) => {
             const option = document.createElement("option");
             option.value = optionData.value;
@@ -6079,17 +6070,6 @@
             playlist.spotify_url = sanitizeSpotifyUrl(event.target.value);
           });
           spotifyUrlLabel.appendChild(spotifyUrlInput);
-
-          const tidalUrlLabel = document.createElement("label");
-          tidalUrlLabel.textContent = "Tidal Playlist URL";
-          const tidalUrlInput = document.createElement("input");
-          tidalUrlInput.type = "url";
-          tidalUrlInput.placeholder = "https://tidal.com/browse/playlist/...";
-          tidalUrlInput.value = playlist.tidal_url || "";
-          tidalUrlInput.addEventListener("input", (event) => {
-            playlist.tidal_url = sanitizeTidalUrl(event.target.value);
-          });
-          tidalUrlLabel.appendChild(tidalUrlInput);
 
           const limitLabel = document.createElement("label");
           limitLabel.textContent = "Limit";
@@ -6338,7 +6318,6 @@
           grid.appendChild(nameLabel);
           grid.appendChild(sourceLabel);
           grid.appendChild(spotifyUrlLabel);
-          grid.appendChild(tidalUrlLabel);
           grid.appendChild(limitLabel);
           grid.appendChild(artistLimitLabel);
           grid.appendChild(albumLimitLabel);
@@ -6435,7 +6414,6 @@
             addFilterBtn.style.display = usesPlex ? "" : "none";
             boostsPopout.style.display = usesPlex ? "" : "none";
             spotifyUrlLabel.style.display = source === "spotify" ? "" : "none";
-            tidalUrlLabel.style.display = source === "tidal" ? "" : "none";
           };
 
           updateSourceUi();
@@ -6531,13 +6509,9 @@
             const spotifyUrl = sanitizeSpotifyUrl(
               playlist.spotify_url || playlist.extras?.spotify_url || ""
             );
-            const tidalUrl = sanitizeTidalUrl(
-              playlist.tidal_url || playlist.extras?.tidal_url || ""
-            );
             const extras = { ...(playlist.extras || {}) };
             delete extras.source;
             delete extras.spotify_url;
-            delete extras.tidal_url;
 
             const entry = {
               name: playlistName,
@@ -6563,7 +6537,6 @@
               extras,
               source: normalizedSource,
               spotify_url: normalizedSource === "spotify" ? spotifyUrl : "",
-              tidal_url: normalizedSource === "tidal" ? tidalUrl : "",
             };
             entry._originalName = playlistName;
             entry._collapsed = true;
@@ -6643,11 +6616,9 @@
           playlists: state.playlists.map((playlist) => {
             const source = normalizePlaylistSource(playlist.source);
             const spotifyUrl = sanitizeSpotifyUrl(playlist.spotify_url);
-            const tidalUrl = sanitizeTidalUrl(playlist.tidal_url);
             const extras = sanitizeExtras(playlist.extras || {});
             delete extras.source;
             delete extras.spotify_url;
-            delete extras.tidal_url;
 
             return {
               name: playlist.name || "",
@@ -6666,7 +6637,6 @@
               extras,
               source,
               spotify_url: source === "spotify" ? spotifyUrl : "",
-              tidal_url: source === "tidal" ? tidalUrl : "",
             };
           }),
         };
@@ -6719,11 +6689,9 @@
 
         const source = normalizePlaylistSource(playlist.source);
         const spotifyUrl = sanitizeSpotifyUrl(playlist.spotify_url);
-        const tidalUrl = sanitizeTidalUrl(playlist.tidal_url);
         const extras = sanitizeExtras(playlist.extras || {});
         delete extras.source;
         delete extras.spotify_url;
-        delete extras.tidal_url;
 
         const payload = {
           playlist: {
@@ -6743,7 +6711,6 @@
             extras,
             source,
             spotify_url: source === "spotify" ? spotifyUrl : "",
-            tidal_url: source === "tidal" ? tidalUrl : "",
           },
           original_name: playlist._originalName || "",
         };
@@ -7068,7 +7035,6 @@
           extras: {},
           source: "plex",
           spotify_url: "",
-          tidal_url: "",
           _originalName: "",
           _collapsed: false,
           _boostsOpen: false,
