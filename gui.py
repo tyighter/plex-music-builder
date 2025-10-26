@@ -1462,8 +1462,14 @@ class BuildManager:
         playlist_name = self._extract_playlist_from_message(info_message)
         lowercase_message = info_message.lower()
         with self._lock:
-            if not is_bootstrap:
-                self._update_passive_state_from_message_locked(playlist_name, info_message)
+            if is_bootstrap:
+                self._passive_last_message = info_message
+                if not self._processes:
+                    self._last_message = info_message
+            else:
+                self._update_passive_state_from_message_locked(
+                    playlist_name, info_message
+                )
                 self._update_waiting_playlists_locked(info_message, playlist_name)
             if playlist_name:
                 if handled_progress and playlist_name == progress_playlist:
@@ -1471,18 +1477,25 @@ class BuildManager:
                 is_start_message = lowercase_message.startswith(
                     "building playlist:"
                 ) or lowercase_message.startswith("build started for playlist")
-                if lowercase_message.startswith("building playlist:"):
-                    self._playlist_logs[playlist_name] = []
-                if is_start_message:
-                    self._mark_playlist_started_locked(playlist_name)
-                self._append_playlist_log_locked(playlist_name, info_message)
-                if (
-                    lowercase_message.startswith("✅ finished building")
-                    or "failed" in lowercase_message
-                    or "stopped" in lowercase_message
+                if not is_bootstrap and lowercase_message.startswith(
+                    "building playlist:"
                 ):
-                    self._mark_playlist_completed_locked(playlist_name)
-            elif not handled_progress:
+                    self._playlist_logs[playlist_name] = []
+                if not is_bootstrap and is_start_message:
+                    self._mark_playlist_started_locked(playlist_name)
+                if is_bootstrap:
+                    if not self._processes:
+                        self._last_message = info_message
+                        self._passive_last_message = info_message
+                else:
+                    self._append_playlist_log_locked(playlist_name, info_message)
+                    if (
+                        lowercase_message.startswith("✅ finished building")
+                        or "failed" in lowercase_message
+                        or "stopped" in lowercase_message
+                    ):
+                        self._mark_playlist_completed_locked(playlist_name)
+            elif not handled_progress and not is_bootstrap:
                 self._append_general_log_locked(info_message)
 
     def _consume_process_output(

@@ -1412,13 +1412,19 @@
         box-shadow: inset 0 0 0 1px rgba(229, 160, 13, 0.2), 0 10px 30px rgba(229, 160, 13, 0.12);
       }
 
+      .build-status-logs-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
       .playlist-log-toggle {
         cursor: pointer;
         background: none;
         border: none;
         border-radius: 0;
         padding: 0;
-        width: 100%;
+        flex: 1 1 auto;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -1429,6 +1435,20 @@
         color: rgba(255, 255, 255, 0.6);
         transition: color 0.2s ease;
         box-shadow: none;
+      }
+
+      .playlist-log-clear {
+        flex: 0 0 auto;
+        padding: 6px 14px;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .playlist-log-clear:disabled,
+      .playlist-log-clear[aria-disabled="true"] {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
 
       .playlist-log-toggle:hover,
@@ -2068,15 +2088,28 @@
             </div>
           </div>
           <div id="buildStatusLogs" class="build-status-logs">
-            <button
-              id="playlistActivityToggle"
-              class="playlist-log-toggle"
-              type="button"
-              aria-expanded="true"
-            >
-              <span class="playlist-log-toggle-label">Activity</span>
-              <span class="playlist-log-toggle-icon" aria-hidden="true">▾</span>
-            </button>
+            <div class="build-status-logs-toolbar">
+              <button
+                id="playlistActivityToggle"
+                class="playlist-log-toggle"
+                type="button"
+                aria-expanded="true"
+              >
+                <span class="playlist-log-toggle-label">Activity</span>
+                <span class="playlist-log-toggle-icon" aria-hidden="true">▾</span>
+              </button>
+              <button
+                id="clearActivityBtn"
+                class="playlist-log-clear secondary"
+                type="button"
+                title="Dismiss all activity messages"
+                aria-label="Dismiss all activity messages"
+                aria-disabled="true"
+                disabled
+              >
+                Clear All
+              </button>
+            </div>
             <div id="buildLogContainer" class="build-log-list"></div>
           </div>
         </div>
@@ -2152,6 +2185,7 @@
       const playlistActivityToggle = document.getElementById(
         "playlistActivityToggle"
       );
+      const clearActivityBtn = document.getElementById("clearActivityBtn");
       const buildLogContainer = document.getElementById("buildLogContainer");
       const playlistMessageTimeouts = new WeakMap();
       let latestBuildStatus = null;
@@ -2229,6 +2263,30 @@
       const dismissedActivityKeys = new Set(loadDismissedActivityKeys());
       const activityEntryLastSeen = new Map();
       let playlistSearchTerm = "";
+
+      function updateActivityCollapseUi() {
+        const collapsed = Boolean(isActivityCollapsed);
+        if (buildStatusLogs) {
+          buildStatusLogs.classList.toggle("collapsed", collapsed);
+        }
+        if (playlistActivityToggle) {
+          playlistActivityToggle.setAttribute(
+            "aria-expanded",
+            collapsed ? "false" : "true"
+          );
+          const icon = playlistActivityToggle.querySelector(
+            ".playlist-log-toggle-icon"
+          );
+          if (icon) {
+            icon.textContent = collapsed ? "▸" : "▾";
+          }
+        }
+      }
+
+      function setActivityCollapsed(collapsed) {
+        isActivityCollapsed = Boolean(collapsed);
+        updateActivityCollapseUi();
+      }
 
       function setConfigStatusMessage(text, isError = false) {
         if (!configStatusMessage) {
@@ -2318,16 +2376,31 @@
         }
 
         let shouldPersist = false;
+        const cancelledPlaylists = new Set();
         entries.forEach((entry) => {
           const activityKey = entry?.dataset?.activityKey;
           if (activityKey && !dismissedActivityKeys.has(activityKey)) {
             dismissedActivityKeys.add(activityKey);
             shouldPersist = true;
           }
+
+          if (entry?.classList?.contains("cancellation-entry")) {
+            const playlistName = entry?.dataset?.playlistName;
+            if (playlistName) {
+              cancelledPlaylists.add(playlistName);
+            }
+          }
         });
 
         activityEntryLastSeen.clear();
         buildLogContainer.innerHTML = "";
+
+        if (cancelledPlaylists.size) {
+          cancelledPlaylists.forEach((name) => {
+            playlistCancellationMessages.delete(name);
+            playlistCancellationCutoffs.delete(name);
+          });
+        }
 
         if (shouldPersist) {
           persistDismissedActivityKeys();
@@ -3732,6 +3805,8 @@
           return;
         }
 
+        updateActivityCollapseUi();
+
         const nowMs = Date.now();
         Array.from(playlistCancellationMessages.entries()).forEach(
           ([name, info]) => {
@@ -4109,6 +4184,7 @@
           if (hasCancellationMessage) {
             const cancellationEntry = document.createElement("div");
             cancellationEntry.className = "playlist-log-entry cancellation-entry";
+            cancellationEntry.dataset.playlistName = trimmedName;
             const messageRow = document.createElement("div");
             messageRow.className = "playlist-log-message";
             const messageText = document.createElement("div");
@@ -4170,11 +4246,20 @@
               return false;
             }
             entry.text = textValue;
+            const normalizedTextLower = textValue.toLowerCase();
+            const isSuccessEntry =
+              textValue.startsWith("✅") ||
+              normalizedTextLower.includes("finished successfully");
             const timestampMs = parseTimestampMs(entry.timestamp);
-            if (timestampMs === null) {
-              return true;
+            if (timestampMs !== null) {
+              const retentionLimit = isSuccessEntry
+                ? ACTIVITY_ENTRY_TTL_MS
+                : GENERAL_ACTIVITY_RETENTION_MS;
+              if (nowMs - timestampMs > retentionLimit) {
+                return false;
+              }
             }
-            return nowMs - timestampMs <= GENERAL_ACTIVITY_RETENTION_MS;
+            return true;
           })
           .slice(-3);
 
@@ -4255,6 +4340,23 @@
             ? "Waiting for playlist activity…"
             : "No playlist activity recorded yet.";
           buildLogContainer.appendChild(empty);
+        }
+
+        if (clearActivityBtn) {
+          const hasDismissibleEntries = Boolean(
+            buildLogContainer.querySelector(
+              ".playlist-log-entry[data-activity-key]"
+            )
+          );
+          const hasCancellationEntries = Boolean(
+            buildLogContainer.querySelector(".playlist-log-entry.cancellation-entry")
+          );
+          const canClear = hasDismissibleEntries || hasCancellationEntries;
+          clearActivityBtn.disabled = !canClear;
+          clearActivityBtn.setAttribute(
+            "aria-disabled",
+            clearActivityBtn.disabled ? "true" : "false"
+          );
         }
       }
 
@@ -7052,6 +7154,22 @@
 
       if (buildToggleBtn) {
         buildToggleBtn.addEventListener("click", toggleBuild);
+      }
+
+      if (playlistActivityToggle) {
+        updateActivityCollapseUi();
+        playlistActivityToggle.addEventListener("click", () => {
+          setActivityCollapsed(!isActivityCollapsed);
+        });
+      } else {
+        updateActivityCollapseUi();
+      }
+
+      if (clearActivityBtn) {
+        clearActivityBtn.addEventListener("click", () => {
+          dismissAllActivityEntries();
+          updateBuildLogsUi(latestBuildStatus);
+        });
       }
 
       const containerLifecycleEvents = ["pagehide", "beforeunload"];
