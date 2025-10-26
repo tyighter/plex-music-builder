@@ -179,6 +179,26 @@ class _WildcardFailureLibrary:
         return []
 
 
+class _MultipleWildcardLibrary:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, **kwargs):
+        self.calls.append(kwargs)
+        filters = kwargs.get("filters", {})
+        title = filters.get("artist.title")
+        if title == "Griz":
+            return [_DummyTrack("artist-griz")]
+        if title == "Pretty Lights":
+            return [_DummyTrack("artist-pretty")]
+        if filters.get("parentTitle") == "Malibu Ken":
+            return [_DummyTrack("album-malibu")]
+        return []
+
+    def searchTracks(self):
+        raise AssertionError("searchTracks should not be called when wildcard queries succeed")
+
+
 def test_fetch_tracks_expands_multi_value_filters_and_deduplicates():
     main = _load_main_module()
 
@@ -355,3 +375,45 @@ def test_prefetch_tracks_skips_full_library_when_wildcard_rejected():
     assert [track.ratingKey for track in tracks] == ["beatles-1"]
     assert stats is not None and stats["requests"] == 1
     assert library.search_tracks_called is False
+
+
+def test_prefetch_tracks_handles_multiple_wildcard_filters_independently():
+    main = _load_main_module()
+
+    library = _MultipleWildcardLibrary()
+
+    wildcard_filters = [
+        main._compile_filter_entry(
+            {
+                "field": "artist",
+                "operator": "contains",
+                "value": ["Griz", "Pretty Lights"],
+                "match_all": False,
+                "wildcard": True,
+            }
+        ),
+        main._compile_filter_entry(
+            {
+                "field": "album",
+                "operator": "contains",
+                "value": "Malibu Ken",
+                "wildcard": True,
+            }
+        ),
+    ]
+
+    tracks, stats = main._prefetch_tracks_for_filters(
+        library, [], wildcard_filters, logging.getLogger("test")
+    )
+
+    assert [track.ratingKey for track in tracks] == [
+        "artist-griz",
+        "artist-pretty",
+        "album-malibu",
+    ]
+    assert stats is not None and stats["requests"] == 3
+    assert library.calls == [
+        {"libtype": "track", "filters": {"artist.title": "Griz"}},
+        {"libtype": "track", "filters": {"artist.title": "Pretty Lights"}},
+        {"libtype": "track", "filters": {"parentTitle": "Malibu Ken"}},
+    ]
