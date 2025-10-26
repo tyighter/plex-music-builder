@@ -4150,6 +4150,18 @@ def _build_server_side_search_filters(
     return server_kwargs, server_filters, multi_value_filters
 
 
+def _track_identity(track: Any) -> Any:
+    """Return a stable identifier for deduplicating Plex track objects."""
+
+    rating_key = getattr(track, "ratingKey", None)
+    if rating_key is not None:
+        return ("ratingKey", str(rating_key))
+    guid = getattr(track, "guid", None)
+    if guid:
+        return ("guid", str(guid))
+    return ("id", id(track))
+
+
 def _fetch_tracks_with_server_filters(
     library: Any,
     base_kwargs: Dict[str, Any],
@@ -4263,21 +4275,12 @@ def _fetch_tracks_with_server_filters(
     total_before = 0
     duplicates_removed = 0
 
-    def identity(track: Any) -> Any:
-        rating_key = getattr(track, "ratingKey", None)
-        if rating_key is not None:
-            return ("ratingKey", str(rating_key))
-        guid = getattr(track, "guid", None)
-        if guid:
-            return ("guid", str(guid))
-        return ("id", id(track))
-
     for track_list in results:
         if not track_list:
             continue
         for track in track_list:
             total_before += 1
-            key = identity(track)
+            key = _track_identity(track)
             if key in seen_keys:
                 duplicates_removed += 1
                 continue
@@ -4291,6 +4294,95 @@ def _fetch_tracks_with_server_filters(
     }
 
     return combined, stats
+
+
+
+def _prefetch_tracks_for_filters(
+    library: Any,
+    regular_filters: Sequence[CompiledFilter],
+    wildcard_filters: Sequence[CompiledFilter],
+    log: Optional[logging.Logger] = None,
+) -> Tuple[List[Any], Optional[Dict[str, int]]]:
+    """Fetch tracks for the provided filters, including wildcard-only matches."""
+
+    server_kwargs, server_filter_dict, multi_value_filters = _build_server_side_search_filters(
+        regular_filters
+    )
+    wildcard_kwargs, wildcard_filter_dict, wildcard_multi_value_filters = _build_server_side_search_filters(
+        wildcard_filters
+    )
+
+    fetch_stats: Optional[Dict[str, int]] = None
+    all_tracks: List[Any] = []
+    any_server_fetch = False
+    seen_keys: Set[Any] = set()
+
+    def _accumulate_stats(
+        existing: Optional[Dict[str, int]], addition: Dict[str, int]
+    ) -> Optional[Dict[str, int]]:
+        if not addition:
+            return existing
+        if existing is None:
+            return dict(addition)
+        for key in ("requests", "original_count", "duplicates_removed"):
+            existing[key] = existing.get(key, 0) + addition.get(key, 0)
+        return existing
+
+    if server_kwargs or server_filter_dict or multi_value_filters:
+        any_server_fetch = True
+        if log and log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "Fetching tracks with regular server-side filters: kwargs=%s, filters=%s, multi_value=%s",
+                server_kwargs,
+                server_filter_dict,
+                multi_value_filters,
+            )
+        regular_tracks, regular_stats = _fetch_tracks_with_server_filters(
+            library,
+            server_kwargs,
+            server_filter_dict,
+            multi_value_filters,
+            logger=log,
+        )
+        fetch_stats = _accumulate_stats(fetch_stats, regular_stats)
+        all_tracks.extend(regular_tracks)
+        seen_keys.update(_track_identity(track) for track in regular_tracks)
+
+    if wildcard_kwargs or wildcard_filter_dict or wildcard_multi_value_filters:
+        any_server_fetch = True
+        if log and log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "Fetching tracks with wildcard server-side filters: kwargs=%s, filters=%s, multi_value=%s",
+                wildcard_kwargs,
+                wildcard_filter_dict,
+                wildcard_multi_value_filters,
+            )
+        wildcard_tracks, wildcard_stats = _fetch_tracks_with_server_filters(
+            library,
+            wildcard_kwargs,
+            wildcard_filter_dict,
+            wildcard_multi_value_filters,
+            logger=log,
+        )
+        fetch_stats = _accumulate_stats(fetch_stats, wildcard_stats)
+        duplicates = 0
+        for track in wildcard_tracks:
+            key = _track_identity(track)
+            if key in seen_keys:
+                duplicates += 1
+                continue
+            seen_keys.add(key)
+            all_tracks.append(track)
+        if duplicates:
+            if fetch_stats is None:
+                fetch_stats = {"requests": 0, "original_count": 0, "duplicates_removed": duplicates}
+            else:
+                fetch_stats["duplicates_removed"] = fetch_stats.get("duplicates_removed", 0) + duplicates
+
+    if not any_server_fetch:
+        return list(library.searchTracks()), None
+
+    return all_tracks, fetch_stats
 
 
 
@@ -5142,28 +5234,10 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                 name,
             )
 
-    server_kwargs, server_filter_dict, multi_value_filters = _build_server_side_search_filters(regular_filters)
-
     fetch_start = time.perf_counter()
-    fetch_stats = None
-    if server_kwargs or server_filter_dict or multi_value_filters:
-        if log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                "Fetching tracks for '%s' with server-side filters: kwargs=%s, filters=%s, multi_value=%s",
-                name,
-                server_kwargs,
-                server_filter_dict,
-                multi_value_filters,
-            )
-        all_tracks, fetch_stats = _fetch_tracks_with_server_filters(
-            library,
-            server_kwargs,
-            server_filter_dict,
-            multi_value_filters,
-            logger=log,
-        )
-    else:
-        all_tracks = library.searchTracks()
+    all_tracks, fetch_stats = _prefetch_tracks_for_filters(
+        library, regular_filters, wildcard_filters, log
+    )
 
     total_tracks = len(all_tracks)
     fetch_duration = time.perf_counter() - fetch_start
