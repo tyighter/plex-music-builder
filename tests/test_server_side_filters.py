@@ -81,7 +81,7 @@ def test_server_filters_map_artist_title_to_server_query():
     server_kwargs, server_filters, multi_filters = main._build_server_side_search_filters([compiled])
 
     assert server_kwargs == {}
-    assert server_filters == {"artist.title": "The Beatles"}
+    assert server_filters == {"grandparentTitle": "The Beatles"}
     assert multi_filters == []
 
 
