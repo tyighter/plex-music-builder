@@ -45,7 +45,9 @@ def test_parse_spotify_entity_tracks_skips_local_and_missing():
     }
 
     parsed = main._parse_spotify_entity_tracks(entity)
-    assert parsed == [{"title": "Cloud Song", "artist": "Artist"}]
+    assert parsed == [
+        {"title": "Cloud Song", "artist": "Artist", "album": "Great Album"}
+    ]
 
 
 def test_extract_spotify_entity_payload_handles_json_parse_decode():
@@ -171,8 +173,12 @@ def test_extract_spotify_entity_payload_handles_next_data_tracks():
     tracks = main._parse_spotify_entity_tracks(parsed)
 
     assert tracks == [
-        {"title": "Next Song", "artist": "Next Artist"},
-        {"title": "Another Song", "artist": "Another Artist"},
+        {"title": "Next Song", "artist": "Next Artist", "album": "Next Album"},
+        {
+            "title": "Another Song",
+            "artist": "Another Artist",
+            "album": "Another Album",
+        },
     ]
 
 

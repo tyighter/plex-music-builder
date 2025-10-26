@@ -402,10 +402,13 @@ def get_plex_server():
 raw_playlists = load_yaml(PLAYLISTS_FILE)
 
 
+STREAMING_PLAYLIST_SOURCES = {"spotify", "tidal"}
+
+
 def _normalize_playlist_source(value):
     if isinstance(value, str):
         normalized = value.strip().lower()
-        if normalized in {"plex", "spotify"}:
+        if normalized == "plex" or normalized in STREAMING_PLAYLIST_SOURCES:
             return normalized
     return "plex"
 
@@ -436,7 +439,7 @@ def _merge_playlist_defaults(raw_payload):
         playlist_filters = cfg.get("plex_filter", []) or []
         playlist_boosts = cfg.get("popularity_boosts", []) or []
         combined_filters = []
-        if playlist_source != "spotify":
+        if playlist_source not in STREAMING_PLAYLIST_SOURCES:
             if default_filters:
                 combined_filters.extend(copy.deepcopy(default_filters))
             if playlist_filters:
@@ -448,7 +451,7 @@ def _merge_playlist_defaults(raw_payload):
             combined.pop("plex_filter", None)
 
         combined_boosts = []
-        if playlist_source != "spotify":
+        if playlist_source not in STREAMING_PLAYLIST_SOURCES:
             if default_boosts:
                 combined_boosts.extend(copy.deepcopy(default_boosts))
             if playlist_boosts:
@@ -644,6 +647,142 @@ def _clean_spotify_text(value):
     return text.strip()
 
 
+def _match_streaming_tracks_to_library(
+    streaming_tracks,
+    library,
+    log,
+    service_name,
+):
+    matched_tracks = []
+    unmatched_count = 0
+    artist_search_cache: Dict[str, Tuple[Any, ...]] = {}
+
+    for position, streaming_track in enumerate(streaming_tracks, 1):
+        raw_title = streaming_track.get("title") or ""
+        raw_album = streaming_track.get("album") or ""
+        raw_artist = streaming_track.get("artist") or ""
+
+        title = _clean_spotify_text(raw_title)
+        album = _clean_spotify_text(raw_album)
+        artist = _strip_parenthetical(raw_artist)
+
+        normalized_title = _normalize_compare_value(title)
+        normalized_album = _normalize_compare_value(album)
+        normalized_artist = _normalize_compare_value(artist)
+
+        def _execute_filter_search(params):
+            filters = _build_track_search_filters_from_params(params)
+            if not filters:
+                return []
+            try:
+                results = library.search(libtype="track", filters=filters)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                log.warning(
+                    "%s search failed for '%s' by '%s' (query=%s): %s",
+                    service_name,
+                    raw_title or "<unknown>",
+                    raw_artist or "<unknown>",
+                    params,
+                    exc,
+                )
+                return []
+            return list(results or [])
+
+        def _run_library_search():
+            search_attempts = [
+                {"title": title, "album": album, "artist": artist},
+                {"title": title, "artist": artist},
+                {"title": title, "album": album},
+                {"title": title},
+            ]
+
+            for params in search_attempts:
+                query = {key: value for key, value in params.items() if value}
+                if not query:
+                    continue
+                results = _execute_filter_search(query)
+                if results:
+                    return results
+            return []
+
+        artist_results = []
+        if artist:
+            artist_cache_key = normalized_artist
+            if artist_cache_key in artist_search_cache:
+                cached = artist_search_cache[artist_cache_key]
+                artist_results = list(cached)
+            else:
+                filters = _build_track_search_filters_from_params({"artist": artist})
+                if filters:
+                    try:
+                        artist_results = list(
+                            library.search(libtype="track", filters=filters) or []
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive logging
+                        log.warning(
+                            "%s search failed when narrowing by artist '%s': %s",
+                            service_name,
+                            artist,
+                            exc,
+                        )
+                        artist_results = []
+                artist_search_cache[artist_cache_key] = tuple(artist_results)
+
+        candidate_pool = artist_results or _run_library_search()
+
+        if not candidate_pool:
+            unmatched_count += 1
+            if log.isEnabledFor(logging.INFO):
+                log.info(
+                    "%s track '%s' by '%s' on '%s' was not found in Plex",
+                    service_name,
+                    raw_title or "<unknown>",
+                    raw_artist or "<unknown>",
+                    raw_album or "<unknown>",
+                )
+            continue
+
+        best_candidate, best_similarity = _select_best_spotify_candidate(
+            candidate_pool,
+            normalized_title,
+            normalized_album,
+            normalized_artist,
+            log,
+        )
+
+        if (
+            artist_results
+            and normalized_title
+            and best_similarity < _SPOTIFY_MATCH_MIN_RATIO
+        ):
+            fallback_results = _run_library_search()
+            if fallback_results:
+                best_candidate, best_similarity = _select_best_spotify_candidate(
+                    fallback_results,
+                    normalized_title,
+                    normalized_album,
+                    normalized_artist,
+                    log,
+                )
+
+        if normalized_title and best_similarity < _SPOTIFY_MATCH_MIN_RATIO:
+            unmatched_count += 1
+            if log.isEnabledFor(logging.INFO):
+                log.info(
+                    "%s track '%s' by '%s' on '%s' was skipped (no close Plex match)",
+                    service_name,
+                    raw_title or "<unknown>",
+                    raw_artist or "<unknown>",
+                    raw_album or "<unknown>",
+                )
+            continue
+
+        if best_candidate:
+            matched_tracks.append(best_candidate)
+
+    return matched_tracks, unmatched_count
+
+
 def _similarity_ratio(left, right):
     if not left or not right:
         return 0.0
@@ -720,6 +859,21 @@ _SPOTIFY_REQUEST_HEADERS = {
 }
 _SPOTIFY_EMBED_PLAYLIST_URL_TEMPLATE = "https://open.spotify.com/embed/playlist/{playlist_id}"
 
+_TIDAL_PLAYLIST_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$"
+)
+_TIDAL_REQUEST_HEADERS = {
+    "User-Agent": _SPOTIFY_REQUEST_HEADERS["User-Agent"],
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Origin": "https://tidal.com",
+    "Referer": "https://tidal.com/",
+    "X-Tidal-Token": "wdgaB1CilGA-SQxgwZiewQ",
+}
+_TIDAL_API_BASE_URL = "https://listen.tidal.com/v1"
+_TIDAL_COUNTRY_CODE = "US"
+_TIDAL_TRACKS_LIMIT = 100
+
 
 def _extract_spotify_playlist_id(raw_url):
     if not raw_url:
@@ -753,6 +907,125 @@ def _build_spotify_embed_playlist_url(normalized_url):
     return _SPOTIFY_EMBED_PLAYLIST_URL_TEMPLATE.format(playlist_id=playlist_id)
 
 
+def _extract_tidal_playlist_id(raw_url):
+    if not raw_url:
+        raise ValueError("Invalid Tidal playlist URL: empty value")
+
+    candidate = str(raw_url).strip()
+    if not candidate:
+        raise ValueError("Invalid Tidal playlist URL: empty value")
+
+    if _TIDAL_PLAYLIST_ID_RE.match(candidate):
+        return candidate.lower()
+
+    parsed = urlparse(candidate)
+    if parsed.scheme in {"http", "https"} and parsed.netloc.lower().endswith("tidal.com"):
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if len(path_parts) >= 2 and path_parts[-2].lower() == "playlist":
+            playlist_id = path_parts[-1]
+            if _TIDAL_PLAYLIST_ID_RE.match(playlist_id):
+                return playlist_id.lower()
+
+    raise ValueError(f"Invalid Tidal playlist URL: {raw_url!r}")
+
+
+def _normalize_tidal_playlist_url(raw_url):
+    playlist_id = _extract_tidal_playlist_id(raw_url)
+    return f"https://tidal.com/browse/playlist/{playlist_id}"
+
+
+def _fetch_tidal_tracks_page(playlist_id, offset, log):
+    params = {
+        "countryCode": _TIDAL_COUNTRY_CODE,
+        "limit": _TIDAL_TRACKS_LIMIT,
+        "offset": offset,
+    }
+    url = f"{_TIDAL_API_BASE_URL}/playlists/{playlist_id}/tracks"
+
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("Fetching Tidal playlist page %s from %s", offset, url)
+
+    try:
+        response = requests.get(
+            url,
+            headers=_TIDAL_REQUEST_HEADERS,
+            params=params,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Tidal request failed for {url}: {exc}") from exc
+
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("Tidal response for %s: %s", url, _summarize_http_response(response))
+
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(
+            "Tidal request returned an error for %s: %s"
+            % (url, _summarize_http_response(response))
+        ) from exc
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"Tidal response from {url} was not valid JSON: {exc}") from exc
+
+
+def _parse_tidal_track_entry(entry):
+    if not isinstance(entry, dict):
+        return None
+
+    track_info = entry.get("item") or entry.get("track") or entry
+    if not isinstance(track_info, dict):
+        return None
+
+    title = track_info.get("title") or track_info.get("name") or ""
+    if not title:
+        return None
+
+    album_info = track_info.get("album") or {}
+    if not isinstance(album_info, dict):
+        album_info = {}
+    album = (
+        album_info.get("title")
+        or album_info.get("name")
+        or track_info.get("albumTitle")
+        or ""
+    )
+
+    artists = track_info.get("artists")
+    if isinstance(artists, list) and artists:
+        artist_entry = artists[0]
+        if isinstance(artist_entry, dict):
+            artist = (
+                artist_entry.get("name")
+                or artist_entry.get("title")
+                or artist_entry.get("artistName")
+                or ""
+            )
+        else:
+            artist = str(artist_entry)
+    else:
+        artist = track_info.get("artist") or track_info.get("artistName") or ""
+
+    return {"title": title, "artist": artist, "album": album}
+
+
+def _parse_tidal_tracks(payload):
+    if not isinstance(payload, dict):
+        return []
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return []
+
+    parsed = []
+    for entry in items:
+        track_data = _parse_tidal_track_entry(entry)
+        if track_data:
+            parsed.append(track_data)
+    return parsed
 def _collect_tracks_from_next_data(root_node):
     tracks = []
     seen_keys = set()
@@ -1069,10 +1342,16 @@ def _parse_spotify_entity_tracks(entity_payload):
             if isinstance(artist_entry, dict):
                 primary_artist = artist_entry.get("name") or ""
 
+        album_info = track_info.get("album") or {}
+        album_name = ""
+        if isinstance(album_info, dict):
+            album_name = album_info.get("name") or album_info.get("title") or ""
+
         parsed_tracks.append(
             {
                 "title": track_info.get("name") or "",
                 "artist": primary_artist,
+                "album": album_name,
             }
         )
 
@@ -1096,134 +1375,11 @@ def _build_track_search_filters_from_params(params: Dict[str, Any]) -> Dict[str,
 
 
 def _match_spotify_tracks_to_library(spotify_tracks, library, log):
-    matched_tracks = []
-    unmatched_count = 0
-    artist_search_cache: Dict[str, Tuple[Any, ...]] = {}
-
-    for position, spotify_track in enumerate(spotify_tracks, 1):
-        raw_title = spotify_track.get("title") or ""
-        raw_album = spotify_track.get("album") or ""
-        raw_artist = spotify_track.get("artist") or ""
-
-        title = _clean_spotify_text(raw_title)
-        album = _clean_spotify_text(raw_album)
-        artist = _strip_parenthetical(raw_artist)
-
-        normalized_title = _normalize_compare_value(title)
-        normalized_album = _normalize_compare_value(album)
-        normalized_artist = _normalize_compare_value(artist)
-
-        def _execute_filter_search(params):
-            filters = _build_track_search_filters_from_params(params)
-            if not filters:
-                return []
-            try:
-                results = library.search(libtype="track", filters=filters)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                log.warning(
-                    "Spotify search failed for '%s' by '%s' (query=%s): %s",
-                    raw_title or "<unknown>",
-                    raw_artist or "<unknown>",
-                    params,
-                    exc,
-                )
-                return []
-            return list(results or [])
-
-        def _run_library_search():
-            search_attempts = [
-                {"title": title, "album": album, "artist": artist},
-                {"title": title, "artist": artist},
-                {"title": title, "album": album},
-                {"title": title},
-            ]
-
-            for params in search_attempts:
-                query = {key: value for key, value in params.items() if value}
-                if not query:
-                    continue
-                results = _execute_filter_search(query)
-                if results:
-                    return results
-            return []
-
-        artist_results = []
-        if artist:
-            artist_cache_key = normalized_artist
-            if artist_cache_key in artist_search_cache:
-                cached = artist_search_cache[artist_cache_key]
-                artist_results = list(cached)
-            else:
-                filters = _build_track_search_filters_from_params({"artist": artist})
-                if filters:
-                    try:
-                        artist_results = list(
-                            library.search(libtype="track", filters=filters) or []
-                        )
-                    except Exception as exc:  # pragma: no cover - defensive logging
-                        log.warning(
-                            "Spotify search failed when narrowing by artist '%s': %s",
-                            artist,
-                            exc,
-                        )
-                        artist_results = []
-                artist_search_cache[artist_cache_key] = tuple(artist_results)
-
-        candidate_pool = artist_results or _run_library_search()
-
-        if not candidate_pool:
-            unmatched_count += 1
-            if log.isEnabledFor(logging.INFO):
-                log.info(
-                    "Spotify track '%s' by '%s' on '%s' was not found in Plex",
-                    raw_title or "<unknown>",
-                    raw_artist or "<unknown>",
-                    raw_album or "<unknown>",
-                )
-            continue
-
-        best_candidate, best_similarity = _select_best_spotify_candidate(
-            candidate_pool,
-            normalized_title,
-            normalized_album,
-            normalized_artist,
-            log,
-        )
-
-        if (
-            artist_results
-            and normalized_title
-            and best_similarity < _SPOTIFY_MATCH_MIN_RATIO
-        ):
-            fallback_results = _run_library_search()
-            if fallback_results:
-                best_candidate, best_similarity = _select_best_spotify_candidate(
-                    fallback_results,
-                    normalized_title,
-                    normalized_album,
-                    normalized_artist,
-                    log,
-                )
-
-        if normalized_title and best_similarity < _SPOTIFY_MATCH_MIN_RATIO:
-            unmatched_count += 1
-            if log.isEnabledFor(logging.INFO):
-                log.info(
-                    "Spotify track '%s' by '%s' on '%s' was skipped (no close Plex match)",
-                    raw_title or "<unknown>",
-                    raw_artist or "<unknown>",
-                    raw_album or "<unknown>",
-                )
-            continue
-
-        if best_candidate:
-            matched_tracks.append(best_candidate)
-
-    return matched_tracks, unmatched_count
+    return _match_streaming_tracks_to_library(spotify_tracks, library, log, "Spotify")
 
 
-def _summarize_spotify_response(response, preview_limit=200):
-    """Return a compact string describing a Spotify HTTP response."""
+def _summarize_http_response(response, preview_limit=200):
+    """Return a compact string describing an HTTP response for logging."""
 
     status_code = getattr(response, "status_code", "<unknown>")
     content_length = "<unknown>"
@@ -1272,14 +1428,14 @@ def _fetch_spotify_playlist_response(url, log):
         raise RuntimeError(f"Spotify request failed for {url}: {exc}") from exc
 
     if log.isEnabledFor(logging.DEBUG):
-        log.debug("Spotify response for %s: %s", url, _summarize_spotify_response(response))
+        log.debug("Spotify response for %s: %s", url, _summarize_http_response(response))
 
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
         raise RuntimeError(
             "Spotify request returned an error for %s: %s"
-            % (url, _summarize_spotify_response(response))
+            % (url, _summarize_http_response(response))
         ) from exc
 
     return response
@@ -1310,7 +1466,7 @@ def _collect_spotify_tracks(spotify_url, library, log):
                 % (
                     normalized_url,
                     primary_exc,
-                    _summarize_spotify_response(response),
+                    _summarize_http_response(response),
                     embed_url,
                     embed_request_exc,
                 )
@@ -1325,10 +1481,10 @@ def _collect_spotify_tracks(spotify_url, library, log):
                 % (
                     normalized_url,
                     primary_exc,
-                    _summarize_spotify_response(response),
+                    _summarize_http_response(response),
                     embed_url,
                     embed_parse_exc,
-                    _summarize_spotify_response(embed_response),
+                    _summarize_http_response(embed_response),
                 )
             ) from embed_parse_exc
 
@@ -1342,6 +1498,61 @@ def _collect_spotify_tracks(spotify_url, library, log):
     stats = {
         "normalized_url": normalized_url,
         "total_tracks": len(spotify_tracks),
+        "matched_tracks": len(matched_tracks),
+        "unmatched_tracks": unmatched_count,
+    }
+
+    return matched_tracks, stats
+
+
+def _collect_tidal_tracks(tidal_url, library, log):
+    normalized_url = _normalize_tidal_playlist_url(tidal_url)
+
+    if log.isEnabledFor(logging.DEBUG) and tidal_url != normalized_url:
+        log.debug(
+            "Fetching Tidal playlist from %s (normalized from %s)",
+            normalized_url,
+            tidal_url,
+        )
+
+    playlist_id = _extract_tidal_playlist_id(normalized_url)
+
+    offset = 0
+    total_items = None
+    collected_tracks = []
+
+    while True:
+        page_data = _fetch_tidal_tracks_page(playlist_id, offset, log)
+        tracks = _parse_tidal_tracks(page_data)
+        collected_tracks.extend(tracks)
+
+        total_items = page_data.get("totalNumberOfItems", total_items)
+        if total_items is None:
+            total_items = page_data.get("total")
+
+        limit = page_data.get("limit")
+        if not isinstance(limit, int) or limit <= 0:
+            limit = _TIDAL_TRACKS_LIMIT
+
+        offset += limit
+
+        if total_items is not None:
+            if offset >= total_items:
+                break
+        else:
+            if not tracks or len(tracks) < limit:
+                break
+
+    matched_tracks, unmatched_count = _match_streaming_tracks_to_library(
+        collected_tracks,
+        library,
+        log,
+        "Tidal",
+    )
+
+    stats = {
+        "normalized_url": normalized_url,
+        "total_tracks": total_items if isinstance(total_items, int) else len(collected_tracks),
         "matched_tracks": len(matched_tracks),
         "unmatched_tracks": unmatched_count,
     }
@@ -4476,13 +4687,15 @@ def _sort_tracks_in_place(
     return time.perf_counter() - sort_start
 
 
-def _run_spotify_playlist_build(
+def _run_streaming_playlist_build(
+    service_name,
+    collector,
     name,
     config,
     log,
     plex_server,
     library,
-    spotify_url,
+    playlist_url,
     resolved_sort_by,
     sort_desc,
     resolved_after_sort,
@@ -4494,13 +4707,14 @@ def _run_spotify_playlist_build(
     limit,
 ):
     fetch_start = time.perf_counter()
-    if not spotify_url:
+    if not playlist_url:
         log.warning(
-            "Spotify playlist '%s' does not have a URL configured; no tracks will be added.",
+            "%s playlist '%s' does not have a URL configured; no tracks will be added.",
+            service_name,
             name,
         )
         matched_tracks: List[Any] = []
-        spotify_stats = {
+        streaming_stats = {
             "normalized_url": "",
             "total_tracks": 0,
             "matched_tracks": 0,
@@ -4508,51 +4722,55 @@ def _run_spotify_playlist_build(
         }
     else:
         try:
-            matched_tracks, spotify_stats = _collect_spotify_tracks(
-                spotify_url,
+            matched_tracks, streaming_stats = collector(
+                playlist_url,
                 library,
                 log,
             )
         except Exception as exc:
             log.error(
-                "Failed to load Spotify playlist for '%s' from '%s': %s",
+                "Failed to load %s playlist for '%s' from '%s': %s",
+                service_name,
                 name,
-                spotify_url,
+                playlist_url,
                 exc,
             )
             matched_tracks = []
-            spotify_stats = {
-                "normalized_url": spotify_url,
+            streaming_stats = {
+                "normalized_url": playlist_url,
                 "total_tracks": 0,
                 "matched_tracks": 0,
                 "unmatched_tracks": 0,
             }
 
     fetch_duration = time.perf_counter() - fetch_start
-    total_tracks = spotify_stats.get("total_tracks", 0)
+    total_tracks = streaming_stats.get("total_tracks", 0)
     matched_total = len(matched_tracks)
-    normalized_url = spotify_stats.get("normalized_url")
+    normalized_url = streaming_stats.get("normalized_url")
 
     if normalized_url:
         log.info(
-            "Matched %s of %s track(s) from Spotify playlist %s",
+            "Matched %s of %s track(s) from %s playlist %s",
             matched_total,
             total_tracks,
+            service_name,
             normalized_url,
         )
     else:
         log.info(
-            "Matched %s of %s track(s) from Spotify playlist '%s'",
+            "Matched %s of %s track(s) from %s playlist '%s'",
             matched_total,
             total_tracks,
+            service_name,
             name,
         )
 
-    unmatched = spotify_stats.get("unmatched_tracks", 0)
+    unmatched = streaming_stats.get("unmatched_tracks", 0)
     if unmatched:
         log.warning(
-            "Unable to match %s Spotify track(s) for playlist '%s'",
+            "Unable to match %s %s track(s) for playlist '%s'",
             unmatched,
+            service_name,
             name,
         )
 
@@ -4807,6 +5025,82 @@ def _run_spotify_playlist_build(
     log.info(f"✅ Finished building '{name}' ({match_count} tracks)")
 
 
+def _run_spotify_playlist_build(
+    name,
+    config,
+    log,
+    plex_server,
+    library,
+    spotify_url,
+    resolved_sort_by,
+    sort_desc,
+    resolved_after_sort,
+    after_sort_desc,
+    chunk_size,
+    top_5_boost_value,
+    cover_path,
+    build_start,
+    limit,
+):
+    _run_streaming_playlist_build(
+        "Spotify",
+        _collect_spotify_tracks,
+        name,
+        config,
+        log,
+        plex_server,
+        library,
+        spotify_url,
+        resolved_sort_by,
+        sort_desc,
+        resolved_after_sort,
+        after_sort_desc,
+        chunk_size,
+        top_5_boost_value,
+        cover_path,
+        build_start,
+        limit,
+    )
+
+
+def _run_tidal_playlist_build(
+    name,
+    config,
+    log,
+    plex_server,
+    library,
+    tidal_url,
+    resolved_sort_by,
+    sort_desc,
+    resolved_after_sort,
+    after_sort_desc,
+    chunk_size,
+    top_5_boost_value,
+    cover_path,
+    build_start,
+    limit,
+):
+    _run_streaming_playlist_build(
+        "Tidal",
+        _collect_tidal_tracks,
+        name,
+        config,
+        log,
+        plex_server,
+        library,
+        tidal_url,
+        resolved_sort_by,
+        sort_desc,
+        resolved_after_sort,
+        after_sort_desc,
+        chunk_size,
+        top_5_boost_value,
+        cover_path,
+        build_start,
+        limit,
+    )
+
+
 def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     if playlist_handler:
         log.debug(
@@ -4819,9 +5113,13 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     build_start = time.perf_counter()
     playlist_source = _normalize_playlist_source(config.get("source"))
     spotify_url = ""
+    tidal_url = ""
     if playlist_source == "spotify":
         raw_spotify_url = config.get("spotify_url")
         spotify_url = str(raw_spotify_url).strip() if raw_spotify_url else ""
+    elif playlist_source == "tidal":
+        raw_tidal_url = config.get("tidal_url")
+        tidal_url = str(raw_tidal_url).strip() if raw_tidal_url else ""
     filters = config.get("plex_filter", [])
     boost_rules = config.get("popularity_boosts", []) or []
     wildcard_filters = [_compile_filter_entry(f) for f in filters if bool(f.get("wildcard"))]
@@ -4890,6 +5188,25 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             plex_server,
             library,
             spotify_url,
+            resolved_sort_by,
+            sort_desc,
+            resolved_after_sort,
+            after_sort_desc,
+            chunk_size,
+            top_5_boost_value,
+            cover_path,
+            build_start,
+            limit,
+        )
+        return
+    if playlist_source == "tidal":
+        _run_tidal_playlist_build(
+            name,
+            config,
+            log,
+            plex_server,
+            library,
+            tidal_url,
             resolved_sort_by,
             sort_desc,
             resolved_after_sort,
