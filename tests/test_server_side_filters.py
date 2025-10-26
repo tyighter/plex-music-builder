@@ -191,7 +191,7 @@ class _MultipleWildcardLibrary:
             return [_DummyTrack("artist-griz")]
         if title == "Pretty Lights":
             return [_DummyTrack("artist-pretty")]
-        if filters.get("parentTitle") == "Malibu Ken":
+        if filters.get("album.title") == "Malibu Ken":
             return [_DummyTrack("album-malibu")]
         return []
 
@@ -415,5 +415,5 @@ def test_prefetch_tracks_handles_multiple_wildcard_filters_independently():
     assert library.calls == [
         {"libtype": "track", "filters": {"artist.title": "Griz"}},
         {"libtype": "track", "filters": {"artist.title": "Pretty Lights"}},
-        {"libtype": "track", "filters": {"parentTitle": "Malibu Ken"}},
+        {"libtype": "track", "filters": {"album.title": "Malibu Ken"}},
     ]
