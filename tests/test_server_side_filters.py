@@ -152,7 +152,7 @@ class _UnionLibrary:
         filters = kwargs.get("filters", {})
         if filters.get("artist.title") == "The Beatles":
             return [_DummyTrack(self._beatles_key)]
-        if filters.get("track.genre") == "Jazz":
+        if filters.get("album.genre") == "Jazz":
             return [_DummyTrack(self._wildcard_key)]
         return []
 
@@ -179,16 +179,14 @@ def test_fetch_tracks_expands_multi_value_filters_and_deduplicates():
     tracks, stats = main._fetch_tracks_with_server_filters(library, {}, {}, multi_filters)
 
     assert [track.ratingKey for track in tracks] == ["1", "2", "4", "3", "5"]
-    assert stats["requests"] == 10
+    assert stats["requests"] == 8
     assert stats["original_count"] == 7
     assert stats["duplicates_removed"] == 2
     assert library.calls == [
-        {"libtype": "track", "filters": {"track.genre": "Rock"}},
         {"libtype": "track", "filters": {"album.genre": "Rock"}},
         {"libtype": "track", "filters": {"album.style": "Rock"}},
         {"libtype": "track", "filters": {"artist.genre": "Rock"}},
         {"libtype": "track", "filters": {"artist.style": "Rock"}},
-        {"libtype": "track", "filters": {"track.genre": "Metal"}},
         {"libtype": "track", "filters": {"album.genre": "Metal"}},
         {"libtype": "track", "filters": {"album.style": "Metal"}},
         {"libtype": "track", "filters": {"artist.genre": "Metal"}},
@@ -215,25 +213,21 @@ def test_fetch_tracks_generates_combinations_for_multiple_multi_filters():
     ]
 
     assert [track.ratingKey for track in tracks] == expected_order
-    assert stats["requests"] == 20
+    assert stats["requests"] == 16
     assert stats["duplicates_removed"] == 0
     assert library.calls == [
-        {"libtype": "track", "filters": {"track.genre": "Rock", "track.mood": "Happy"}},
         {"libtype": "track", "filters": {"album.genre": "Rock", "album.mood": "Happy"}},
         {"libtype": "track", "filters": {"album.style": "Rock", "album.mood": "Happy"}},
         {"libtype": "track", "filters": {"artist.genre": "Rock", "artist.mood": "Happy"}},
         {"libtype": "track", "filters": {"artist.style": "Rock", "artist.mood": "Happy"}},
-        {"libtype": "track", "filters": {"track.genre": "Rock", "track.mood": "Moody"}},
         {"libtype": "track", "filters": {"album.genre": "Rock", "album.mood": "Moody"}},
         {"libtype": "track", "filters": {"album.style": "Rock", "album.mood": "Moody"}},
         {"libtype": "track", "filters": {"artist.genre": "Rock", "artist.mood": "Moody"}},
         {"libtype": "track", "filters": {"artist.style": "Rock", "artist.mood": "Moody"}},
-        {"libtype": "track", "filters": {"track.genre": "Metal", "track.mood": "Happy"}},
         {"libtype": "track", "filters": {"album.genre": "Metal", "album.mood": "Happy"}},
         {"libtype": "track", "filters": {"album.style": "Metal", "album.mood": "Happy"}},
         {"libtype": "track", "filters": {"artist.genre": "Metal", "artist.mood": "Happy"}},
         {"libtype": "track", "filters": {"artist.style": "Metal", "artist.mood": "Happy"}},
-        {"libtype": "track", "filters": {"track.genre": "Metal", "track.mood": "Moody"}},
         {"libtype": "track", "filters": {"album.genre": "Metal", "album.mood": "Moody"}},
         {"libtype": "track", "filters": {"album.style": "Metal", "album.mood": "Moody"}},
         {"libtype": "track", "filters": {"artist.genre": "Metal", "artist.mood": "Moody"}},
@@ -241,7 +235,7 @@ def test_fetch_tracks_generates_combinations_for_multiple_multi_filters():
     ]
 
 
-def test_fetch_tracks_includes_track_level_queries_for_styles():
+def test_fetch_tracks_replaces_track_level_queries_for_styles():
     main = _load_main_module()
 
     library = _RecordingLibrary(
@@ -263,10 +257,9 @@ def test_fetch_tracks_includes_track_level_queries_for_styles():
         multi_filters,
     )
 
-    assert [track.ratingKey for track in tracks] == ["track-1", "album-1", "artist-1"]
-    assert stats["requests"] == 3
+    assert [track.ratingKey for track in tracks] == ["album-1", "artist-1"]
+    assert stats["requests"] == 2
     assert library.calls == [
-        {"libtype": "track", "filters": {"track.style": "Shoegaze"}},
         {"libtype": "track", "filters": {"album.style": "Shoegaze"}},
         {"libtype": "track", "filters": {"artist.style": "Shoegaze"}},
     ]
@@ -291,7 +284,7 @@ def test_prefetch_tracks_fetches_union_of_regular_and_wildcard_filters():
     tracks, stats = main._prefetch_tracks_for_filters(library, regular_filters, wildcard_filters, logging.getLogger("test"))
 
     assert {track.ratingKey for track in tracks} == {"beatles-1", "wildcard-1"}
-    assert stats is not None and stats["requests"] == 6
+    assert stats is not None and stats["requests"] == 5
     assert stats["duplicates_removed"] == 0
     assert library.search_tracks_called is False
 
@@ -315,7 +308,7 @@ def test_prefetch_tracks_deduplicates_overlapping_results():
     tracks, stats = main._prefetch_tracks_for_filters(library, regular_filters, wildcard_filters, logging.getLogger("test"))
 
     assert [track.ratingKey for track in tracks] == ["shared"]
-    assert stats is not None and stats["requests"] == 6
+    assert stats is not None and stats["requests"] == 5
     assert stats["duplicates_removed"] == 1
     assert library.search_tracks_called is False
 

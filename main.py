@@ -4073,7 +4073,6 @@ def _expand_tag_level_server_filters(
             apply_replacements(0, {})
 
         if level_parameter_sets:
-            expanded.append(dict(params))
             expanded.extend(level_parameter_sets)
         else:
             expanded.append(dict(params))
@@ -4227,10 +4226,10 @@ def _fetch_tracks_with_server_filters(
 
     search_parameter_sets = _expand_tag_level_server_filters(search_parameter_sets)
 
-    if logger and logger.isEnabledFor(logging.DEBUG):
+    if logger and logger.isEnabledFor(logging.INFO):
         for idx, params in enumerate(search_parameter_sets, start=1):
-            logger.debug(
-                "Server-side filter query %d/%d: %s",
+            logger.info(
+                "Server-side study %d/%d parameters: %s",
                 idx,
                 len(search_parameter_sets),
                 {k: v for k, v in params.items() if k != "libtype"},
@@ -4243,10 +4242,10 @@ def _fetch_tracks_with_server_filters(
         return list(result)
 
     def log_query_result(index: int, total: int, results: Sequence[Any]) -> None:
-        if not logger or not logger.isEnabledFor(logging.DEBUG):
+        if not logger or not logger.isEnabledFor(logging.INFO):
             return
-        logger.debug(
-            "Server-side filter query %d/%d returned %d result(s)",
+        logger.info(
+            "Server-side study %d/%d returned %d result(s)",
             index,
             total,
             len(results),
