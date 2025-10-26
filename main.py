@@ -28,12 +28,6 @@ from difflib import SequenceMatcher
 from plexapi.server import PlexServer
 from tqdm import tqdm
 
-from tidal_auth import (
-    TidalAuthorizationRequired,
-    TidalOAuthClient,
-    TidalOAuthError,
-)
-
 # ----------------------------
 # Load Config and Setup Logging
 # ----------------------------
@@ -194,48 +188,6 @@ if isinstance(PLAYLIST_LOG_DIR, str) and not PLAYLIST_LOG_DIR.strip():
     PLAYLIST_LOG_DIR = None
 if PLAYLIST_LOG_DIR is None:
     PLAYLIST_LOG_DIR = os.path.join(_default_log_dir, "playlists")
-
-tidal_cfg = cfg.get("tidal", {}) or {}
-_TIDAL_COUNTRY_CODE = (
-    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_COUNTRY"))
-    or _coerce_non_empty_str(tidal_cfg.get("country_code"))
-    or "US"
-).upper()
-
-_TIDAL_CLIENT_ID = (
-    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_CLIENT_ID"))
-    or _coerce_non_empty_str(tidal_cfg.get("client_id"))
-)
-_TIDAL_CLIENT_SECRET = (
-    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_CLIENT_SECRET"))
-    or _coerce_non_empty_str(tidal_cfg.get("client_secret"))
-)
-_TIDAL_REDIRECT_URI = (
-    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_REDIRECT_URI"))
-    or _coerce_non_empty_str(tidal_cfg.get("redirect_uri"))
-)
-
-_TIDAL_SCOPE = (
-    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_SCOPE"))
-    or _coerce_non_empty_str(tidal_cfg.get("scope"))
-    or TidalOAuthClient.DEFAULT_SCOPE
-)
-
-_TIDAL_TOKEN_CACHE_FILE = Path(
-    _resolve_path_setting(
-        tidal_cfg.get("token_cache_file"),
-        RUNTIME_DIR / "tidal_tokens.json",
-        CONFIG_DIR,
-    )
-)
-
-_TIDAL_OAUTH_CLIENT = TidalOAuthClient(
-    client_id=_TIDAL_CLIENT_ID,
-    client_secret=_TIDAL_CLIENT_SECRET,
-    redirect_uri=_TIDAL_REDIRECT_URI,
-    token_store_path=_TIDAL_TOKEN_CACHE_FILE,
-    scope=_TIDAL_SCOPE,
-)
 
 if not PLEX_URL or not PLEX_TOKEN:
     raise EnvironmentError("PLEX_URL and PLEX_TOKEN must be set in config.yml")
@@ -459,7 +411,7 @@ def get_plex_server():
 raw_playlists = load_yaml(PLAYLISTS_FILE)
 
 
-STREAMING_PLAYLIST_SOURCES = {"spotify", "tidal"}
+STREAMING_PLAYLIST_SOURCES = {"spotify"}
 
 
 def _normalize_playlist_source(value):
@@ -919,26 +871,6 @@ _SPOTIFY_REQUEST_HEADERS = {
 }
 _SPOTIFY_EMBED_PLAYLIST_URL_TEMPLATE = "https://open.spotify.com/embed/playlist/{playlist_id}"
 
-_TIDAL_PLAYLIST_ID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$"
-)
-_TIDAL_BASE_HEADERS = {
-    "User-Agent": _SPOTIFY_REQUEST_HEADERS["User-Agent"],
-    "Accept": "application/json",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Origin": "https://tidal.com",
-    "Referer": "https://tidal.com/",
-}
-_TIDAL_API_BASE_URL = "https://listen.tidal.com/v1"
-_TIDAL_TRACKS_LIMIT = 100
-
-
-def _build_tidal_request_headers(access_token: str) -> Dict[str, str]:
-    headers = dict(_TIDAL_BASE_HEADERS)
-    headers["Authorization"] = f"Bearer {access_token}"
-    return headers
-
-
 def _extract_spotify_playlist_id(raw_url):
     if not raw_url:
         return ""
@@ -971,157 +903,6 @@ def _build_spotify_embed_playlist_url(normalized_url):
     return _SPOTIFY_EMBED_PLAYLIST_URL_TEMPLATE.format(playlist_id=playlist_id)
 
 
-def _extract_tidal_playlist_id(raw_url):
-    if not raw_url:
-        raise ValueError("Invalid Tidal playlist URL: empty value")
-
-    candidate = str(raw_url).strip()
-    if not candidate:
-        raise ValueError("Invalid Tidal playlist URL: empty value")
-
-    if _TIDAL_PLAYLIST_ID_RE.match(candidate):
-        return candidate.lower()
-
-    parsed = urlparse(candidate)
-    if parsed.scheme in {"http", "https"} and parsed.netloc.lower().endswith("tidal.com"):
-        path_parts = [part for part in parsed.path.split("/") if part]
-        if len(path_parts) >= 2 and path_parts[-2].lower() == "playlist":
-            playlist_id = path_parts[-1]
-            if _TIDAL_PLAYLIST_ID_RE.match(playlist_id):
-                return playlist_id.lower()
-
-    raise ValueError(f"Invalid Tidal playlist URL: {raw_url!r}")
-
-
-def _normalize_tidal_playlist_url(raw_url):
-    playlist_id = _extract_tidal_playlist_id(raw_url)
-    return f"https://tidal.com/browse/playlist/{playlist_id}"
-
-
-def _fetch_tidal_tracks_page(playlist_id, offset, log):
-    params = {
-        "countryCode": _TIDAL_COUNTRY_CODE,
-        "limit": _TIDAL_TRACKS_LIMIT,
-        "offset": offset,
-    }
-    url = f"{_TIDAL_API_BASE_URL}/playlists/{playlist_id}/tracks"
-
-    if log.isEnabledFor(logging.DEBUG):
-        log.debug("Fetching Tidal playlist page %s from %s", offset, url)
-
-    response = None
-    for attempt in range(2):
-        try:
-            access_token = _TIDAL_OAUTH_CLIENT.get_access_token(
-                force_refresh=attempt > 0
-            )
-        except TidalAuthorizationRequired as exc:
-            raise RuntimeError(
-                "Tidal authorization is required. Run the builder with --authorize-tidal "
-                "and complete the sign-in flow."
-            ) from exc
-
-        headers = _build_tidal_request_headers(access_token)
-
-        try:
-            response = requests.get(
-                url,
-                headers=headers,
-                params=params,
-                timeout=30,
-            )
-        except requests.RequestException as exc:
-            raise RuntimeError(f"Tidal request failed for {url}: {exc}") from exc
-
-        if response.status_code != 401 or attempt == 1:
-            break
-
-        _TIDAL_OAUTH_CLIENT.revoke_cached_access_token()
-
-    if response is None:
-        raise RuntimeError("Unable to contact Tidal after refreshing credentials.")
-
-    if log.isEnabledFor(logging.DEBUG):
-        log.debug("Tidal response for %s: %s", url, _summarize_http_response(response))
-
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as exc:
-        summary = _summarize_http_response(response)
-        if response.status_code == 401:
-            hint = (
-                "Received HTTP 401 from Tidal. Try re-running with --authorize-tidal "
-                "to refresh the stored credentials."
-            )
-            raise RuntimeError(
-                "Tidal request returned an error for %s: %s %s"
-                % (url, summary, hint)
-            ) from exc
-        raise RuntimeError(
-            "Tidal request returned an error for %s: %s"
-            % (url, summary)
-        ) from exc
-
-    try:
-        return response.json()
-    except ValueError as exc:
-        raise RuntimeError(f"Tidal response from {url} was not valid JSON: {exc}") from exc
-
-
-def _parse_tidal_track_entry(entry):
-    if not isinstance(entry, dict):
-        return None
-
-    track_info = entry.get("item") or entry.get("track") or entry
-    if not isinstance(track_info, dict):
-        return None
-
-    title = track_info.get("title") or track_info.get("name") or ""
-    if not title:
-        return None
-
-    album_info = track_info.get("album") or {}
-    if not isinstance(album_info, dict):
-        album_info = {}
-    album = (
-        album_info.get("title")
-        or album_info.get("name")
-        or track_info.get("albumTitle")
-        or ""
-    )
-
-    artists = track_info.get("artists")
-    if isinstance(artists, list) and artists:
-        artist_entry = artists[0]
-        if isinstance(artist_entry, dict):
-            artist = (
-                artist_entry.get("name")
-                or artist_entry.get("title")
-                or artist_entry.get("artistName")
-                or ""
-            )
-        else:
-            artist = str(artist_entry)
-    else:
-        artist = track_info.get("artist") or track_info.get("artistName") or ""
-
-    return {"title": title, "artist": artist, "album": album}
-
-
-def _parse_tidal_tracks(payload):
-    if not isinstance(payload, dict):
-        return []
-
-    items = payload.get("items")
-    if not isinstance(items, list):
-        return []
-
-    parsed = []
-    for entry in items:
-        track_data = _parse_tidal_track_entry(entry)
-        if track_data:
-            parsed.append(track_data)
-    return parsed
 def _collect_tracks_from_next_data(root_node):
     tracks = []
     seen_keys = set()
@@ -1594,61 +1375,6 @@ def _collect_spotify_tracks(spotify_url, library, log):
     stats = {
         "normalized_url": normalized_url,
         "total_tracks": len(spotify_tracks),
-        "matched_tracks": len(matched_tracks),
-        "unmatched_tracks": unmatched_count,
-    }
-
-    return matched_tracks, stats
-
-
-def _collect_tidal_tracks(tidal_url, library, log):
-    normalized_url = _normalize_tidal_playlist_url(tidal_url)
-
-    if log.isEnabledFor(logging.DEBUG) and tidal_url != normalized_url:
-        log.debug(
-            "Fetching Tidal playlist from %s (normalized from %s)",
-            normalized_url,
-            tidal_url,
-        )
-
-    playlist_id = _extract_tidal_playlist_id(normalized_url)
-
-    offset = 0
-    total_items = None
-    collected_tracks = []
-
-    while True:
-        page_data = _fetch_tidal_tracks_page(playlist_id, offset, log)
-        tracks = _parse_tidal_tracks(page_data)
-        collected_tracks.extend(tracks)
-
-        total_items = page_data.get("totalNumberOfItems", total_items)
-        if total_items is None:
-            total_items = page_data.get("total")
-
-        limit = page_data.get("limit")
-        if not isinstance(limit, int) or limit <= 0:
-            limit = _TIDAL_TRACKS_LIMIT
-
-        offset += limit
-
-        if total_items is not None:
-            if offset >= total_items:
-                break
-        else:
-            if not tracks or len(tracks) < limit:
-                break
-
-    matched_tracks, unmatched_count = _match_streaming_tracks_to_library(
-        collected_tracks,
-        library,
-        log,
-        "Tidal",
-    )
-
-    stats = {
-        "normalized_url": normalized_url,
-        "total_tracks": total_items if isinstance(total_items, int) else len(collected_tracks),
         "matched_tracks": len(matched_tracks),
         "unmatched_tracks": unmatched_count,
     }
@@ -5159,44 +4885,6 @@ def _run_spotify_playlist_build(
     )
 
 
-def _run_tidal_playlist_build(
-    name,
-    config,
-    log,
-    plex_server,
-    library,
-    tidal_url,
-    resolved_sort_by,
-    sort_desc,
-    resolved_after_sort,
-    after_sort_desc,
-    chunk_size,
-    top_5_boost_value,
-    cover_path,
-    build_start,
-    limit,
-):
-    _run_streaming_playlist_build(
-        "Tidal",
-        _collect_tidal_tracks,
-        name,
-        config,
-        log,
-        plex_server,
-        library,
-        tidal_url,
-        resolved_sort_by,
-        sort_desc,
-        resolved_after_sort,
-        after_sort_desc,
-        chunk_size,
-        top_5_boost_value,
-        cover_path,
-        build_start,
-        limit,
-    )
-
-
 def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     if playlist_handler:
         log.debug(
@@ -5209,13 +4897,9 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     build_start = time.perf_counter()
     playlist_source = _normalize_playlist_source(config.get("source"))
     spotify_url = ""
-    tidal_url = ""
     if playlist_source == "spotify":
         raw_spotify_url = config.get("spotify_url")
         spotify_url = str(raw_spotify_url).strip() if raw_spotify_url else ""
-    elif playlist_source == "tidal":
-        raw_tidal_url = config.get("tidal_url")
-        tidal_url = str(raw_tidal_url).strip() if raw_tidal_url else ""
     filters = config.get("plex_filter", [])
     boost_rules = config.get("popularity_boosts", []) or []
     wildcard_filters = [_compile_filter_entry(f) for f in filters if bool(f.get("wildcard"))]
@@ -5284,25 +4968,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             plex_server,
             library,
             spotify_url,
-            resolved_sort_by,
-            sort_desc,
-            resolved_after_sort,
-            after_sort_desc,
-            chunk_size,
-            top_5_boost_value,
-            cover_path,
-            build_start,
-            limit,
-        )
-        return
-    if playlist_source == "tidal":
-        _run_tidal_playlist_build(
-            name,
-            config,
-            log,
-            plex_server,
-            library,
-            tidal_url,
             resolved_sort_by,
             sort_desc,
             resolved_after_sort,
@@ -5894,22 +5559,7 @@ if __name__ == "__main__":
         action="append",
         help="Name of a playlist to build. Can be provided multiple times.",
     )
-    parser.add_argument(
-        "--authorize-tidal",
-        action="store_true",
-        help="Start an interactive flow to authorize TIDAL access and exit.",
-    )
     args = parser.parse_args()
-
-    if args.authorize_tidal:
-        try:
-            _TIDAL_OAUTH_CLIENT.authorize_interactively()
-        except TidalOAuthError as exc:
-            logger.error("Unable to authorize TIDAL: %s", exc)
-            sys.exit(1)
-        else:
-            logger.info("TIDAL authorization completed successfully.")
-            sys.exit(0)
 
     if CACHE_ONLY:
         build_metadata_cache()

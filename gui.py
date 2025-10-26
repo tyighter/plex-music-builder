@@ -2327,7 +2327,6 @@ def load_playlists() -> Dict[str, Any]:
                 "popularity_boosts",
                 "source",
                 "spotify_url",
-                "tidal_url",
             }
         }
         raw_source = config.get("source")
@@ -2335,7 +2334,7 @@ def load_playlists() -> Dict[str, Any]:
             normalized_source = raw_source.strip().lower()
         else:
             normalized_source = ""
-        if normalized_source not in {"plex", "spotify", "tidal"}:
+        if normalized_source not in {"plex", "spotify"}:
             normalized_source = "plex"
 
         raw_spotify_url = config.get("spotify_url")
@@ -2345,14 +2344,6 @@ def load_playlists() -> Dict[str, Any]:
             spotify_url = str(raw_spotify_url).strip()
         if normalized_source != "spotify":
             spotify_url = ""
-
-        raw_tidal_url = config.get("tidal_url")
-        if raw_tidal_url is None:
-            tidal_url = ""
-        else:
-            tidal_url = str(raw_tidal_url).strip()
-        if normalized_source != "tidal":
-            tidal_url = ""
 
         playlists_data.append(
             {
@@ -2370,7 +2361,6 @@ def load_playlists() -> Dict[str, Any]:
                 "extras": extras,
                 "source": normalized_source,
                 "spotify_url": spotify_url,
-                "tidal_url": tidal_url,
             }
         )
 
@@ -2538,7 +2528,7 @@ def save_playlists(payload: Dict[str, Any]) -> None:
             {
                 key: value
                 for key, value in extras.items()
-                if key not in {"source", "spotify_url", "tidal_url"}
+                if key not in {"source", "spotify_url"}
             }
         )
     if defaults_filters:
@@ -2569,7 +2559,7 @@ def save_playlists(payload: Dict[str, Any]) -> None:
                 {
                     key: value
                     for key, value in extras.items()
-                    if key not in {"source", "spotify_url", "tidal_url"}
+                    if key not in {"source", "spotify_url"}
                 }
             )
         playlist_config["limit"] = max(limit, 0)
@@ -2586,7 +2576,7 @@ def save_playlists(payload: Dict[str, Any]) -> None:
             normalized_source = raw_source.strip().lower()
         else:
             normalized_source = "plex"
-        if normalized_source not in {"plex", "spotify", "tidal"}:
+        if normalized_source not in {"plex", "spotify"}:
             normalized_source = "plex"
         if normalized_source != "plex":
             playlist_config["source"] = normalized_source
@@ -2599,13 +2589,6 @@ def save_playlists(payload: Dict[str, Any]) -> None:
             playlist_config["spotify_url"] = spotify_url
         else:
             playlist_config.pop("spotify_url", None)
-
-        raw_tidal_url = playlist_entry.get("tidal_url")
-        tidal_url = "" if raw_tidal_url is None else str(raw_tidal_url).strip()
-        if normalized_source == "tidal" and tidal_url:
-            playlist_config["tidal_url"] = tidal_url
-        else:
-            playlist_config.pop("tidal_url", None)
 
         playlist_filters = []
         for filter_entry in playlist_entry.get("plex_filter", []):
@@ -2649,7 +2632,7 @@ def save_single_playlist(
             {
                 key: value
                 for key, value in extras.items()
-                if key not in {"source", "spotify_url", "tidal_url"}
+                if key not in {"source", "spotify_url"}
             }
         )
 
@@ -2677,7 +2660,7 @@ def save_single_playlist(
         normalized_source = raw_source.strip().lower()
     else:
         normalized_source = "plex"
-    if normalized_source not in {"plex", "spotify", "tidal"}:
+    if normalized_source not in {"plex", "spotify"}:
         normalized_source = "plex"
     if normalized_source != "plex":
         playlist_config["source"] = normalized_source
@@ -2690,13 +2673,6 @@ def save_single_playlist(
         playlist_config["spotify_url"] = spotify_url
     else:
         playlist_config.pop("spotify_url", None)
-
-    raw_tidal_url = playlist_payload.get("tidal_url")
-    tidal_url = "" if raw_tidal_url is None else str(raw_tidal_url).strip()
-    if normalized_source == "tidal" and tidal_url:
-        playlist_config["tidal_url"] = tidal_url
-    else:
-        playlist_config.pop("tidal_url", None)
 
     playlist_filters = []
     for filter_entry in playlist_payload.get("plex_filter", []):
