@@ -613,6 +613,9 @@ def _normalize_compare_value(value):
 
     text = unicodedata.normalize("NFKC", str(value))
     text = text.translate(_APOSTROPHE_TRANSLATION_MAP)
+    # Remove apostrophes entirely so that contractions (e.g. "don't")
+    # normalize to their base characters for matching purposes.
+    text = text.replace("'", "")
     normalized = re.sub(r"\s+", " ", text).strip().lower()
     return normalized
 

@@ -25,7 +25,7 @@ def test_normalize_spotify_playlist_url_variants():
 def test_normalize_compare_value_handles_apostrophes():
     straight = main._normalize_compare_value("Don't Leave Me This Way")
     curly = main._normalize_compare_value("Don’t Leave Me This Way")
-    assert straight == curly == "don't leave me this way"
+    assert straight == curly == "dont leave me this way"
 
 
 def test_parse_spotify_entity_tracks_skips_local_and_missing():
@@ -258,7 +258,7 @@ def test_clean_spotify_text_removes_single_version():
 
 def test_normalize_compare_value_unifies_apostrophes():
     fancy = "Ain\u2019t No Sunshine"
-    assert main._normalize_compare_value(fancy) == "ain't no sunshine"
+    assert main._normalize_compare_value(fancy) == "aint no sunshine"
 
 
 def test_match_spotify_tracks_prefers_higher_ratingcount():
