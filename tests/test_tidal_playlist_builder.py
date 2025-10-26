@@ -1,5 +1,3 @@
-import importlib
-
 import pytest
 
 import main
@@ -55,21 +53,10 @@ class _DummyLog:
         return False
 
 
-def test_tidal_token_can_be_overridden(monkeypatch):
-    default_token = main._TIDAL_REQUEST_HEADERS["X-Tidal-Token"]
-
-    monkeypatch.setenv("PMB_TIDAL_TOKEN", "test-token-123")
-    try:
-        reloaded = importlib.reload(main)
-        assert (
-            reloaded._TIDAL_REQUEST_HEADERS["X-Tidal-Token"]
-            == "test-token-123"
-        )
-    finally:
-        monkeypatch.delenv("PMB_TIDAL_TOKEN", raising=False)
-        importlib.reload(main)
-
-    assert main._TIDAL_REQUEST_HEADERS["X-Tidal-Token"] == default_token
+def test_build_tidal_headers_includes_bearer_token():
+    headers = main._build_tidal_request_headers("token-123")
+    assert headers["Authorization"] == "Bearer token-123"
+    assert "X-Tidal-Token" not in headers
 
 
 def test_normalize_tidal_playlist_url_variants():
