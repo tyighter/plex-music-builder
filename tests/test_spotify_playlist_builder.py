@@ -25,7 +25,7 @@ def test_normalize_spotify_playlist_url_variants():
 def test_normalize_compare_value_handles_apostrophes():
     straight = main._normalize_compare_value("Don't Leave Me This Way")
     curly = main._normalize_compare_value("Don’t Leave Me This Way")
-    assert straight == curly == "don't leave me this way"
+    assert straight == curly == "dont leave me this way"
 
 
 def test_parse_spotify_entity_tracks_skips_local_and_missing():
@@ -187,12 +187,32 @@ class _DummyTrack:
 
 class _DummyLibrary:
     def __init__(self, responses):
-        self._responses = responses
+        self._responses = {
+            self._normalize_kwargs(kwargs): list(results)
+            for kwargs, results in responses
+        }
         self.calls = []
 
+    @staticmethod
+    def _normalize_kwargs(kwargs):
+        items = []
+        for key, value in sorted(kwargs.items()):
+            if isinstance(value, dict):
+                items.append((key, tuple(sorted(value.items()))))
+            elif isinstance(value, list):
+                items.append((key, tuple(value)))
+            else:
+                items.append((key, value))
+        return tuple(items)
+
+    def search(self, **kwargs):
+        self.calls.append(("search", kwargs))
+        key = self._normalize_kwargs(kwargs)
+        return list(self._responses.get(key, []))
+
     def searchTracks(self, **kwargs):
-        self.calls.append(kwargs)
-        key = tuple(sorted(kwargs.items()))
+        self.calls.append(("searchTracks", kwargs))
+        key = self._normalize_kwargs(kwargs)
         return list(self._responses.get(key, []))
 
 
@@ -232,12 +252,25 @@ class _FakeResponse:
             raise requests.HTTPError(f"Status {self.status_code}", response=self)
 
 
+def test_clean_spotify_text_removes_single_version():
+    assert main._clean_spotify_text("Rock with You - Single Version") == "Rock with You"
+
+
+def test_normalize_compare_value_unifies_apostrophes():
+    fancy = "Ain\u2019t No Sunshine"
+    assert main._normalize_compare_value(fancy) == "aint no sunshine"
+
+
 def test_match_spotify_tracks_prefers_higher_ratingcount():
     track_low = _DummyTrack("Song", "Album", "Artist", 5, 1)
     track_high = _DummyTrack("Song", "Album", "Artist", 12, 2)
 
-    query = tuple(sorted([("artist", "Artist"), ("title", "Song")]))
-    responses = {query: [track_low, track_high]}
+    responses = [
+        (
+            {"libtype": "track", "filters": {"grandparentTitle": "Artist"}},
+            [track_low, track_high],
+        )
+    ]
     library = _DummyLibrary(responses)
     log = _DummyLog()
 
@@ -253,8 +286,11 @@ def test_match_spotify_tracks_prefers_higher_ratingcount():
 
     assert matched == [track_high]
     assert unmatched == 0
-    assert library.calls[0] == {"artist": "Artist"}
-    assert {"title": "Song", "artist": "Artist"} in library.calls
+    assert library.calls[0] == (
+        "search",
+        {"libtype": "track", "filters": {"grandparentTitle": "Artist"}},
+    )
+    assert len(library.calls) == 1
 
 
 def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
@@ -293,8 +329,17 @@ def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
     monkeypatch.setattr(main.requests, "get", fake_get)
 
     track = _DummyTrack("Song", "Album", "Artist", 10, 1)
-    query = tuple(sorted([("artist", "Artist"), ("title", "Song")]))
-    library = _DummyLibrary({query: [track]})
+    library = _DummyLibrary(
+        [
+            (
+                {
+                    "libtype": "track",
+                    "filters": {"grandparentTitle": "Artist"},
+                },
+                [track],
+            )
+        ]
+    )
     log = _DummyLog()
 
     matched, stats = main._collect_spotify_tracks(
@@ -310,6 +355,9 @@ def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
         "matched_tracks": 1,
         "unmatched_tracks": 0,
     }
+    assert library.calls == [
+        ("search", {"libtype": "track", "filters": {"grandparentTitle": "Artist"}})
+    ]
     assert requested_urls == [
         "https://open.spotify.com/playlist/37i9dQZF1EQpVaHRDcozEz",
         "https://open.spotify.com/embed/playlist/37i9dQZF1EQpVaHRDcozEz",
