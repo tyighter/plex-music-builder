@@ -299,6 +299,30 @@ def test_match_spotify_tracks_prefers_higher_ratingcount():
     assert len(library.calls) == 1
 
 
+def test_match_spotify_tracks_requires_artist_match():
+    track_wrong_artist = _DummyTrack("Song", "Album", "Different Artist", 10, 1)
+
+    responses = [
+        (
+            {"libtype": "track", "filters": {"artist.title": "Artist"}},
+            [track_wrong_artist],
+        )
+    ]
+    library = _DummyLibrary(responses)
+    log = _DummyLog()
+
+    spotify_tracks = [{"title": "Song", "artist": "Artist"}]
+
+    matched, unmatched = main._match_spotify_tracks_to_library(
+        spotify_tracks,
+        library,
+        log,
+    )
+
+    assert matched == []
+    assert unmatched == 1
+
+
 def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
     login_page = "<html><head><title>Spotify – Web Player</title></head><body></body></html>"
     entity_payload = {

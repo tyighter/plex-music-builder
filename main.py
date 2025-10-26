@@ -868,6 +868,9 @@ def _select_best_spotify_candidate(
             getattr(candidate, "grandparentTitle", "")
         )
 
+        if normalized_artist and candidate_artist != normalized_artist:
+            continue
+
         popularity = _resolve_track_popularity_value(candidate, playlist_logger=log)
         popularity_score = popularity if popularity is not None else -1
 
