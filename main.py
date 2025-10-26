@@ -26,6 +26,11 @@ from urllib.parse import unquote, quote, urlparse
 from difflib import SequenceMatcher
 
 from plexapi.server import PlexServer
+
+try:  # pragma: no cover - exercised in integration environments
+    from plexapi.exceptions import NotFound
+except Exception:  # pragma: no cover - test stubs don't provide exceptions module
+    NotFound = Exception  # type: ignore[assignment]
 from tqdm import tqdm
 
 # ----------------------------
@@ -4314,7 +4319,8 @@ def _prefetch_tracks_for_filters(
 
     fetch_stats: Optional[Dict[str, int]] = None
     all_tracks: List[Any] = []
-    any_server_fetch = False
+    any_successful_server_fetch = False
+    wildcard_fetch_failed = False
     seen_keys: Set[Any] = set()
 
     def _accumulate_stats(
@@ -4329,7 +4335,6 @@ def _prefetch_tracks_for_filters(
         return existing
 
     if server_kwargs or server_filter_dict or multi_value_filters:
-        any_server_fetch = True
         if log and log.isEnabledFor(logging.DEBUG):
             log.debug(
                 "Fetching tracks with regular server-side filters: kwargs=%s, filters=%s, multi_value=%s",
@@ -4337,19 +4342,27 @@ def _prefetch_tracks_for_filters(
                 server_filter_dict,
                 multi_value_filters,
             )
-        regular_tracks, regular_stats = _fetch_tracks_with_server_filters(
-            library,
-            server_kwargs,
-            server_filter_dict,
-            multi_value_filters,
-            logger=log,
-        )
-        fetch_stats = _accumulate_stats(fetch_stats, regular_stats)
-        all_tracks.extend(regular_tracks)
-        seen_keys.update(_track_identity(track) for track in regular_tracks)
+        try:
+            regular_tracks, regular_stats = _fetch_tracks_with_server_filters(
+                library,
+                server_kwargs,
+                server_filter_dict,
+                multi_value_filters,
+                logger=log,
+            )
+        except NotFound as exc:
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "Server rejected regular server-side filters; falling back to client filtering: %s",
+                    exc,
+                )
+        else:
+            any_successful_server_fetch = True
+            fetch_stats = _accumulate_stats(fetch_stats, regular_stats)
+            all_tracks.extend(regular_tracks)
+            seen_keys.update(_track_identity(track) for track in regular_tracks)
 
     if wildcard_kwargs or wildcard_filter_dict or wildcard_multi_value_filters:
-        any_server_fetch = True
         if log and log.isEnabledFor(logging.DEBUG):
             log.debug(
                 "Fetching tracks with wildcard server-side filters: kwargs=%s, filters=%s, multi_value=%s",
@@ -4357,30 +4370,62 @@ def _prefetch_tracks_for_filters(
                 wildcard_filter_dict,
                 wildcard_multi_value_filters,
             )
-        wildcard_tracks, wildcard_stats = _fetch_tracks_with_server_filters(
-            library,
-            wildcard_kwargs,
-            wildcard_filter_dict,
-            wildcard_multi_value_filters,
-            logger=log,
-        )
-        fetch_stats = _accumulate_stats(fetch_stats, wildcard_stats)
+        try:
+            wildcard_tracks, wildcard_stats = _fetch_tracks_with_server_filters(
+                library,
+                wildcard_kwargs,
+                wildcard_filter_dict,
+                wildcard_multi_value_filters,
+                logger=log,
+            )
+        except NotFound as exc:
+            wildcard_fetch_failed = True
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "Server rejected wildcard server-side filters; falling back to client filtering: %s",
+                    exc,
+                )
+        else:
+            any_successful_server_fetch = True
+            fetch_stats = _accumulate_stats(fetch_stats, wildcard_stats)
+            duplicates = 0
+            for track in wildcard_tracks:
+                key = _track_identity(track)
+                if key in seen_keys:
+                    duplicates += 1
+                    continue
+                seen_keys.add(key)
+                all_tracks.append(track)
+            if duplicates:
+                if fetch_stats is None:
+                    fetch_stats = {"requests": 0, "original_count": 0, "duplicates_removed": duplicates}
+                else:
+                    fetch_stats["duplicates_removed"] = fetch_stats.get("duplicates_removed", 0) + duplicates
+
+    if not any_successful_server_fetch:
+        return list(library.searchTracks()), None
+
+    if wildcard_filters and wildcard_fetch_failed:
+        if log and log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "Wildcard server-side filters not supported by Plex; falling back to full library scan."
+            )
+        fallback_tracks = list(library.searchTracks())
+        fallback_original = len(fallback_tracks)
         duplicates = 0
-        for track in wildcard_tracks:
+        for track in fallback_tracks:
             key = _track_identity(track)
             if key in seen_keys:
                 duplicates += 1
                 continue
             seen_keys.add(key)
             all_tracks.append(track)
-        if duplicates:
-            if fetch_stats is None:
-                fetch_stats = {"requests": 0, "original_count": 0, "duplicates_removed": duplicates}
-            else:
-                fetch_stats["duplicates_removed"] = fetch_stats.get("duplicates_removed", 0) + duplicates
 
-    if not any_server_fetch:
-        return list(library.searchTracks()), None
+        if fetch_stats is None:
+            fetch_stats = {"requests": 0, "original_count": 0, "duplicates_removed": 0}
+        fetch_stats["original_count"] = fetch_stats.get("original_count", 0) + fallback_original
+        if duplicates:
+            fetch_stats["duplicates_removed"] = fetch_stats.get("duplicates_removed", 0) + duplicates
 
     return all_tracks, fetch_stats
 
