@@ -161,6 +161,24 @@ class _UnionLibrary:
         return []
 
 
+class _WildcardFailureLibrary:
+    def __init__(self, not_found_exc):
+        self.calls = []
+        self.search_tracks_called = False
+        self._not_found_exc = not_found_exc
+
+    def search(self, **kwargs):
+        self.calls.append(kwargs)
+        filters = kwargs.get("filters", {})
+        if filters.get("artist.title") == "The Beatles":
+            return [_DummyTrack("beatles-1")]
+        raise self._not_found_exc("wildcard unsupported")
+
+    def searchTracks(self):
+        self.search_tracks_called = True
+        return []
+
+
 def test_fetch_tracks_expands_multi_value_filters_and_deduplicates():
     main = _load_main_module()
 
@@ -312,3 +330,28 @@ def test_prefetch_tracks_deduplicates_overlapping_results():
     assert stats["duplicates_removed"] == 1
     assert library.search_tracks_called is False
 
+
+
+def test_prefetch_tracks_skips_full_library_when_wildcard_rejected():
+    main = _load_main_module()
+
+    library = _WildcardFailureLibrary(main.NotFound)
+
+    regular_filters = [
+        main._compile_filter_entry(
+            {"field": "artist", "operator": "equals", "value": "The Beatles"}
+        )
+    ]
+    wildcard_filters = [
+        main._compile_filter_entry(
+            {"field": "genre", "operator": "equals", "value": "Jazz", "wildcard": True}
+        )
+    ]
+
+    tracks, stats = main._prefetch_tracks_for_filters(
+        library, regular_filters, wildcard_filters, logging.getLogger("test")
+    )
+
+    assert [track.ratingKey for track in tracks] == ["beatles-1"]
+    assert stats is not None and stats["requests"] == 1
+    assert library.search_tracks_called is False
