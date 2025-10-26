@@ -14,6 +14,10 @@ runtime:
   max_workers: 3             # number of playlists to process in parallel
   build_all_on_start: false   # true = build playlists automatically when services start
 
+tidal:
+  token: ""                  # optional override for the default X-Tidal-Token
+  country_code: "US"         # optional override for the Tidal country code
+
 allmusic:
   enabled: true
   cache_file: "/app/allmusic_popularity.json"

@@ -145,6 +145,15 @@ def _coerce_positive_int(value):
     return numeric
 
 
+def _coerce_non_empty_str(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
+
+
 allmusic_cfg = cfg.get("allmusic", {}) or {}
 ALLMUSIC_ENABLED = allmusic_cfg.get("enabled", True)
 ALLMUSIC_CACHE_FILE = _resolve_path_setting(
@@ -179,6 +188,19 @@ if isinstance(PLAYLIST_LOG_DIR, str) and not PLAYLIST_LOG_DIR.strip():
     PLAYLIST_LOG_DIR = None
 if PLAYLIST_LOG_DIR is None:
     PLAYLIST_LOG_DIR = os.path.join(_default_log_dir, "playlists")
+
+tidal_cfg = cfg.get("tidal", {}) or {}
+_DEFAULT_TIDAL_TOKEN = "wdgaB1CilGA-SQxgwZiewQ"
+_TIDAL_TOKEN = (
+    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_TOKEN"))
+    or _coerce_non_empty_str(tidal_cfg.get("token"))
+    or _DEFAULT_TIDAL_TOKEN
+)
+_TIDAL_COUNTRY_CODE = (
+    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_COUNTRY"))
+    or _coerce_non_empty_str(tidal_cfg.get("country_code"))
+    or "US"
+).upper()
 
 if not PLEX_URL or not PLEX_TOKEN:
     raise EnvironmentError("PLEX_URL and PLEX_TOKEN must be set in config.yml")
@@ -868,10 +890,9 @@ _TIDAL_REQUEST_HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
     "Origin": "https://tidal.com",
     "Referer": "https://tidal.com/",
-    "X-Tidal-Token": "wdgaB1CilGA-SQxgwZiewQ",
+    "X-Tidal-Token": _TIDAL_TOKEN,
 }
 _TIDAL_API_BASE_URL = "https://listen.tidal.com/v1"
-_TIDAL_COUNTRY_CODE = "US"
 _TIDAL_TRACKS_LIMIT = 100
 
 
@@ -961,9 +982,19 @@ def _fetch_tidal_tracks_page(playlist_id, offset, log):
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
+        summary = _summarize_http_response(response)
+        if response.status_code == 401:
+            hint = (
+                "Received HTTP 401 from Tidal. Verify the X-Tidal-Token value "
+                "(set PMB_TIDAL_TOKEN or tidal.token in config.yml)."
+            )
+            raise RuntimeError(
+                "Tidal request returned an error for %s: %s %s"
+                % (url, summary, hint)
+            ) from exc
         raise RuntimeError(
             "Tidal request returned an error for %s: %s"
-            % (url, _summarize_http_response(response))
+            % (url, summary)
         ) from exc
 
     try:
