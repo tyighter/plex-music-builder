@@ -670,14 +670,17 @@ def _match_streaming_tracks_to_library(
         raw_title = streaming_track.get("title") or ""
         raw_album = streaming_track.get("album") or ""
         raw_artist = streaming_track.get("artist") or ""
+        raw_album_artist = streaming_track.get("album_artist") or ""
 
         title = _clean_spotify_text(raw_title)
         album = _clean_spotify_text(raw_album)
         artist = _strip_parenthetical(raw_artist)
+        album_artist = _strip_parenthetical(raw_album_artist)
 
         normalized_title = _normalize_compare_value(title)
         normalized_album = _normalize_compare_value(album)
         normalized_artist = _normalize_compare_value(artist)
+        normalized_album_artist = _normalize_compare_value(album_artist)
 
         def _execute_filter_search(params):
             filters = _build_track_search_filters_from_params(params)
@@ -712,11 +715,32 @@ def _match_streaming_tracks_to_library(
                 results = _execute_filter_search(query)
                 if results:
                     return results
+
+            if album_artist and (not artist or not normalized_artist):
+                album_attempts = [
+                    {"title": title, "album": album, "album_artist": album_artist},
+                    {"title": title, "album_artist": album_artist},
+                ]
+            elif album_artist and normalized_album_artist != normalized_artist:
+                album_attempts = [
+                    {"title": title, "album": album, "album_artist": album_artist},
+                    {"title": title, "album_artist": album_artist},
+                ]
+            else:
+                album_attempts = []
+
+            for params in album_attempts:
+                query = {key: value for key, value in params.items() if value}
+                if not query:
+                    continue
+                results = _execute_filter_search(query)
+                if results:
+                    return results
             return []
 
         artist_results = []
         if artist:
-            artist_cache_key = normalized_artist
+            artist_cache_key = ("artist", normalized_artist)
             if artist_cache_key in artist_search_cache:
                 cached = artist_search_cache[artist_cache_key]
                 artist_results = list(cached)
@@ -737,7 +761,32 @@ def _match_streaming_tracks_to_library(
                         artist_results = []
                 artist_search_cache[artist_cache_key] = tuple(artist_results)
 
-        candidate_pool = artist_results or _run_library_search()
+        album_artist_results = []
+        if (not artist_results) and album_artist:
+            album_artist_cache_key = ("album_artist", normalized_album_artist)
+            if album_artist_cache_key in artist_search_cache:
+                cached = artist_search_cache[album_artist_cache_key]
+                album_artist_results = list(cached)
+            else:
+                filters = _build_track_search_filters_from_params(
+                    {"album_artist": album_artist}
+                )
+                if filters:
+                    try:
+                        album_artist_results = list(
+                            library.search(libtype="track", filters=filters) or []
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive logging
+                        log.warning(
+                            "%s search failed when narrowing by album artist '%s': %s",
+                            service_name,
+                            album_artist,
+                            exc,
+                        )
+                        album_artist_results = []
+                artist_search_cache[album_artist_cache_key] = tuple(album_artist_results)
+
+        candidate_pool = artist_results or album_artist_results or _run_library_search()
 
         if not candidate_pool:
             unmatched_count += 1
@@ -756,6 +805,7 @@ def _match_streaming_tracks_to_library(
             normalized_title,
             normalized_album,
             normalized_artist,
+            normalized_album_artist,
             log,
         )
 
@@ -771,6 +821,7 @@ def _match_streaming_tracks_to_library(
                     normalized_title,
                     normalized_album,
                     normalized_artist,
+                    normalized_album_artist,
                     log,
                 )
 
@@ -803,6 +854,7 @@ def _select_best_spotify_candidate(
     normalized_title,
     normalized_album,
     normalized_artist,
+    normalized_album_artist,
     log,
 ):
     best_candidate = None
@@ -820,8 +872,16 @@ def _select_best_spotify_candidate(
             getattr(candidate, "grandparentTitle", "")
         )
 
-        if normalized_artist and candidate_artist != normalized_artist:
-            continue
+        if normalized_artist:
+            if candidate_artist != normalized_artist:
+                if normalized_album_artist:
+                    if candidate_artist != normalized_album_artist:
+                        continue
+                else:
+                    continue
+        elif normalized_album_artist:
+            if candidate_artist != normalized_album_artist:
+                continue
 
         popularity = _resolve_track_popularity_value(candidate, playlist_logger=log)
         popularity_score = popularity if popularity is not None else -1
@@ -835,6 +895,7 @@ def _select_best_spotify_candidate(
 
         score = (
             1 if normalized_artist and candidate_artist == normalized_artist else 0,
+            1 if normalized_album_artist and candidate_artist == normalized_album_artist else 0,
             title_similarity,
             1 if normalized_album and candidate_album == normalized_album else 0,
             album_similarity,
@@ -1190,6 +1251,31 @@ def _extract_spotify_entity_payload_from_next_data(html_text):
     return {"tracks": {"items": track_items}}
 
 
+def _coerce_primary_artist_name(artists) -> str:
+    if isinstance(artists, dict):
+        items = artists.get("items")
+        if isinstance(items, list):
+            artists = items
+        else:
+            # Some Spotify payloads use nested "profile" objects
+            profile = artists.get("profile") if isinstance(artists, dict) else None
+            if isinstance(profile, dict):
+                return profile.get("name") or profile.get("title") or ""
+
+    if isinstance(artists, list):
+        for entry in artists:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name") or entry.get("title")
+            if not name:
+                profile = entry.get("profile") if isinstance(entry, dict) else None
+                if isinstance(profile, dict):
+                    name = profile.get("name") or profile.get("title")
+            if name:
+                return name
+    return ""
+
+
 def _parse_spotify_entity_tracks(entity_payload):
     tracks_section = {}
     if isinstance(entity_payload, dict):
@@ -1209,26 +1295,28 @@ def _parse_spotify_entity_tracks(entity_payload):
             continue
 
         artists = track_info.get("artists") or []
-        if not artists:
-            album_info = track_info.get("album") or {}
+        album_info = track_info.get("album") or {}
+        if not artists and isinstance(album_info, dict):
             artists = album_info.get("artists") or []
 
-        primary_artist = ""
-        if isinstance(artists, list) and artists:
-            artist_entry = artists[0]
-            if isinstance(artist_entry, dict):
-                primary_artist = artist_entry.get("name") or ""
+        primary_artist = _coerce_primary_artist_name(artists)
 
-        album_info = track_info.get("album") or {}
         album_name = ""
         if isinstance(album_info, dict):
             album_name = album_info.get("name") or album_info.get("title") or ""
+            album_artist = _coerce_primary_artist_name(album_info.get("artists"))
+        else:
+            album_artist = ""
+
+        if not primary_artist:
+            primary_artist = album_artist
 
         parsed_tracks.append(
             {
                 "title": track_info.get("name") or "",
                 "artist": primary_artist,
                 "album": album_name,
+                "album_artist": album_artist,
             }
         )
 
@@ -3801,6 +3889,9 @@ _SERVER_FILTER_FIELD_MAP: Dict[str, Tuple[str, str]] = {
     "album": ("filters", "parentTitle"),
     "album.title": ("filters", "parentTitle"),
     "parenttitle": ("filters", "parentTitle"),
+    "album_artist": ("filters", "albumArtist.title"),
+    "albumartist": ("filters", "albumArtist.title"),
+    "albumartist.title": ("filters", "albumArtist.title"),
     "album.id": ("filters", "parentRatingKey"),
     "album.ratingkey": ("filters", "parentRatingKey"),
     "parentratingkey": ("filters", "parentRatingKey"),

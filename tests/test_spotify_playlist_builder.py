@@ -46,7 +46,12 @@ def test_parse_spotify_entity_tracks_skips_local_and_missing():
 
     parsed = main._parse_spotify_entity_tracks(entity)
     assert parsed == [
-        {"title": "Cloud Song", "artist": "Artist", "album": "Great Album"}
+        {
+            "title": "Cloud Song",
+            "artist": "Artist",
+            "album": "Great Album",
+            "album_artist": "Artist",
+        }
     ]
 
 
@@ -173,11 +178,17 @@ def test_extract_spotify_entity_payload_handles_next_data_tracks():
     tracks = main._parse_spotify_entity_tracks(parsed)
 
     assert tracks == [
-        {"title": "Next Song", "artist": "Next Artist", "album": "Next Album"},
+        {
+            "title": "Next Song",
+            "artist": "Next Artist",
+            "album": "Next Album",
+            "album_artist": "Next Artist",
+        },
         {
             "title": "Another Song",
             "artist": "Another Artist",
             "album": "Another Album",
+            "album_artist": "Another Artist",
         },
     ]
 
@@ -321,6 +332,43 @@ def test_match_spotify_tracks_requires_artist_match():
 
     assert matched == []
     assert unmatched == 1
+
+
+def test_match_spotify_tracks_falls_back_to_album_artist():
+    track = _DummyTrack("Song", "Album", "Album Artist", 10, 1)
+
+    responses = [
+        (
+            {"libtype": "track", "filters": {"albumArtist.title": "Album Artist"}},
+            [track],
+        )
+    ]
+    library = _DummyLibrary(responses)
+    log = _DummyLog()
+
+    spotify_tracks = [
+        {
+            "title": "Song",
+            "artist": "Track Artist",
+            "album_artist": "Album Artist",
+        }
+    ]
+
+    matched, unmatched = main._match_spotify_tracks_to_library(
+        spotify_tracks,
+        library,
+        log,
+    )
+
+    assert matched == [track]
+    assert unmatched == 0
+    assert library.calls == [
+        ("search", {"libtype": "track", "filters": {"artist.title": "Track Artist"}}),
+        (
+            "search",
+            {"libtype": "track", "filters": {"albumArtist.title": "Album Artist"}},
+        ),
+    ]
 
 
 def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
