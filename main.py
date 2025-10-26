@@ -617,7 +617,9 @@ def _normalize_compare_value(value):
     return normalized
 
 
-_SPOTIFY_KEYWORD_PATTERN = re.compile(r"(?i)\bremix(?:ed)?\b|\bremaster(?:ed|s)?\b")
+_SPOTIFY_KEYWORD_PATTERN = re.compile(
+    r"(?i)\bremix(?:ed)?\b|\bremaster(?:ed|s)?\b|\bsingle version(?:s)?\b"
+)
 _SPOTIFY_YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 _SPOTIFY_MATCH_MIN_RATIO = 0.65
 
@@ -628,7 +630,12 @@ def _clean_spotify_text(value):
 
     text = _strip_parenthetical(value)
     text = _SPOTIFY_KEYWORD_PATTERN.sub(" ", text)
-    text = re.sub(r"[-–—]\s*(?:\b(19|20)\d{2}\b\s*)?(?:remix(?:ed)?|remaster(?:ed|s)?)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"[-–—]\s*(?:\b(19|20)\d{2}\b\s*)?(?:remix(?:ed)?|remaster(?:ed|s)?|single version(?:s)?)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = _SPOTIFY_YEAR_PATTERN.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip(" -–—")
     return text.strip()
@@ -1069,9 +1076,26 @@ def _parse_spotify_entity_tracks(entity_payload):
     return parsed_tracks
 
 
+def _build_track_search_filters_from_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    filters: Dict[str, Any] = {}
+    for key, value in (params or {}).items():
+        if not value:
+            continue
+        normalized_key = str(key).lower()
+        mapping = _SERVER_FILTER_FIELD_MAP.get(normalized_key)
+        if not mapping:
+            continue
+        key_type, key_name = mapping
+        if key_type != "filters":
+            continue
+        filters[key_name] = value
+    return filters
+
+
 def _match_spotify_tracks_to_library(spotify_tracks, library, log):
     matched_tracks = []
     unmatched_count = 0
+    artist_search_cache: Dict[str, Tuple[Any, ...]] = {}
 
     for position, spotify_track in enumerate(spotify_tracks, 1):
         raw_title = spotify_track.get("title") or ""
@@ -1086,6 +1110,23 @@ def _match_spotify_tracks_to_library(spotify_tracks, library, log):
         normalized_album = _normalize_compare_value(album)
         normalized_artist = _normalize_compare_value(artist)
 
+        def _execute_filter_search(params):
+            filters = _build_track_search_filters_from_params(params)
+            if not filters:
+                return []
+            try:
+                results = library.search(libtype="track", filters=filters)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                log.warning(
+                    "Spotify search failed for '%s' by '%s' (query=%s): %s",
+                    raw_title or "<unknown>",
+                    raw_artist or "<unknown>",
+                    params,
+                    exc,
+                )
+                return []
+            return list(results or [])
+
         def _run_library_search():
             search_attempts = [
                 {"title": title, "album": album, "artist": artist},
@@ -1098,33 +1139,32 @@ def _match_spotify_tracks_to_library(spotify_tracks, library, log):
                 query = {key: value for key, value in params.items() if value}
                 if not query:
                     continue
-
-                try:
-                    results = library.searchTracks(**query)
-                except Exception as exc:  # pragma: no cover - defensive logging
-                    log.warning(
-                        "Spotify search failed for '%s' by '%s' (query=%s): %s",
-                        raw_title or "<unknown>",
-                        raw_artist or "<unknown>",
-                        query,
-                        exc,
-                    )
-                    results = []
+                results = _execute_filter_search(query)
                 if results:
                     return results
             return []
 
         artist_results = []
         if artist:
-            try:
-                artist_results = library.searchTracks(artist=artist)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                log.warning(
-                    "Spotify search failed when narrowing by artist '%s': %s",
-                    artist,
-                    exc,
-                )
-                artist_results = []
+            artist_cache_key = normalized_artist
+            if artist_cache_key in artist_search_cache:
+                cached = artist_search_cache[artist_cache_key]
+                artist_results = list(cached)
+            else:
+                filters = _build_track_search_filters_from_params({"artist": artist})
+                if filters:
+                    try:
+                        artist_results = list(
+                            library.search(libtype="track", filters=filters) or []
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive logging
+                        log.warning(
+                            "Spotify search failed when narrowing by artist '%s': %s",
+                            artist,
+                            exc,
+                        )
+                        artist_results = []
+                artist_search_cache[artist_cache_key] = tuple(artist_results)
 
         candidate_pool = artist_results or _run_library_search()
 
