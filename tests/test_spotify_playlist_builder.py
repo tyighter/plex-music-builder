@@ -267,7 +267,7 @@ def test_match_spotify_tracks_prefers_higher_ratingcount():
 
     responses = [
         (
-            {"libtype": "track", "filters": {"grandparentTitle": "Artist"}},
+            {"libtype": "track", "filters": {"artist.title": "Artist"}},
             [track_low, track_high],
         )
     ]
@@ -288,7 +288,7 @@ def test_match_spotify_tracks_prefers_higher_ratingcount():
     assert unmatched == 0
     assert library.calls[0] == (
         "search",
-        {"libtype": "track", "filters": {"grandparentTitle": "Artist"}},
+        {"libtype": "track", "filters": {"artist.title": "Artist"}},
     )
     assert len(library.calls) == 1
 
@@ -334,7 +334,7 @@ def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
             (
                 {
                     "libtype": "track",
-                    "filters": {"grandparentTitle": "Artist"},
+                    "filters": {"artist.title": "Artist"},
                 },
                 [track],
             )
@@ -356,7 +356,7 @@ def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
         "unmatched_tracks": 0,
     }
     assert library.calls == [
-        ("search", {"libtype": "track", "filters": {"grandparentTitle": "Artist"}})
+        ("search", {"libtype": "track", "filters": {"artist.title": "Artist"}})
     ]
     assert requested_urls == [
         "https://open.spotify.com/playlist/37i9dQZF1EQpVaHRDcozEz",
