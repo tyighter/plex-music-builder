@@ -4405,26 +4405,32 @@ def _prefetch_tracks_for_filters(
         return list(library.searchTracks()), None
 
     if wildcard_filters and wildcard_fetch_failed:
-        if log and log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                "Wildcard server-side filters not supported by Plex; falling back to full library scan."
-            )
-        fallback_tracks = list(library.searchTracks())
-        fallback_original = len(fallback_tracks)
-        duplicates = 0
-        for track in fallback_tracks:
-            key = _track_identity(track)
-            if key in seen_keys:
-                duplicates += 1
-                continue
-            seen_keys.add(key)
-            all_tracks.append(track)
+        if regular_filters:
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "Wildcard server-side filters not supported by Plex; skipping full library fallback because regular filters already narrowed the candidate set."
+                )
+        else:
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "Wildcard server-side filters not supported by Plex; falling back to full library scan."
+                )
+            fallback_tracks = list(library.searchTracks())
+            fallback_original = len(fallback_tracks)
+            duplicates = 0
+            for track in fallback_tracks:
+                key = _track_identity(track)
+                if key in seen_keys:
+                    duplicates += 1
+                    continue
+                seen_keys.add(key)
+                all_tracks.append(track)
 
-        if fetch_stats is None:
-            fetch_stats = {"requests": 0, "original_count": 0, "duplicates_removed": 0}
-        fetch_stats["original_count"] = fetch_stats.get("original_count", 0) + fallback_original
-        if duplicates:
-            fetch_stats["duplicates_removed"] = fetch_stats.get("duplicates_removed", 0) + duplicates
+            if fetch_stats is None:
+                fetch_stats = {"requests": 0, "original_count": 0, "duplicates_removed": 0}
+            fetch_stats["original_count"] = fetch_stats.get("original_count", 0) + fallback_original
+            if duplicates:
+                fetch_stats["duplicates_removed"] = fetch_stats.get("duplicates_removed", 0) + duplicates
 
     return all_tracks, fetch_stats
 
