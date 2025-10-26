@@ -15,8 +15,12 @@ runtime:
   build_all_on_start: false   # true = build playlists automatically when services start
 
 tidal:
-  token: ""                  # optional override for the default X-Tidal-Token
-  country_code: "US"         # optional override for the Tidal country code
+  client_id: ""              # OAuth client id from https://developer.tidal.com
+  client_secret: ""          # OAuth client secret from the TIDAL developer portal
+  redirect_uri: "http://localhost:8765/callback"  # Must match your app configuration
+  scope: "user.read playlists.read"
+  token_cache_file: "/app/tidal_tokens.json"  # Where refreshed tokens should be stored
+  country_code: "US"         # Optional override for the TIDAL country code
 
 allmusic:
   enabled: true

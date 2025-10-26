@@ -28,6 +28,12 @@ from difflib import SequenceMatcher
 from plexapi.server import PlexServer
 from tqdm import tqdm
 
+from tidal_auth import (
+    TidalAuthorizationRequired,
+    TidalOAuthClient,
+    TidalOAuthError,
+)
+
 # ----------------------------
 # Load Config and Setup Logging
 # ----------------------------
@@ -190,17 +196,46 @@ if PLAYLIST_LOG_DIR is None:
     PLAYLIST_LOG_DIR = os.path.join(_default_log_dir, "playlists")
 
 tidal_cfg = cfg.get("tidal", {}) or {}
-_DEFAULT_TIDAL_TOKEN = "wdgaB1CilGA-SQxgwZiewQ"
-_TIDAL_TOKEN = (
-    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_TOKEN"))
-    or _coerce_non_empty_str(tidal_cfg.get("token"))
-    or _DEFAULT_TIDAL_TOKEN
-)
 _TIDAL_COUNTRY_CODE = (
     _coerce_non_empty_str(os.environ.get("PMB_TIDAL_COUNTRY"))
     or _coerce_non_empty_str(tidal_cfg.get("country_code"))
     or "US"
 ).upper()
+
+_TIDAL_CLIENT_ID = (
+    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_CLIENT_ID"))
+    or _coerce_non_empty_str(tidal_cfg.get("client_id"))
+)
+_TIDAL_CLIENT_SECRET = (
+    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_CLIENT_SECRET"))
+    or _coerce_non_empty_str(tidal_cfg.get("client_secret"))
+)
+_TIDAL_REDIRECT_URI = (
+    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_REDIRECT_URI"))
+    or _coerce_non_empty_str(tidal_cfg.get("redirect_uri"))
+)
+
+_TIDAL_SCOPE = (
+    _coerce_non_empty_str(os.environ.get("PMB_TIDAL_SCOPE"))
+    or _coerce_non_empty_str(tidal_cfg.get("scope"))
+    or TidalOAuthClient.DEFAULT_SCOPE
+)
+
+_TIDAL_TOKEN_CACHE_FILE = Path(
+    _resolve_path_setting(
+        tidal_cfg.get("token_cache_file"),
+        RUNTIME_DIR / "tidal_tokens.json",
+        CONFIG_DIR,
+    )
+)
+
+_TIDAL_OAUTH_CLIENT = TidalOAuthClient(
+    client_id=_TIDAL_CLIENT_ID,
+    client_secret=_TIDAL_CLIENT_SECRET,
+    redirect_uri=_TIDAL_REDIRECT_URI,
+    token_store_path=_TIDAL_TOKEN_CACHE_FILE,
+    scope=_TIDAL_SCOPE,
+)
 
 if not PLEX_URL or not PLEX_TOKEN:
     raise EnvironmentError("PLEX_URL and PLEX_TOKEN must be set in config.yml")
@@ -884,16 +919,21 @@ _SPOTIFY_EMBED_PLAYLIST_URL_TEMPLATE = "https://open.spotify.com/embed/playlist/
 _TIDAL_PLAYLIST_ID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$"
 )
-_TIDAL_REQUEST_HEADERS = {
+_TIDAL_BASE_HEADERS = {
     "User-Agent": _SPOTIFY_REQUEST_HEADERS["User-Agent"],
     "Accept": "application/json",
     "Accept-Language": "en-US,en;q=0.5",
     "Origin": "https://tidal.com",
     "Referer": "https://tidal.com/",
-    "X-Tidal-Token": _TIDAL_TOKEN,
 }
 _TIDAL_API_BASE_URL = "https://listen.tidal.com/v1"
 _TIDAL_TRACKS_LIMIT = 100
+
+
+def _build_tidal_request_headers(access_token: str) -> Dict[str, str]:
+    headers = dict(_TIDAL_BASE_HEADERS)
+    headers["Authorization"] = f"Bearer {access_token}"
+    return headers
 
 
 def _extract_spotify_playlist_id(raw_url):
@@ -966,15 +1006,37 @@ def _fetch_tidal_tracks_page(playlist_id, offset, log):
     if log.isEnabledFor(logging.DEBUG):
         log.debug("Fetching Tidal playlist page %s from %s", offset, url)
 
-    try:
-        response = requests.get(
-            url,
-            headers=_TIDAL_REQUEST_HEADERS,
-            params=params,
-            timeout=30,
-        )
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Tidal request failed for {url}: {exc}") from exc
+    response = None
+    for attempt in range(2):
+        try:
+            access_token = _TIDAL_OAUTH_CLIENT.get_access_token(
+                force_refresh=attempt > 0
+            )
+        except TidalAuthorizationRequired as exc:
+            raise RuntimeError(
+                "Tidal authorization is required. Run the builder with --authorize-tidal "
+                "and complete the sign-in flow."
+            ) from exc
+
+        headers = _build_tidal_request_headers(access_token)
+
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Tidal request failed for {url}: {exc}") from exc
+
+        if response.status_code != 401 or attempt == 1:
+            break
+
+        _TIDAL_OAUTH_CLIENT.revoke_cached_access_token()
+
+    if response is None:
+        raise RuntimeError("Unable to contact Tidal after refreshing credentials.")
 
     if log.isEnabledFor(logging.DEBUG):
         log.debug("Tidal response for %s: %s", url, _summarize_http_response(response))
@@ -985,8 +1047,8 @@ def _fetch_tidal_tracks_page(playlist_id, offset, log):
         summary = _summarize_http_response(response)
         if response.status_code == 401:
             hint = (
-                "Received HTTP 401 from Tidal. Verify the X-Tidal-Token value "
-                "(set PMB_TIDAL_TOKEN or tidal.token in config.yml)."
+                "Received HTTP 401 from Tidal. Try re-running with --authorize-tidal "
+                "to refresh the stored credentials."
             )
             raise RuntimeError(
                 "Tidal request returned an error for %s: %s %s"
@@ -5829,7 +5891,22 @@ if __name__ == "__main__":
         action="append",
         help="Name of a playlist to build. Can be provided multiple times.",
     )
+    parser.add_argument(
+        "--authorize-tidal",
+        action="store_true",
+        help="Start an interactive flow to authorize TIDAL access and exit.",
+    )
     args = parser.parse_args()
+
+    if args.authorize_tidal:
+        try:
+            _TIDAL_OAUTH_CLIENT.authorize_interactively()
+        except TidalOAuthError as exc:
+            logger.error("Unable to authorize TIDAL: %s", exc)
+            sys.exit(1)
+        else:
+            logger.info("TIDAL authorization completed successfully.")
+            sys.exit(0)
 
     if CACHE_ONLY:
         build_metadata_cache()
