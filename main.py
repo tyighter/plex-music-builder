@@ -632,6 +632,34 @@ def _normalize_compare_value(value):
     return normalized
 
 
+_ARTIST_SPLIT_PATTERN = re.compile(
+    r"(?:\b(?:and|with|feat(?:\.|uring)?|ft\.?|vs\.?)\b|[,&/;+])"
+)
+
+
+def _split_normalized_artists(value: str) -> List[str]:
+    if not value:
+        return []
+    parts = _ARTIST_SPLIT_PATTERN.split(value)
+    cleaned = [part.strip(" .-") for part in parts if part and part.strip(" .-")]
+    return cleaned
+
+
+def _artists_match(candidate_artists: Sequence[str], reference_artists: Sequence[str]) -> bool:
+    if not reference_artists:
+        return True
+    if not candidate_artists:
+        return False
+
+    candidate_set = set(candidate_artists)
+    reference_set = set(reference_artists)
+
+    if candidate_set.issubset(reference_set) or reference_set.issubset(candidate_set):
+        return True
+
+    return bool(candidate_set & reference_set)
+
+
 _SPOTIFY_KEYWORD_PATTERN = re.compile(
     r"(?i)\bremix(?:ed)?\b|\bremaster(?:ed|s)?\b|\bsingle version(?:s)?\b"
 )
@@ -860,6 +888,8 @@ def _select_best_spotify_candidate(
     best_candidate = None
     best_similarity = 0.0
     best_score = None
+    normalized_artist_parts = _split_normalized_artists(normalized_artist)
+    normalized_album_artist_parts = _split_normalized_artists(normalized_album_artist)
 
     for candidate in candidates:
         candidate_title = _normalize_compare_value(
@@ -871,16 +901,21 @@ def _select_best_spotify_candidate(
         candidate_artist = _normalize_compare_value(
             getattr(candidate, "grandparentTitle", "")
         )
+        candidate_artist_parts = _split_normalized_artists(candidate_artist)
 
         if normalized_artist:
-            if candidate_artist != normalized_artist:
+            if not _artists_match(candidate_artist_parts, normalized_artist_parts):
                 if normalized_album_artist:
-                    if candidate_artist != normalized_album_artist:
+                    if not _artists_match(
+                        candidate_artist_parts, normalized_album_artist_parts
+                    ):
                         continue
                 else:
                     continue
         elif normalized_album_artist:
-            if candidate_artist != normalized_album_artist:
+            if not _artists_match(
+                candidate_artist_parts, normalized_album_artist_parts
+            ):
                 continue
 
         popularity = _resolve_track_popularity_value(candidate, playlist_logger=log)

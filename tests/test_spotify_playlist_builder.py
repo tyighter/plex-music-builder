@@ -371,6 +371,54 @@ def test_match_spotify_tracks_falls_back_to_album_artist():
     ]
 
 
+def test_match_spotify_tracks_handles_multi_artist_names():
+    track = _DummyTrack("Hooked on a Feeling", "Album", "Blue Swede", 5, 1)
+
+    responses = [
+        (
+            {"libtype": "track", "filters": {"artist.title": "Blue Swede, Björn Skifs"}},
+            [],
+        ),
+        (
+            {
+                "libtype": "track",
+                "filters": {
+                    "track.title": "Hooked on a Feeling",
+                    "artist.title": "Blue Swede, Björn Skifs",
+                },
+            },
+            [],
+        ),
+        (
+            {"libtype": "track", "filters": {"track.title": "Hooked on a Feeling"}},
+            [track],
+        ),
+    ]
+    library = _DummyLibrary(responses)
+    log = _DummyLog()
+
+    spotify_tracks = [
+        {
+            "title": "Hooked on a Feeling",
+            "artist": "Blue Swede, Björn Skifs",
+            "album_artist": "Blue Swede & Björn Skifs",
+        }
+    ]
+
+    matched, unmatched = main._match_spotify_tracks_to_library(
+        spotify_tracks,
+        library,
+        log,
+    )
+
+    assert matched == [track]
+    assert unmatched == 0
+    assert library.calls[-1] == (
+        "search",
+        {"libtype": "track", "filters": {"track.title": "Hooked on a Feeling"}},
+    )
+
+
 def test_collect_spotify_tracks_falls_back_to_embed(monkeypatch):
     login_page = "<html><head><title>Spotify – Web Player</title></head><body></body></html>"
     entity_payload = {
