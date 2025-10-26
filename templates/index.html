@@ -1476,12 +1476,23 @@
         transform: rotate(-90deg);
       }
 
-      .build-status-logs.collapsed .build-log-list {
+      .build-log-collapsible {
+        margin-top: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .build-status-logs.collapsed .build-log-collapsible {
         display: none;
       }
 
+      .build-log-actions {
+        display: flex;
+        justify-content: flex-end;
+      }
+
       .playlist-log-list {
-        margin-top: 12px;
         display: flex;
         flex-direction: column;
         gap: 12px;
@@ -2098,19 +2109,23 @@
                 <span class="playlist-log-toggle-label">Activity</span>
                 <span class="playlist-log-toggle-icon" aria-hidden="true">▾</span>
               </button>
-              <button
-                id="clearActivityBtn"
-                class="playlist-log-clear secondary"
-                type="button"
-                title="Dismiss all activity messages"
-                aria-label="Dismiss all activity messages"
-                aria-disabled="true"
-                disabled
-              >
-                Clear All
-              </button>
             </div>
-            <div id="buildLogContainer" class="build-log-list"></div>
+            <div class="build-log-collapsible">
+              <div class="build-log-actions">
+                <button
+                  id="clearActivityBtn"
+                  class="playlist-log-clear secondary"
+                  type="button"
+                  title="Dismiss all activity messages"
+                  aria-label="Dismiss all activity messages"
+                  aria-disabled="true"
+                  disabled
+                >
+                  Clear All
+                </button>
+              </div>
+              <div id="buildLogContainer" class="build-log-list"></div>
+            </div>
           </div>
         </div>
       </section>
@@ -3882,7 +3897,63 @@
           }
           logsByPlaylist[trimmedName] = rawEntries;
         });
-        const generalLogs = status?.logs?.general || [];
+        const generalLogs = Array.isArray(status?.logs?.general)
+          ? status.logs.general.slice()
+          : [];
+
+        const isFiltersName = (value) =>
+          typeof value === "string" && value.trim().toLowerCase() === "filters";
+
+        let hasFiltersPlaylist = false;
+        if (Array.isArray(state.playlists)) {
+          hasFiltersPlaylist = state.playlists.some((playlist) =>
+            isFiltersName(playlist?.name)
+          );
+        }
+
+        if (!hasFiltersPlaylist && activePlaylists.some((name) => isFiltersName(name))) {
+          hasFiltersPlaylist = true;
+        }
+
+        if (!hasFiltersPlaylist && waitingPlaylists.some((name) => isFiltersName(name))) {
+          hasFiltersPlaylist = true;
+        }
+
+        if (!hasFiltersPlaylist) {
+          for (const name of playlistCancellationMessages.keys()) {
+            if (isFiltersName(name)) {
+              hasFiltersPlaylist = true;
+              break;
+            }
+          }
+        }
+
+        if (!hasFiltersPlaylist) {
+          const resultPlaylists = status?.results?.playlists;
+          if (resultPlaylists && typeof resultPlaylists === "object") {
+            for (const rawName of Object.keys(resultPlaylists)) {
+              if (isFiltersName(rawName)) {
+                hasFiltersPlaylist = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!hasFiltersPlaylist) {
+          Object.keys(logsByPlaylist).forEach((name) => {
+            if (!isFiltersName(name)) {
+              return;
+            }
+            const entries = logsByPlaylist[name];
+            delete logsByPlaylist[name];
+            if (Array.isArray(entries)) {
+              entries.forEach((entry) => {
+                generalLogs.push(normalizeGeneralLogEntry(entry));
+              });
+            }
+          });
+        }
 
         const combinedNames = Object.keys(logsByPlaylist);
         activePlaylists.forEach((name) => {
