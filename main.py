@@ -4306,6 +4306,8 @@ def _prefetch_tracks_for_filters(
     regular_filters: Sequence[CompiledFilter],
     wildcard_filters: Sequence[CompiledFilter],
     log: Optional[logging.Logger] = None,
+    *,
+    playlist_name: Optional[str] = None,
 ) -> Tuple[List[Any], Optional[Dict[str, int]]]:
     """Fetch tracks for the provided filters, including wildcard-only matches."""
 
@@ -4330,10 +4332,13 @@ def _prefetch_tracks_for_filters(
             existing[key] = existing.get(key, 0) + addition.get(key, 0)
         return existing
 
+    playlist_display = playlist_name or "<unknown playlist>"
+
     if server_kwargs or server_filter_dict or multi_value_filters:
-        if log and log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                "Fetching tracks with regular server-side filters: kwargs=%s, filters=%s, multi_value=%s",
+        if log:
+            log.info(
+                "Server prefetch for '%s': applying regular filters (kwargs=%s, filters=%s, multi_value=%s)",
+                playlist_display,
                 server_kwargs,
                 server_filter_dict,
                 multi_value_filters,
@@ -4347,9 +4352,10 @@ def _prefetch_tracks_for_filters(
                 logger=log,
             )
         except NotFound as exc:
-            if log and log.isEnabledFor(logging.DEBUG):
-                log.debug(
-                    "Server rejected regular server-side filters; falling back to client filtering: %s",
+            if log:
+                log.info(
+                    "Server prefetch for '%s': regular filters rejected by Plex; falling back to client filtering (%s)",
+                    playlist_display,
                     exc,
                 )
         else:
@@ -4357,6 +4363,16 @@ def _prefetch_tracks_for_filters(
             fetch_stats = _accumulate_stats(fetch_stats, regular_stats)
             all_tracks.extend(regular_tracks)
             seen_keys.update(_track_identity(track) for track in regular_tracks)
+            if log:
+                request_count = 0
+                if isinstance(regular_stats, dict):
+                    request_count = regular_stats.get("requests", 0)
+                log.info(
+                    "Server prefetch for '%s': regular filters returned %d track(s) across %d queries",
+                    playlist_display,
+                    len(regular_tracks),
+                    request_count,
+                )
 
     for wildcard_filter in wildcard_filters or ():
         wildcard_kwargs, wildcard_filter_dict, wildcard_multi_value_filters = _build_server_side_search_filters(
@@ -4366,9 +4382,10 @@ def _prefetch_tracks_for_filters(
         if not (wildcard_kwargs or wildcard_filter_dict or wildcard_multi_value_filters):
             continue
 
-        if log and log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                "Fetching tracks with wildcard server-side filters: kwargs=%s, filters=%s, multi_value=%s",
+        if log:
+            log.info(
+                "Server prefetch for '%s': applying wildcard filters (kwargs=%s, filters=%s, multi_value=%s)",
+                playlist_display,
                 wildcard_kwargs,
                 wildcard_filter_dict,
                 wildcard_multi_value_filters,
@@ -4383,9 +4400,10 @@ def _prefetch_tracks_for_filters(
             )
         except NotFound as exc:
             wildcard_fetch_failed = True
-            if log and log.isEnabledFor(logging.DEBUG):
-                log.debug(
-                    "Server rejected wildcard server-side filters; falling back to client filtering: %s",
+            if log:
+                log.info(
+                    "Server prefetch for '%s': wildcard filters rejected by Plex; falling back to client filtering (%s)",
+                    playlist_display,
                     exc,
                 )
         else:
@@ -4405,6 +4423,17 @@ def _prefetch_tracks_for_filters(
                     fetch_stats = {"requests": 0, "original_count": 0, "duplicates_removed": duplicates}
                 else:
                     fetch_stats["duplicates_removed"] = fetch_stats.get("duplicates_removed", 0) + duplicates
+            if log:
+                request_count = 0
+                if isinstance(wildcard_stats, dict):
+                    request_count = wildcard_stats.get("requests", 0)
+                log.info(
+                    "Server prefetch for '%s': wildcard filters returned %d track(s) across %d queries (duplicates skipped=%d)",
+                    playlist_display,
+                    len(wildcard_tracks),
+                    request_count,
+                    duplicates,
+                )
 
     if not any_successful_server_fetch:
         return list(library.searchTracks()), None
@@ -4415,9 +4444,10 @@ def _prefetch_tracks_for_filters(
         and not wildcard_fetch_success
         and not regular_filters
     ):
-        if log and log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                "Wildcard server-side filters not supported by Plex; falling back to full library scan."
+        if log:
+            log.info(
+                "Server prefetch for '%s': wildcard filters unsupported; falling back to full library scan.",
+                playlist_display,
             )
         fallback_tracks = list(library.searchTracks())
         fallback_original = len(fallback_tracks)
@@ -5290,7 +5320,11 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
 
     fetch_start = time.perf_counter()
     all_tracks, fetch_stats = _prefetch_tracks_for_filters(
-        library, regular_filters, wildcard_filters, log
+        library,
+        regular_filters,
+        wildcard_filters,
+        log,
+        playlist_name=name,
     )
 
     total_tracks = len(all_tracks)
@@ -5310,16 +5344,18 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             meta_parts.append(f"removed {duplicates_removed} duplicate {plural}")
         meta_suffix = f" ({'; '.join(meta_parts)})" if meta_parts else ""
         log.info(
-            "Fetched %s tracks from %s in %.2fs%s",
+            "Fetched %s tracks for '%s' from %s in %.2fs%s",
             total_tracks,
+            name,
             config.get("library", LIBRARY_NAME),
             fetch_duration,
             meta_suffix,
         )
     else:
         log.info(
-            "Fetched %s tracks from %s in %.2fs",
+            "Fetched %s tracks for '%s' from %s in %.2fs",
             total_tracks,
+            name,
             config.get("library", LIBRARY_NAME),
             fetch_duration,
         )

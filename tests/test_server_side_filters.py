@@ -319,7 +319,13 @@ def test_prefetch_tracks_fetches_union_of_regular_and_wildcard_filters():
         )
     ]
 
-    tracks, stats = main._prefetch_tracks_for_filters(library, regular_filters, wildcard_filters, logging.getLogger("test"))
+    tracks, stats = main._prefetch_tracks_for_filters(
+        library,
+        regular_filters,
+        wildcard_filters,
+        logging.getLogger("test"),
+        playlist_name="Test Playlist",
+    )
 
     assert {track.ratingKey for track in tracks} == {"beatles-1", "wildcard-1"}
     assert stats is not None and stats["requests"] == 5
@@ -343,7 +349,13 @@ def test_prefetch_tracks_deduplicates_overlapping_results():
         )
     ]
 
-    tracks, stats = main._prefetch_tracks_for_filters(library, regular_filters, wildcard_filters, logging.getLogger("test"))
+    tracks, stats = main._prefetch_tracks_for_filters(
+        library,
+        regular_filters,
+        wildcard_filters,
+        logging.getLogger("test"),
+        playlist_name="Test Playlist",
+    )
 
     assert [track.ratingKey for track in tracks] == ["shared"]
     assert stats is not None and stats["requests"] == 5
@@ -369,7 +381,11 @@ def test_prefetch_tracks_skips_full_library_when_wildcard_rejected():
     ]
 
     tracks, stats = main._prefetch_tracks_for_filters(
-        library, regular_filters, wildcard_filters, logging.getLogger("test")
+        library,
+        regular_filters,
+        wildcard_filters,
+        logging.getLogger("test"),
+        playlist_name="Test Playlist",
     )
 
     assert [track.ratingKey for track in tracks] == ["beatles-1"]
@@ -403,7 +419,11 @@ def test_prefetch_tracks_handles_multiple_wildcard_filters_independently():
     ]
 
     tracks, stats = main._prefetch_tracks_for_filters(
-        library, [], wildcard_filters, logging.getLogger("test")
+        library,
+        [],
+        wildcard_filters,
+        logging.getLogger("test"),
+        playlist_name="Test Playlist",
     )
 
     assert [track.ratingKey for track in tracks] == [
