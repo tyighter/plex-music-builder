@@ -663,6 +663,7 @@ class PlaylistConflictError(Exception):
 
 class BuildManager:
     _INFO_LINE_PATTERN = re.compile(r"\[(?P<level>[A-Z]+)\]\s*(?P<message>.*)")
+    _LOG_MESSAGE_LEVELS = {"INFO", "WARNING", "ERROR", "CRITICAL"}
     _PLAYLIST_QUOTED_PATTERN = re.compile(r"'([^']+)'")
     _FILTERING_PROGRESS_LEGACY_PATTERN = re.compile(
         r"Filtering '(?P<playlist>[^']+)':?\s+"
@@ -752,14 +753,15 @@ class BuildManager:
         match = cls._INFO_LINE_PATTERN.search(raw)
         if match:
             level = match.group("level")
-            if level != "INFO":
+            if level not in cls._LOG_MESSAGE_LEVELS:
                 return None
             message = match.group("message").strip()
             return message
 
-        if raw.startswith("INFO"):
-            parts = raw.split(":", 1)
-            if len(parts) == 2:
+        parts = raw.split(":", 1)
+        if len(parts) == 2:
+            level = parts[0].strip().upper()
+            if level in cls._LOG_MESSAGE_LEVELS:
                 return parts[1].strip()
         return None
 
@@ -777,7 +779,12 @@ class BuildManager:
 
     def _append_playlist_log_locked(self, playlist_name: str, message: str) -> None:
         logs = self._playlist_logs.setdefault(playlist_name, [])
-        is_final = message.strip().startswith("✅")
+        normalized_message = message.strip().lower()
+        is_final = (
+            normalized_message.startswith("✅")
+            or "failed" in normalized_message
+            or "stopped" in normalized_message
+        )
         entry = {
             "type": "message",
             "text": message,
