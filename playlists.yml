@@ -9,6 +9,7 @@ playlists:
     limit: 1000
     artist_limit: 5
     album_limit: 3
+    year_limit: 0
     sort_by: popularity
     cover: /images/althiphop.png
     plex_filter:
@@ -20,6 +21,7 @@ playlists:
     limit: 1000
     artist_limit: 5
     album_limit: 3
+    year_limit: 0
     sort_by: popularity
     cover: /images/classic_rock.png
     plex_filter:
@@ -51,6 +53,7 @@ playlists:
     limit: 1000
     artist_limit: 5
     album_limit: 3
+    year_limit: 0
     sort_by: popularity
     cover: /images/punkwave9.png
     plex_filter:
@@ -77,6 +80,7 @@ playlists:
     limit: 40
     artist_limit: 5
     album_limit: 3
+    year_limit: 0
     sort_by: popularity
     plex_filter:
       - field: artist
