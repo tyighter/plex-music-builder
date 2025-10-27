@@ -1026,12 +1026,14 @@
       }
 
       .cover-field {
-        display: flex;
-        flex-direction: column;
+        display: grid;
+        grid-template-rows: auto 1fr;
         gap: 10px;
         color: rgba(255, 255, 255, 0.8);
         font-size: 14px;
         align-self: stretch;
+        align-content: stretch;
+        align-items: start;
       }
 
       .cover-field-label {
@@ -1055,7 +1057,9 @@
         cursor: pointer;
         padding: 0;
         transition: border 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
-        margin-top: auto;
+        margin-top: 0;
+        align-self: end;
+        justify-self: start;
       }
 
       button.cover-preview:hover,
@@ -1104,7 +1108,7 @@
       .limit-control {
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 0;
         font-size: 14px;
         color: rgba(255, 255, 255, 0.8);
         align-self: stretch;
@@ -1113,7 +1117,7 @@
       button.limit-button {
         display: flex;
         align-items: center;
-        justify-content: space-between;
+        justify-content: center;
         width: 100%;
         padding: 10px 14px;
         border-radius: 10px;
@@ -1123,7 +1127,7 @@
         font-size: 15px;
         font-weight: 500;
         box-shadow: none;
-        gap: 10px;
+        gap: 8px;
         transition: border 0.2s ease, box-shadow 0.2s ease, background 0.2s ease,
           transform 0.2s ease;
       }
@@ -1132,6 +1136,7 @@
         content: "▾";
         font-size: 12px;
         opacity: 0.7;
+        margin-left: 6px;
       }
 
       button.limit-button:hover,
@@ -1155,21 +1160,10 @@
         box-shadow: none;
       }
 
-      .limit-button-value {
-        margin-left: auto;
-        font-weight: 600;
-        font-size: 15px;
-      }
-
-      .limit-summary {
-        display: none;
-        font-size: 13px;
-        color: rgba(255, 255, 255, 0.65);
-        line-height: 1.4;
-      }
-
-      .limit-control.has-summary .limit-summary {
-        display: block;
+      .limit-control.has-limits button.limit-button,
+      button.limit-button.has-limits {
+        border-color: rgba(229, 160, 13, 0.55);
+        background: rgba(229, 160, 13, 0.12);
       }
 
       .limit-menu-backdrop {
@@ -6661,28 +6655,41 @@
         return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
       }
 
-      function updateLimitDisplayForPlaylist(
-        playlist,
-        controlEl,
-        valueEl,
-        summaryEl
-      ) {
-        if (valueEl) {
-          const normalizedLimit = normalizeLimitNumber(playlist?.limit);
-          valueEl.textContent = normalizedLimit;
+      function updateLimitDisplayForPlaylist(playlist, controlEl, buttonEl) {
+        if (!controlEl && !buttonEl) {
+          return;
         }
 
-        if (summaryEl && controlEl) {
-          const summaryParts = [];
-          LIMIT_TYPE_OPTIONS.forEach((option) => {
-            const normalized = normalizeLimitNumber(playlist?.[option.field]);
-            if (normalized > 0) {
-              summaryParts.push(`${option.label}: ${normalized}`);
-            }
-          });
-          const summaryText = summaryParts.join(" • ");
-          summaryEl.textContent = summaryText;
-          controlEl.classList.toggle("has-summary", Boolean(summaryText));
+        const normalizedLimit = normalizeLimitNumber(playlist?.limit);
+        const extraSummaries = [];
+        LIMIT_TYPE_OPTIONS.forEach((option) => {
+          const normalized = normalizeLimitNumber(playlist?.[option.field]);
+          if (normalized > 0) {
+            extraSummaries.push(`${option.label}: ${normalized}`);
+          }
+        });
+
+        const summaryText = extraSummaries.join(", ");
+        const hasLimits = normalizedLimit > 0 || extraSummaries.length > 0;
+        const baseDescription =
+          normalizedLimit > 0 ? `Limit: ${normalizedLimit}` : "";
+        const description = hasLimits
+          ? [baseDescription, summaryText]
+              .filter(Boolean)
+              .join(" • ")
+          : "No limits configured";
+
+        if (controlEl) {
+          controlEl.classList.toggle("has-limits", hasLimits);
+        }
+
+        if (buttonEl) {
+          buttonEl.classList.toggle("has-limits", hasLimits);
+          buttonEl.setAttribute("title", description);
+          buttonEl.setAttribute(
+            "aria-label",
+            hasLimits ? `Edit limits (${description})` : "Set limits"
+          );
         }
       }
 
@@ -7317,23 +7324,13 @@
           limitButton.setAttribute("aria-haspopup", "dialog");
           limitButton.setAttribute("aria-expanded", "false");
           const limitButtonLabel = document.createElement("span");
+          limitButtonLabel.className = "limit-button-label";
           limitButtonLabel.textContent = "Limit";
-          const limitButtonValue = document.createElement("span");
-          limitButtonValue.className = "limit-button-value";
           limitButton.appendChild(limitButtonLabel);
-          limitButton.appendChild(limitButtonValue);
           limitControl.appendChild(limitButton);
-          const limitSummary = document.createElement("div");
-          limitSummary.className = "limit-summary";
-          limitControl.appendChild(limitSummary);
 
           const syncLimitDisplay = () => {
-            updateLimitDisplayForPlaylist(
-              playlist,
-              limitControl,
-              limitButtonValue,
-              limitSummary
-            );
+            updateLimitDisplayForPlaylist(playlist, limitControl, limitButton);
           };
 
           limitButton.addEventListener("click", () => {
