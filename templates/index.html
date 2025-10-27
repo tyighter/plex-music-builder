@@ -2283,6 +2283,16 @@
         const collapsed = Boolean(isActivityCollapsed);
         if (buildStatusLogs) {
           buildStatusLogs.classList.toggle("collapsed", collapsed);
+          const collapsible = buildStatusLogs.querySelector(
+            ".build-log-collapsible"
+          );
+          if (collapsible) {
+            collapsible.hidden = collapsed;
+            collapsible.setAttribute(
+              "aria-hidden",
+              collapsed ? "true" : "false"
+            );
+          }
         }
         if (playlistActivityToggle) {
           playlistActivityToggle.setAttribute(
