@@ -84,9 +84,27 @@ def test_save_playlists_alphabetizes_entries(tmp_path, monkeypatch):
     payload = {
         "defaults": {},
         "playlists": [
-            {"name": "Rock", "limit": 0, "artist_limit": 0, "album_limit": 0},
-            {"name": "acoustic", "limit": 0, "artist_limit": 0, "album_limit": 0},
-            {"name": "Blues", "limit": 0, "artist_limit": 0, "album_limit": 0},
+            {
+                "name": "Rock",
+                "limit": 0,
+                "artist_limit": 0,
+                "album_limit": 0,
+                "year_limit": 0,
+            },
+            {
+                "name": "acoustic",
+                "limit": 0,
+                "artist_limit": 0,
+                "album_limit": 0,
+                "year_limit": 0,
+            },
+            {
+                "name": "Blues",
+                "limit": 0,
+                "artist_limit": 0,
+                "album_limit": 0,
+                "year_limit": 0,
+            },
         ],
     }
 
@@ -108,14 +126,38 @@ def test_save_single_playlist_preserves_sorted_order(tmp_path, monkeypatch):
         "defaults": {},
         "playlists": OrderedDict(
             [
-                ("Rock", {"limit": 0, "artist_limit": 0, "album_limit": 0}),
-                ("acoustic", {"limit": 0, "artist_limit": 0, "album_limit": 0}),
+                (
+                    "Rock",
+                    {
+                        "limit": 0,
+                        "artist_limit": 0,
+                        "album_limit": 0,
+                        "year_limit": 0,
+                    },
+                ),
+                (
+                    "acoustic",
+                    {
+                        "limit": 0,
+                        "artist_limit": 0,
+                        "album_limit": 0,
+                        "year_limit": 0,
+                    },
+                ),
             ]
         ),
     }
     write_yaml(playlist_path, initial_data)
 
-    save_single_playlist({"name": "Blues", "limit": 0, "artist_limit": 0, "album_limit": 0})
+    save_single_playlist(
+        {
+            "name": "Blues",
+            "limit": 0,
+            "artist_limit": 0,
+            "album_limit": 0,
+            "year_limit": 0,
+        }
+    )
 
     with playlist_path.open("r", encoding="utf-8") as handle:
         saved = yaml.safe_load(handle)

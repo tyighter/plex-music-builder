@@ -1031,6 +1031,7 @@
         gap: 10px;
         color: rgba(255, 255, 255, 0.8);
         font-size: 14px;
+        align-self: stretch;
       }
 
       .cover-field-label {
@@ -1054,6 +1055,7 @@
         cursor: pointer;
         padding: 0;
         transition: border 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+        margin-top: auto;
       }
 
       button.cover-preview:hover,
@@ -1097,6 +1099,171 @@
 
       .cover-preview-caption {
         display: none;
+      }
+
+      .limit-control {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.8);
+        align-self: stretch;
+      }
+
+      button.limit-button {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        padding: 10px 14px;
+        border-radius: 10px;
+        border: 1px solid rgba(229, 160, 13, 0.25);
+        background: rgba(14, 14, 14, 0.6);
+        color: var(--plex-light);
+        font-size: 15px;
+        font-weight: 500;
+        box-shadow: none;
+        gap: 10px;
+        transition: border 0.2s ease, box-shadow 0.2s ease, background 0.2s ease,
+          transform 0.2s ease;
+      }
+
+      button.limit-button::after {
+        content: "▾";
+        font-size: 12px;
+        opacity: 0.7;
+      }
+
+      button.limit-button:hover,
+      button.limit-button:focus-visible {
+        border-color: rgba(229, 160, 13, 0.55);
+        box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.25);
+        outline: none;
+        background: rgba(229, 160, 13, 0.08);
+        transform: none;
+      }
+
+      button.limit-button:active {
+        transform: translateY(1px);
+        background: rgba(229, 160, 13, 0.12);
+      }
+
+      button.limit-button:disabled {
+        opacity: 0.65;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .limit-button-value {
+        margin-left: auto;
+        font-weight: 600;
+        font-size: 15px;
+      }
+
+      .limit-summary {
+        display: none;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.65);
+        line-height: 1.4;
+      }
+
+      .limit-control.has-summary .limit-summary {
+        display: block;
+      }
+
+      .limit-menu-backdrop {
+        position: fixed;
+        inset: 0;
+        background: transparent;
+        display: none;
+        z-index: 1750;
+      }
+
+      .limit-menu {
+        position: absolute;
+        display: none;
+        flex-direction: column;
+        gap: 16px;
+        padding: 18px;
+        background: var(--card-bg);
+        border-radius: 16px;
+        border: 1px solid rgba(229, 160, 13, 0.22);
+        box-shadow: 0 20px 48px rgba(0, 0, 0, 0.55);
+        min-width: clamp(260px, 32vw, 340px);
+        max-width: min(360px, 90vw);
+        z-index: 1760;
+      }
+
+      .limit-menu.show {
+        display: flex;
+      }
+
+      .limit-menu-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .limit-menu-header h3 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .limit-menu-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .limit-row-base label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.8);
+      }
+
+      .limit-row-extra {
+        display: grid;
+        grid-template-columns: minmax(140px, 1fr) minmax(80px, 120px) auto;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .limit-row-extra select,
+      .limit-row-extra input {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid rgba(229, 160, 13, 0.25);
+        background: rgba(14, 14, 14, 0.6);
+        color: var(--plex-light);
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+
+      .limit-row-extra select:focus,
+      .limit-row-extra input:focus {
+        outline: none;
+        border-color: var(--plex-orange);
+        box-shadow: 0 0 0 2px rgba(229, 160, 13, 0.25);
+      }
+
+      .limit-row-extra button.limit-remove {
+        width: 36px;
+        height: 36px;
+      }
+
+      .limit-menu-footer {
+        display: flex;
+        justify-content: flex-start;
+      }
+
+      button.limit-add {
+        border-radius: 999px;
+        padding: 8px 16px;
+        font-size: 14px;
       }
 
       .cover-picker-button {
@@ -2314,6 +2481,21 @@
         empty: "Select a cover to preview it.",
         loading: "Loading preview…",
         error: "Preview unavailable",
+      };
+      const LIMIT_MENU_TITLE_ID = "limitMenuTitle";
+      const LIMIT_TYPE_OPTIONS = [
+        { key: "artist", label: "Artist", field: "artist_limit" },
+        { key: "album", label: "Album", field: "album_limit" },
+        { key: "year", label: "Year", field: "year_limit" },
+      ];
+      const limitMenuState = {
+        container: null,
+        backdrop: null,
+        playlist: null,
+        anchor: null,
+        updateDisplay: null,
+        repositionHandler: null,
+        toggleButton: null,
       };
       const coverPickerState = {
         playlist: null,
@@ -6314,6 +6496,7 @@
         duplicate.limit = duplicate.limit ?? 0;
         duplicate.artist_limit = duplicate.artist_limit ?? 0;
         duplicate.album_limit = duplicate.album_limit ?? 0;
+        duplicate.year_limit = duplicate.year_limit ?? 0;
         duplicate.sort_by = duplicate.sort_by || "";
         if (!Array.isArray(duplicate.plex_filter)) {
           duplicate.plex_filter = [];
@@ -6406,10 +6589,491 @@
         return haystacks.some((text) => text.includes(normalizedTerm));
       }
 
+      function getLimitFieldForType(typeKey) {
+        switch (typeKey) {
+          case "artist":
+            return "artist_limit";
+          case "album":
+            return "album_limit";
+          case "year":
+            return "year_limit";
+          default:
+            return "";
+        }
+      }
+
+      function ensureLimitSelections(playlist) {
+        if (!playlist || typeof playlist !== "object") {
+          return [];
+        }
+        if (!Array.isArray(playlist._limitSelections)) {
+          playlist._limitSelections = [];
+        }
+        return playlist._limitSelections;
+      }
+
+      function addLimitSelection(playlist, typeKey) {
+        if (!typeKey) {
+          return;
+        }
+        const selections = ensureLimitSelections(playlist);
+        if (!selections.includes(typeKey)) {
+          selections.push(typeKey);
+        }
+      }
+
+      function removeLimitSelection(playlist, typeKey) {
+        const selections = ensureLimitSelections(playlist);
+        const index = selections.indexOf(typeKey);
+        if (index >= 0) {
+          selections.splice(index, 1);
+        }
+      }
+
+      function getPlaylistLimitRaw(playlist, typeKey) {
+        if (!playlist || !typeKey) {
+          return 0;
+        }
+        const field = getLimitFieldForType(typeKey);
+        if (!field) {
+          return 0;
+        }
+        const value = playlist[field];
+        return value === undefined || value === null ? 0 : value;
+      }
+
+      function setPlaylistLimitValue(playlist, typeKey, value) {
+        if (!playlist || !typeKey) {
+          return;
+        }
+        const field = getLimitFieldForType(typeKey);
+        if (!field) {
+          return;
+        }
+        playlist[field] = value;
+      }
+
+      function normalizeLimitNumber(value) {
+        if (value === null || value === undefined || value === "") {
+          return 0;
+        }
+        const numeric = Number.parseInt(value, 10);
+        return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+      }
+
+      function updateLimitDisplayForPlaylist(
+        playlist,
+        controlEl,
+        valueEl,
+        summaryEl
+      ) {
+        if (valueEl) {
+          const normalizedLimit = normalizeLimitNumber(playlist?.limit);
+          valueEl.textContent = normalizedLimit;
+        }
+
+        if (summaryEl && controlEl) {
+          const summaryParts = [];
+          LIMIT_TYPE_OPTIONS.forEach((option) => {
+            const normalized = normalizeLimitNumber(playlist?.[option.field]);
+            if (normalized > 0) {
+              summaryParts.push(`${option.label}: ${normalized}`);
+            }
+          });
+          const summaryText = summaryParts.join(" • ");
+          summaryEl.textContent = summaryText;
+          controlEl.classList.toggle("has-summary", Boolean(summaryText));
+        }
+      }
+
+      function ensureLimitMenuElements() {
+        if (!limitMenuState.backdrop) {
+          const backdrop = document.createElement("div");
+          backdrop.className = "limit-menu-backdrop";
+          backdrop.addEventListener("click", () => {
+            closeLimitMenu();
+          });
+          document.body.appendChild(backdrop);
+          limitMenuState.backdrop = backdrop;
+        }
+
+        if (!limitMenuState.container) {
+          const menu = document.createElement("div");
+          menu.className = "limit-menu";
+          menu.setAttribute("role", "dialog");
+          menu.setAttribute("aria-modal", "true");
+          menu.setAttribute("aria-hidden", "true");
+          menu.tabIndex = -1;
+          document.body.appendChild(menu);
+          limitMenuState.container = menu;
+        }
+      }
+
+      function handleLimitMenuKeydown(event) {
+        if (event.key === "Escape") {
+          closeLimitMenu();
+        }
+      }
+
+      function positionLimitMenu() {
+        const { container, anchor } = limitMenuState;
+        if (!container || !anchor) {
+          return;
+        }
+
+        const anchorRect = anchor.getBoundingClientRect();
+        const menuRect = container.getBoundingClientRect();
+        const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+        const viewportHeight =
+          document.documentElement.clientHeight || window.innerHeight;
+
+        let top = anchorRect.bottom + window.scrollY + 8;
+        let left = anchorRect.left + window.scrollX;
+
+        const maxLeft =
+          window.scrollX + viewportWidth - menuRect.width - 16;
+        if (left > maxLeft) {
+          left = Math.max(window.scrollX + 16, maxLeft);
+        } else {
+          left = Math.max(window.scrollX + 16, left);
+        }
+
+        const maxTop = window.scrollY + viewportHeight - menuRect.height - 16;
+        if (top > maxTop) {
+          top = anchorRect.top + window.scrollY - menuRect.height - 8;
+        }
+        if (top < window.scrollY + 16) {
+          top = window.scrollY + 16;
+        }
+
+        container.style.left = `${left}px`;
+        container.style.top = `${top}px`;
+      }
+
+      function closeLimitMenu() {
+        const { container, backdrop } = limitMenuState;
+        if (!container || container.getAttribute("aria-hidden") === "true") {
+          return;
+        }
+
+        const toggleButton = limitMenuState.toggleButton;
+        const shouldRestoreFocus =
+          toggleButton && document.body.contains(toggleButton);
+
+        container.classList.remove("show");
+        container.setAttribute("aria-hidden", "true");
+        container.style.display = "none";
+        container.style.visibility = "";
+        container.innerHTML = "";
+
+        if (backdrop) {
+          backdrop.style.display = "none";
+        }
+
+        document.removeEventListener("keydown", handleLimitMenuKeydown, true);
+        if (limitMenuState.repositionHandler) {
+          window.removeEventListener("resize", limitMenuState.repositionHandler);
+          window.removeEventListener("scroll", limitMenuState.repositionHandler, true);
+        }
+
+        limitMenuState.playlist = null;
+        limitMenuState.anchor = null;
+        limitMenuState.updateDisplay = null;
+        limitMenuState.repositionHandler = null;
+
+        if (toggleButton) {
+          toggleButton.setAttribute("aria-expanded", "false");
+        }
+
+        limitMenuState.toggleButton = null;
+
+        if (shouldRestoreFocus && toggleButton) {
+          toggleButton.focus({ preventScroll: true });
+        }
+      }
+
+      function openLimitMenu(playlist, anchor, updateDisplay) {
+        if (!playlist || !anchor) {
+          return;
+        }
+
+        closeLimitMenu();
+        ensureLimitMenuElements();
+
+        const { container, backdrop } = limitMenuState;
+        if (!container || !backdrop) {
+          return;
+        }
+
+        limitMenuState.playlist = playlist;
+        limitMenuState.anchor = anchor;
+        limitMenuState.toggleButton = anchor;
+        limitMenuState.updateDisplay =
+          typeof updateDisplay === "function" ? updateDisplay : null;
+
+        container.innerHTML = "";
+        container.setAttribute("aria-hidden", "false");
+        container.style.display = "flex";
+        container.style.visibility = "hidden";
+        container.classList.add("show");
+
+        backdrop.style.display = "block";
+
+        anchor.setAttribute("aria-expanded", "true");
+
+        const header = document.createElement("div");
+        header.className = "limit-menu-header";
+        const title = document.createElement("h3");
+        title.id = LIMIT_MENU_TITLE_ID;
+        title.textContent = "Limits";
+        header.appendChild(title);
+        const closeBtn = document.createElement("button");
+        closeBtn.type = "button";
+        closeBtn.className = "icon-only secondary limit-remove";
+        closeBtn.setAttribute("aria-label", "Close limit menu");
+        closeBtn.textContent = "✕";
+        closeBtn.addEventListener("click", () => {
+          closeLimitMenu();
+        });
+        header.appendChild(closeBtn);
+        container.appendChild(header);
+        container.setAttribute("aria-labelledby", LIMIT_MENU_TITLE_ID);
+
+        const rowsContainer = document.createElement("div");
+        rowsContainer.className = "limit-menu-rows";
+        container.appendChild(rowsContainer);
+
+        const baseRow = document.createElement("div");
+        baseRow.className = "limit-row-base";
+        const baseLabel = document.createElement("label");
+        baseLabel.textContent = "Limit";
+        const baseInput = document.createElement("input");
+        baseInput.type = "number";
+        baseInput.min = "0";
+        baseInput.value = playlist.limit ?? 0;
+        baseInput.addEventListener("input", (event) => {
+          playlist.limit = event.target.value;
+          limitMenuState.updateDisplay?.();
+        });
+        baseLabel.appendChild(baseInput);
+        baseRow.appendChild(baseLabel);
+        rowsContainer.appendChild(baseRow);
+
+        const limitRows = [];
+        let addButton = null;
+
+        const getUsedTypes = (excludedRow = null) => {
+          const used = new Set();
+          limitRows.forEach((row) => {
+            if (row === excludedRow) {
+              return;
+            }
+            if (row.type) {
+              used.add(row.type);
+            }
+          });
+          return used;
+        };
+
+        const refreshAddButton = () => {
+          if (!addButton) {
+            return;
+          }
+          const usedTypes = getUsedTypes();
+          const shouldDisable = usedTypes.size >= LIMIT_TYPE_OPTIONS.length;
+          addButton.disabled = shouldDisable;
+          if (shouldDisable) {
+            addButton.setAttribute("aria-disabled", "true");
+          } else {
+            addButton.removeAttribute("aria-disabled");
+          }
+        };
+
+        const refreshSelectOptions = () => {
+          limitRows.forEach((row) => {
+            const usedByOthers = getUsedTypes(row);
+            Array.from(row.select.options).forEach((optionEl) => {
+              if (!optionEl.value) {
+                optionEl.disabled = false;
+                return;
+              }
+              optionEl.disabled = usedByOthers.has(optionEl.value);
+            });
+          });
+          refreshAddButton();
+        };
+
+        const createExtraLimitRow = (initialType) => {
+          const row = document.createElement("div");
+          row.className = "limit-row-extra";
+
+          const typeSelect = document.createElement("select");
+          const placeholderOption = document.createElement("option");
+          placeholderOption.value = "";
+          placeholderOption.textContent = "Select type";
+          typeSelect.appendChild(placeholderOption);
+          LIMIT_TYPE_OPTIONS.forEach((option) => {
+            const optionEl = document.createElement("option");
+            optionEl.value = option.key;
+            optionEl.textContent = `${option.label} Limit`;
+            typeSelect.appendChild(optionEl);
+          });
+
+          const valueInput = document.createElement("input");
+          valueInput.type = "number";
+          valueInput.min = "0";
+          valueInput.value = 0;
+          valueInput.disabled = true;
+
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.className = "icon-only secondary limit-remove";
+          removeBtn.setAttribute("aria-label", "Remove limit");
+          removeBtn.textContent = "✕";
+
+          row.appendChild(typeSelect);
+          row.appendChild(valueInput);
+          row.appendChild(removeBtn);
+          rowsContainer.appendChild(row);
+
+          const rowState = {
+            element: row,
+            select: typeSelect,
+            input: valueInput,
+            removeBtn,
+            type: "",
+          };
+
+          limitRows.push(rowState);
+
+          const applyType = (newType) => {
+            if (rowState.type === newType) {
+              refreshSelectOptions();
+              return;
+            }
+
+            if (rowState.type) {
+              setPlaylistLimitValue(playlist, rowState.type, 0);
+              removeLimitSelection(playlist, rowState.type);
+            }
+
+            rowState.type = newType;
+
+            if (newType) {
+              valueInput.disabled = false;
+              const existingValue = getPlaylistLimitRaw(playlist, newType);
+              valueInput.value = existingValue ?? 0;
+              addLimitSelection(playlist, newType);
+              setPlaylistLimitValue(playlist, newType, valueInput.value);
+            } else {
+              valueInput.disabled = true;
+              valueInput.value = 0;
+            }
+
+            refreshSelectOptions();
+            limitMenuState.updateDisplay?.();
+          };
+
+          typeSelect.addEventListener("change", () => {
+            applyType(typeSelect.value);
+          });
+
+          valueInput.addEventListener("input", (event) => {
+            if (!rowState.type) {
+              return;
+            }
+            setPlaylistLimitValue(playlist, rowState.type, event.target.value);
+            limitMenuState.updateDisplay?.();
+          });
+
+          removeBtn.addEventListener("click", () => {
+            if (rowState.type) {
+              setPlaylistLimitValue(playlist, rowState.type, 0);
+              removeLimitSelection(playlist, rowState.type);
+            }
+
+            const index = limitRows.indexOf(rowState);
+            if (index >= 0) {
+              limitRows.splice(index, 1);
+            }
+            row.remove();
+            refreshSelectOptions();
+            limitMenuState.updateDisplay?.();
+          });
+
+          if (initialType) {
+            typeSelect.value = initialType;
+            applyType(initialType);
+          } else {
+            const availableType = LIMIT_TYPE_OPTIONS.find(
+              (option) => !getUsedTypes().has(option.key)
+            );
+            if (availableType) {
+              typeSelect.value = availableType.key;
+              applyType(availableType.key);
+            } else {
+              applyType("");
+            }
+          }
+
+          return rowState;
+        };
+
+        const initialTypes = Array.from(
+          new Set([
+            ...ensureLimitSelections(playlist),
+            ...LIMIT_TYPE_OPTIONS.filter((option) =>
+              normalizeLimitNumber(playlist?.[option.field]) > 0
+            ).map((option) => option.key),
+          ])
+        );
+
+        playlist._limitSelections = initialTypes.slice();
+
+        initialTypes.forEach((typeKey) => {
+          createExtraLimitRow(typeKey);
+        });
+
+        addButton = document.createElement("button");
+        addButton.type = "button";
+        addButton.className = "secondary limit-add";
+        addButton.textContent = "＋ Add new limit";
+        addButton.addEventListener("click", () => {
+          const rowState = createExtraLimitRow("");
+          if (rowState?.select) {
+            rowState.select.focus({ preventScroll: true });
+          }
+        });
+
+        const footer = document.createElement("div");
+        footer.className = "limit-menu-footer";
+        footer.appendChild(addButton);
+        container.appendChild(footer);
+
+        refreshSelectOptions();
+        limitMenuState.updateDisplay?.();
+
+        const repositionHandler = () => {
+          positionLimitMenu();
+        };
+        limitMenuState.repositionHandler = repositionHandler;
+        window.addEventListener("resize", repositionHandler);
+        window.addEventListener("scroll", repositionHandler, true);
+        document.addEventListener("keydown", handleLimitMenuKeydown, true);
+
+        requestAnimationFrame(() => {
+          positionLimitMenu();
+          container.style.visibility = "visible";
+          baseInput.focus({ preventScroll: true });
+          baseInput.select();
+        });
+      }
+
       function renderPlaylists() {
         if (coverPickerOverlay?.classList.contains("show")) {
           closeCoverPicker();
         }
+        closeLimitMenu();
         playlistsContainer.innerHTML = "";
         const totalPlaylists = state.playlists.length;
         const normalizedSearch = (playlistSearchTerm || "").trim().toLowerCase();
@@ -6632,38 +7296,59 @@
           });
           spotifyUrlLabel.appendChild(spotifyUrlInput);
 
-          const limitLabel = document.createElement("label");
-          limitLabel.textContent = "Limit";
-          const limitInput = document.createElement("input");
-          limitInput.type = "number";
-          limitInput.min = "0";
-          limitInput.value = playlist.limit ?? 0;
-          limitInput.addEventListener("input", (event) => {
-            playlist.limit = event.target.value;
-          });
-          limitLabel.appendChild(limitInput);
+          if (playlist.artist_limit === undefined) {
+            playlist.artist_limit = 0;
+          }
+          if (playlist.album_limit === undefined) {
+            playlist.album_limit = 0;
+          }
+          if (playlist.year_limit === undefined) {
+            playlist.year_limit = 0;
+          }
+          if (!Array.isArray(playlist._limitSelections)) {
+            playlist._limitSelections = [];
+          }
 
-          const artistLimitLabel = document.createElement("label");
-          artistLimitLabel.textContent = "Artist Limit";
-          const artistLimitInput = document.createElement("input");
-          artistLimitInput.type = "number";
-          artistLimitInput.min = "0";
-          artistLimitInput.value = playlist.artist_limit ?? 0;
-          artistLimitInput.addEventListener("input", (event) => {
-            playlist.artist_limit = event.target.value;
-          });
-          artistLimitLabel.appendChild(artistLimitInput);
+          const limitControl = document.createElement("div");
+          limitControl.className = "limit-control";
+          const limitButton = document.createElement("button");
+          limitButton.type = "button";
+          limitButton.className = "limit-button";
+          limitButton.setAttribute("aria-haspopup", "dialog");
+          limitButton.setAttribute("aria-expanded", "false");
+          const limitButtonLabel = document.createElement("span");
+          limitButtonLabel.textContent = "Limit";
+          const limitButtonValue = document.createElement("span");
+          limitButtonValue.className = "limit-button-value";
+          limitButton.appendChild(limitButtonLabel);
+          limitButton.appendChild(limitButtonValue);
+          limitControl.appendChild(limitButton);
+          const limitSummary = document.createElement("div");
+          limitSummary.className = "limit-summary";
+          limitControl.appendChild(limitSummary);
 
-          const albumLimitLabel = document.createElement("label");
-          albumLimitLabel.textContent = "Album Limit";
-          const albumLimitInput = document.createElement("input");
-          albumLimitInput.type = "number";
-          albumLimitInput.min = "0";
-          albumLimitInput.value = playlist.album_limit ?? 0;
-          albumLimitInput.addEventListener("input", (event) => {
-            playlist.album_limit = event.target.value;
+          const syncLimitDisplay = () => {
+            updateLimitDisplayForPlaylist(
+              playlist,
+              limitControl,
+              limitButtonValue,
+              limitSummary
+            );
+          };
+
+          limitButton.addEventListener("click", () => {
+            const menuOpen =
+              limitMenuState.toggleButton === limitButton &&
+              limitMenuState.container &&
+              limitMenuState.container.getAttribute("aria-hidden") === "false";
+            if (menuOpen) {
+              closeLimitMenu();
+            } else {
+              openLimitMenu(playlist, limitButton, syncLimitDisplay);
+            }
           });
-          albumLimitLabel.appendChild(albumLimitInput);
+
+          syncLimitDisplay();
 
           const sortLabel = document.createElement("label");
           sortLabel.textContent = "Sort By";
@@ -6777,9 +7462,7 @@
           grid.appendChild(nameLabel);
           grid.appendChild(sourceLabel);
           grid.appendChild(spotifyUrlLabel);
-          grid.appendChild(limitLabel);
-          grid.appendChild(artistLimitLabel);
-          grid.appendChild(albumLimitLabel);
+          grid.appendChild(limitControl);
           grid.appendChild(sortLabel);
           grid.appendChild(coverField);
           grid.appendChild(afterSortLabel);
@@ -6976,6 +7659,7 @@
               limit: playlist.limit ?? 0,
               artist_limit: playlist.artist_limit ?? 0,
               album_limit: playlist.album_limit ?? 0,
+              year_limit: playlist.year_limit ?? 0,
               sort_by: playlist.sort_by || "",
               after_sort: playlist.after_sort || "",
               plex_filter: (playlist.plex_filter || []).map((filter) => ({
@@ -7080,6 +7764,7 @@
               limit: playlist.limit ?? 0,
               artist_limit: playlist.artist_limit ?? 0,
               album_limit: playlist.album_limit ?? 0,
+              year_limit: playlist.year_limit ?? 0,
               sort_by: playlist.sort_by || "",
               after_sort: playlist.after_sort || "",
               plex_filter: prepareFiltersForSave(playlist.plex_filter),
@@ -7146,12 +7831,13 @@
         delete extras.spotify_url;
 
         const payload = {
-          playlist: {
-            name: trimmedName,
-            limit: playlist.limit ?? 0,
-            artist_limit: playlist.artist_limit ?? 0,
-            album_limit: playlist.album_limit ?? 0,
-            sort_by: playlist.sort_by || "",
+            playlist: {
+              name: trimmedName,
+              limit: playlist.limit ?? 0,
+              artist_limit: playlist.artist_limit ?? 0,
+              album_limit: playlist.album_limit ?? 0,
+              year_limit: playlist.year_limit ?? 0,
+              sort_by: playlist.sort_by || "",
             after_sort: playlist.after_sort || "",
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
             popularity_boosts: prepareBoostsForSave(
@@ -7496,6 +8182,7 @@
             limit: 0,
             artist_limit: 0,
             album_limit: 0,
+            year_limit: 0,
             sort_by: defaultSort,
             after_sort: "",
             plex_filter: [],

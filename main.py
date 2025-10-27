@@ -5054,6 +5054,63 @@ def _run_streaming_playlist_build(
                     album_limit_raw,
                 )
 
+    year_limit_raw = config.get("year_limit")
+    if year_limit_raw is not None and matched_tracks:
+        try:
+            year_limit_value = int(year_limit_raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "Invalid year_limit '%s' for playlist '%s'; expected integer.",
+                year_limit_raw,
+                name,
+            )
+        else:
+            if year_limit_value > 0:
+                year_counts = {}
+                limited_tracks = []
+                removed_for_year_limit = 0
+
+                for track in matched_tracks:
+                    year_token = _resolve_album_year(track)
+                    if year_token is None:
+                        year_key = "__unknown_year__"
+                        year_label = "<unknown>"
+                    else:
+                        year_key = str(year_token)
+                        year_label = year_key
+
+                    current_count = year_counts.get(year_key, 0)
+                    if current_count >= year_limit_value:
+                        removed_for_year_limit += 1
+                        if debug_logging:
+                            log.debug(
+                                "Skipping track '%s' from year '%s' due to year limit %s",
+                                getattr(track, "title", "<unknown>"),
+                                year_label,
+                                year_limit_value,
+                            )
+                        continue
+
+                    year_counts[year_key] = current_count + 1
+                    limited_tracks.append(track)
+
+                if removed_for_year_limit:
+                    log.info(
+                        "Applied year limit (%s) for playlist '%s' – removed %s track(s)",
+                        year_limit_value,
+                        name,
+                        removed_for_year_limit,
+                    )
+
+                matched_tracks = limited_tracks
+                match_count = len(matched_tracks)
+            else:
+                log.warning(
+                    "Year limit for playlist '%s' must be positive; received %s.",
+                    name,
+                    year_limit_raw,
+                )
+
     if limit and matched_tracks:
         matched_tracks = matched_tracks[:limit]
         match_count = len(matched_tracks)
@@ -5260,6 +5317,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         disable_reasons = []
         artist_limit_raw = config.get("artist_limit")
         album_limit_raw = config.get("album_limit")
+        year_limit_raw = config.get("year_limit")
 
         if isinstance(artist_limit_raw, str):
             artist_limit_normalized = artist_limit_raw.strip()
@@ -5271,10 +5329,17 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         else:
             album_limit_normalized = album_limit_raw
 
+        if isinstance(year_limit_raw, str):
+            year_limit_normalized = year_limit_raw.strip()
+        else:
+            year_limit_normalized = year_limit_raw
+
         if artist_limit_normalized not in (None, ""):
             disable_reasons.append("artist limits")
         if album_limit_normalized not in (None, ""):
             disable_reasons.append("album limits")
+        if year_limit_normalized not in (None, ""):
+            disable_reasons.append("year limits")
 
         if disable_reasons:
             reason_text = ", ".join(disable_reasons)
@@ -5287,7 +5352,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             stream_enabled = False
         elif log.isEnabledFor(logging.INFO):
             log.info(
-                "stream_while_filtering enabled for '%s'; deduplication (and any artist/album limits) will be skipped.",
+                "stream_while_filtering enabled for '%s'; deduplication (and any artist/album/year limits) will be skipped.",
                 name,
             )
 
@@ -5641,6 +5706,63 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
                     "Album limit for playlist '%s' must be positive; received %s.",
                     name,
                     album_limit_raw,
+                )
+
+    year_limit_raw = config.get("year_limit")
+    if year_limit_raw is not None:
+        try:
+            year_limit_value = int(year_limit_raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "Invalid year_limit '%s' for playlist '%s'; expected integer.",
+                year_limit_raw,
+                name,
+            )
+        else:
+            if year_limit_value > 0:
+                year_counts = {}
+                limited_tracks = []
+                removed_for_year_limit = 0
+
+                for track in matched_tracks:
+                    year_token = _resolve_album_year(track)
+                    if year_token is None:
+                        year_key = "__unknown_year__"
+                        year_label = "<unknown>"
+                    else:
+                        year_key = str(year_token)
+                        year_label = year_key
+
+                    current_count = year_counts.get(year_key, 0)
+                    if current_count >= year_limit_value:
+                        removed_for_year_limit += 1
+                        if debug_logging:
+                            log.debug(
+                                "Skipping track '%s' from year '%s' due to year limit %s",
+                                getattr(track, "title", "<unknown>"),
+                                year_label,
+                                year_limit_value,
+                            )
+                        continue
+
+                    year_counts[year_key] = current_count + 1
+                    limited_tracks.append(track)
+
+                if removed_for_year_limit:
+                    log.info(
+                        "Applied year limit (%s) for playlist '%s' – removed %s track(s)",
+                        year_limit_value,
+                        name,
+                        removed_for_year_limit,
+                    )
+
+                matched_tracks = limited_tracks
+                match_count = len(matched_tracks)
+            else:
+                log.warning(
+                    "Year limit for playlist '%s' must be positive; received %s.",
+                    name,
+                    year_limit_raw,
                 )
 
     if limit:

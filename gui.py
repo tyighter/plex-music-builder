@@ -2329,6 +2329,7 @@ def load_playlists() -> Dict[str, Any]:
                 "limit",
                 "artist_limit",
                 "album_limit",
+                "year_limit",
                 "sort_by",
                 "after_sort",
                 "plex_filter",
@@ -2360,6 +2361,7 @@ def load_playlists() -> Dict[str, Any]:
                 "limit": config.get("limit", 0) or 0,
                 "artist_limit": config.get("artist_limit", 0) or 0,
                 "album_limit": config.get("album_limit", 0) or 0,
+                "year_limit": config.get("year_limit", 0) or 0,
                 "sort_by": config.get("sort_by", ""),
                 "after_sort": config.get("after_sort", "") or "",
                 "plex_filter": serialize_filters(config.get("plex_filter")),
@@ -2553,6 +2555,7 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         limit = to_int(playlist_entry.get("limit", 0))
         artist_limit = to_int(playlist_entry.get("artist_limit", 0))
         album_limit = to_int(playlist_entry.get("album_limit", 0))
+        year_limit = to_int(playlist_entry.get("year_limit", 0))
         sort_by = playlist_entry.get("sort_by") or None
         after_sort = playlist_entry.get("after_sort") or None
         playlist_config: Dict[str, Any] = {}
@@ -2568,6 +2571,7 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         playlist_config["limit"] = max(limit, 0)
         playlist_config["artist_limit"] = max(artist_limit, 0)
         playlist_config["album_limit"] = max(album_limit, 0)
+        playlist_config["year_limit"] = max(year_limit, 0)
         if sort_by:
             playlist_config["sort_by"] = sort_by
         if after_sort:
@@ -2641,11 +2645,13 @@ def save_single_playlist(
     limit = to_int(playlist_payload.get("limit", 0))
     artist_limit = to_int(playlist_payload.get("artist_limit", 0))
     album_limit = to_int(playlist_payload.get("album_limit", 0))
+    year_limit = to_int(playlist_payload.get("year_limit", 0))
     sort_by = (playlist_payload.get("sort_by") or "").strip() or None
     after_sort = (playlist_payload.get("after_sort") or "").strip() or None
     playlist_config["limit"] = max(limit, 0)
     playlist_config["artist_limit"] = max(artist_limit, 0)
     playlist_config["album_limit"] = max(album_limit, 0)
+    playlist_config["year_limit"] = max(year_limit, 0)
     if sort_by:
         playlist_config["sort_by"] = sort_by
     if after_sort:
