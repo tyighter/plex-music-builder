@@ -1703,27 +1703,16 @@ def _compute_album_popularity_boosts(
     tracks,
     popularity_cache,
     playlist_logger=None,
-    top_5_boost=1.0,
 ):
     if not tracks:
         return {}, {}
 
-    try:
-        boost_value = float(top_5_boost)
-    except (TypeError, ValueError):
-        boost_value = 1.0
-
-    if not math.isfinite(boost_value) or boost_value < 0:
-        boost_value = 1.0
-
-    album_map = defaultdict(list)
     adjusted_by_rating_key = {}
     adjusted_by_object = {}
 
     for track in tracks:
         cache_key = getattr(track, "ratingKey", None)
         cache_key_str = str(cache_key) if cache_key is not None else None
-        popularity = None
 
         if cache_key_str and cache_key_str in popularity_cache:
             popularity = popularity_cache[cache_key_str]
@@ -1732,23 +1721,16 @@ def _compute_album_popularity_boosts(
                 track,
                 playlist_logger=playlist_logger,
             )
-            if cache_key_str:
+            if cache_key_str is not None:
                 popularity_cache[cache_key_str] = popularity
 
         if popularity is None:
             continue
 
-        album_key = _build_album_identity_key(track)
-        album_map[album_key].append((track, popularity, cache_key_str))
-
-    for album_tracks in album_map.values():
-        album_tracks.sort(key=lambda entry: entry[1], reverse=True)
-        for index, (track, base_score, cache_key_str) in enumerate(album_tracks):
-            adjusted_score = base_score * boost_value if index < 5 else base_score
-            if cache_key_str:
-                adjusted_by_rating_key[cache_key_str] = adjusted_score
-            else:
-                adjusted_by_object[id(track)] = adjusted_score
+        if cache_key_str is not None:
+            adjusted_by_rating_key[cache_key_str] = popularity
+        else:
+            adjusted_by_object[id(track)] = popularity
 
     return adjusted_by_rating_key, adjusted_by_object
 
@@ -4825,7 +4807,6 @@ def _run_streaming_playlist_build(
     resolved_after_sort,
     after_sort_desc,
     chunk_size,
-    top_5_boost_value,
     cover_path,
     build_start,
     limit,
@@ -4942,7 +4923,6 @@ def _run_streaming_playlist_build(
             matched_tracks,
             dedup_popularity_cache,
             playlist_logger=log,
-            top_5_boost=top_5_boost_value,
         )
 
     match_count = len(matched_tracks)
@@ -5161,7 +5141,6 @@ def _run_spotify_playlist_build(
     resolved_after_sort,
     after_sort_desc,
     chunk_size,
-    top_5_boost_value,
     cover_path,
     build_start,
     limit,
@@ -5180,7 +5159,6 @@ def _run_spotify_playlist_build(
         resolved_after_sort,
         after_sort_desc,
         chunk_size,
-        top_5_boost_value,
         cover_path,
         build_start,
         limit,
@@ -5258,10 +5236,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         if not after_sort_desc_in_config:
             after_sort_desc = True
     chunk_size = config.get("chunk_size", PLAYLIST_CHUNK_SIZE)
-    top_5_boost_raw = config.get("top_5_boost", 1.0)
-    top_5_boost_value = _coerce_non_negative_float(top_5_boost_raw)
-    if top_5_boost_value is None:
-        top_5_boost_value = 1.0
     if playlist_source == "spotify":
         _run_spotify_playlist_build(
             name,
@@ -5275,7 +5249,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             resolved_after_sort,
             after_sort_desc,
             chunk_size,
-            top_5_boost_value,
             cover_path,
             build_start,
             limit,
@@ -5533,7 +5506,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
             matched_tracks,
             dedup_popularity_cache,
             playlist_logger=log,
-            top_5_boost=top_5_boost_value,
         )
     if boost_rules:
         _apply_configured_popularity_boosts(
