@@ -79,6 +79,44 @@ def test_non_bootstrap_log_line_marks_running() -> None:
     assert status["waiting_playlists"] == []
 
 
+def test_error_log_line_marks_playlist_failed() -> None:
+    manager = _TestableBuildManager()
+
+    manager._handle_log_line("[INFO] Build started for playlist 'Gamma'")
+    manager._handle_log_line("[ERROR] Playlist 'Gamma' failed: Boom")
+
+    status = _build_manager_status(manager)
+    playlist_logs = status["logs"]["playlists"].get("Gamma", [])
+
+    assert status["running"] is False
+    assert status["status"] == "error"
+    assert any(
+        isinstance(entry, dict) and entry.get("text") == "Playlist 'Gamma' failed: Boom"
+        for entry in playlist_logs
+    )
+    assert any(
+        isinstance(entry, dict) and entry.get("is_final") is True
+        for entry in playlist_logs
+    )
+
+
+def test_error_colon_log_line_marks_playlist_failed() -> None:
+    manager = _TestableBuildManager()
+
+    manager._handle_log_line("INFO: Build started for playlist 'Delta'")
+    manager._handle_log_line("ERROR: Playlist 'Delta' failed: Boom")
+
+    status = _build_manager_status(manager)
+    playlist_logs = status["logs"]["playlists"].get("Delta", [])
+
+    assert status["running"] is False
+    assert status["status"] == "error"
+    assert any(
+        isinstance(entry, dict) and entry.get("text") == "Playlist 'Delta' failed: Boom"
+        for entry in playlist_logs
+    )
+
+
 def test_completed_playlist_logs_expire_after_retention() -> None:
     manager = _TestableBuildManager()
 
