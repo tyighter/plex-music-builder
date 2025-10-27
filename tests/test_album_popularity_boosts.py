@@ -43,36 +43,15 @@ def _build_tracks_and_cache() -> Tuple[List[DummyTrack], dict]:
     return tracks, popularity_cache
 
 
-def test_album_boost_applies_multiplier_to_top_five_tracks():
+def test_album_popularity_cache_uses_existing_scores():
     tracks, popularity_cache = _build_tracks_and_cache()
 
     adjusted_by_rating_key, adjusted_by_object = _compute_album_popularity_boosts(
         tracks,
         popularity_cache,
-        top_5_boost=2.0,
     )
 
     assert adjusted_by_object == {}
-    expected = {
-        "1": 200.0,
-        "2": 180.0,
-        "3": 160.0,
-        "4": 140.0,
-        "5": 120.0,
-        "6": 50,
-    }
-    assert adjusted_by_rating_key == expected
-
-
-def test_album_boost_defaults_to_one_when_multiplier_invalid():
-    tracks, popularity_cache = _build_tracks_and_cache()
-
-    adjusted_by_rating_key, _ = _compute_album_popularity_boosts(
-        tracks,
-        popularity_cache,
-        top_5_boost="invalid",
-    )
-
     expected = {
         "1": 100.0,
         "2": 90.0,
@@ -84,11 +63,10 @@ def test_album_boost_defaults_to_one_when_multiplier_invalid():
     assert adjusted_by_rating_key == expected
 
 
-def test_album_boost_returns_empty_structures_for_no_tracks():
+def test_album_popularity_cache_returns_empty_structures_for_no_tracks():
     adjusted_by_rating_key, adjusted_by_object = _compute_album_popularity_boosts(
         [],
         {},
-        top_5_boost=1.5,
     )
 
     assert adjusted_by_rating_key == {}

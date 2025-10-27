@@ -24,6 +24,18 @@
         box-sizing: border-box;
       }
 
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
       body {
         margin: 0;
         font-family: "Roboto", sans-serif;
@@ -217,14 +229,28 @@
 
       .cover-picker-controls {
         display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .cover-picker-actions {
+        display: flex;
         flex-wrap: wrap;
         gap: 12px;
         align-items: center;
         justify-content: space-between;
       }
 
+      .cover-picker-action-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: flex-end;
+      }
+
       .cover-picker-path {
         flex: 1;
+        width: 100%;
         min-width: 200px;
         font-size: 13px;
         color: rgba(255, 255, 255, 0.7);
@@ -1014,77 +1040,38 @@
         gap: 8px;
       }
 
-      .cover-input-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        align-items: stretch;
-      }
-
-      button.cover-picker-button {
-        flex: 0 0 auto;
+      button.cover-preview {
+        position: relative;
+        width: 96px;
+        height: 96px;
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid rgba(229, 160, 13, 0.24);
+        background: rgba(0, 0, 0, 0.45);
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 0 18px;
-        min-height: 42px;
-        font-size: 15px;
-        border-radius: 14px;
-        background: rgba(229, 160, 13, 0.18);
-        color: var(--plex-light);
-        border: 1px solid rgba(229, 160, 13, 0.32);
-        transition: background 0.2s ease, border 0.2s ease, transform 0.2s ease;
+        cursor: pointer;
+        padding: 0;
+        transition: border 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
       }
 
-      button.cover-picker-button:hover,
-      button.cover-picker-button:focus {
-        background: rgba(229, 160, 13, 0.32);
-        border-color: rgba(229, 160, 13, 0.5);
+      button.cover-preview:hover,
+      button.cover-preview:focus-visible {
+        border-color: rgba(229, 160, 13, 0.55);
+        box-shadow: 0 0 0 2px rgba(229, 160, 13, 0.25);
         outline: none;
       }
 
-      button.cover-picker-button:active {
+      button.cover-preview:active {
         transform: translateY(1px);
       }
 
-      .cover-clear-button {
-        background: rgba(233, 65, 70, 0.18);
-        border-color: rgba(233, 65, 70, 0.32);
-      }
-
-      .cover-clear-button:hover,
-      .cover-clear-button:focus {
-        background: rgba(233, 65, 70, 0.28);
-        border-color: rgba(233, 65, 70, 0.45);
-      }
-
-      .cover-clear-button:disabled {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: rgba(255, 255, 255, 0.12);
-        cursor: not-allowed;
-        opacity: 0.5;
-      }
-
-      .cover-preview {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid rgba(229, 160, 13, 0.18);
-        border-radius: 14px;
-        padding: 10px 12px;
-      }
-
       .cover-preview-frame {
-        width: 80px;
-        height: 80px;
-        border-radius: 12px;
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
         overflow: hidden;
-        background: rgba(0, 0, 0, 0.45);
-        position: relative;
-        display: flex;
-        align-items: center;
-        justify-content: center;
       }
 
       .cover-preview-frame img {
@@ -1101,17 +1088,58 @@
       }
 
       .cover-preview-placeholder {
-        color: rgba(255, 255, 255, 0.65);
+        color: rgba(255, 255, 255, 0.7);
         font-size: 12px;
         text-align: center;
-        padding: 0 6px;
+        padding: 0 8px;
+        line-height: 1.3;
       }
 
       .cover-preview-caption {
-        flex: 1;
-        font-size: 13px;
-        color: rgba(255, 255, 255, 0.7);
-        word-break: break-all;
+        display: none;
+      }
+
+      .cover-picker-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 16px;
+        min-height: 40px;
+        font-size: 14px;
+        border-radius: 12px;
+        background: rgba(229, 160, 13, 0.18);
+        color: var(--plex-light);
+        border: 1px solid rgba(229, 160, 13, 0.32);
+        transition: background 0.2s ease, border 0.2s ease, transform 0.2s ease;
+      }
+
+      .cover-picker-button:hover,
+      .cover-picker-button:focus {
+        background: rgba(229, 160, 13, 0.32);
+        border-color: rgba(229, 160, 13, 0.5);
+        outline: none;
+      }
+
+      .cover-picker-button:active {
+        transform: translateY(1px);
+      }
+
+      .cover-picker-button.danger {
+        background: rgba(233, 65, 70, 0.18);
+        border-color: rgba(233, 65, 70, 0.32);
+      }
+
+      .cover-picker-button.danger:hover,
+      .cover-picker-button.danger:focus {
+        background: rgba(233, 65, 70, 0.28);
+        border-color: rgba(233, 65, 70, 0.45);
+      }
+
+      .cover-picker-button:disabled {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.12);
+        cursor: not-allowed;
+        opacity: 0.5;
       }
 
       .button,
@@ -2034,15 +2062,41 @@
         </div>
         <div class="cover-picker-body">
           <div class="cover-picker-controls">
-            <button
-              id="coverPickerUpBtn"
-              class="secondary"
-              type="button"
-              title="Go up one folder"
-              aria-label="Go up one folder"
-            >
-              ⤴️ Up One Level
-            </button>
+            <div class="cover-picker-actions">
+              <button
+                id="coverPickerUpBtn"
+                class="secondary"
+                type="button"
+                title="Go up one folder"
+                aria-label="Go up one folder"
+              >
+                ⤴️ Up One Level
+              </button>
+              <div class="cover-picker-action-buttons">
+                <button
+                  id="coverPickerUploadBtn"
+                  class="cover-picker-button"
+                  type="button"
+                  title="Upload a cover image"
+                >
+                  Upload Cover
+                </button>
+                <button
+                  id="coverPickerClearBtn"
+                  class="cover-picker-button danger"
+                  type="button"
+                  title="Clear the selected cover"
+                >
+                  Clear Cover
+                </button>
+              </div>
+            </div>
+            <input
+              id="coverPickerUploadInput"
+              type="file"
+              accept="image/*"
+              hidden
+            />
             <div
               id="coverPickerPath"
               class="cover-picker-path"
@@ -2232,6 +2286,11 @@
       const coverPickerPanel = document.getElementById("coverPickerPanel");
       const coverPickerCloseBtn = document.getElementById("coverPickerCloseBtn");
       const coverPickerUpBtn = document.getElementById("coverPickerUpBtn");
+      const coverPickerUploadBtn = document.getElementById("coverPickerUploadBtn");
+      const coverPickerUploadInput = document.getElementById(
+        "coverPickerUploadInput"
+      );
+      const coverPickerClearBtn = document.getElementById("coverPickerClearBtn");
       const coverPickerPath = document.getElementById("coverPickerPath");
       const coverPickerStatus = document.getElementById("coverPickerStatus");
       const coverPickerDirectories = document.getElementById(
@@ -2247,7 +2306,7 @@
       );
       const COVER_PICKER_DEFAULT_DIRECTORY = "/images/";
       const CARD_COVER_PREVIEW_TEXTS = {
-        empty: "No cover selected",
+        empty: "Select a cover",
         loading: "Loading preview…",
         error: "Preview unavailable",
       };
@@ -2296,6 +2355,8 @@
               "aria-hidden",
               collapsed ? "true" : "false"
             );
+            collapsible.style.display = collapsed ? "none" : "";
+            collapsible.style.maxHeight = collapsed ? "0px" : "";
           }
         }
         if (playlistActivityToggle) {
@@ -5010,6 +5071,8 @@
           container.classList.remove("has-image");
           labelEl.textContent = emptyText;
           labelEl.title = emptyText;
+          container.title = emptyText;
+          container.setAttribute("aria-label", emptyText);
           imageEl.removeAttribute("src");
           imageEl.dataset.previewPath = "";
           return;
@@ -5018,6 +5081,8 @@
         container.classList.remove("has-image");
         labelEl.textContent = loadingText;
         labelEl.title = value;
+        container.title = loadingText;
+        container.setAttribute("aria-label", loadingText);
         const previewPath = value;
         imageEl.dataset.previewPath = previewPath;
         imageEl.onload = () => {
@@ -5027,6 +5092,8 @@
           container.classList.add("has-image");
           labelEl.textContent = previewPath;
           labelEl.title = previewPath;
+          container.title = previewPath;
+          container.setAttribute("aria-label", previewPath);
         };
         imageEl.onerror = () => {
           if (imageEl.dataset.previewPath !== previewPath) {
@@ -5035,6 +5102,8 @@
           container.classList.remove("has-image");
           labelEl.textContent = errorText;
           labelEl.title = errorText;
+          container.title = errorText;
+          container.setAttribute("aria-label", errorText);
         };
         imageEl.src = buildCoverPreviewUrl(previewPath);
       }
@@ -5191,6 +5260,16 @@
         coverPickerUpBtn.dataset.parentPath = parentPath || "";
       }
 
+      function updateCoverPickerClearButton() {
+        if (!coverPickerClearBtn) {
+          return;
+        }
+        const hasSelection = Boolean(
+          (coverPickerState.selectedPath || "").trim()
+        );
+        coverPickerClearBtn.disabled = !hasSelection;
+      }
+
       function previewCoverCandidate(rawPath) {
         if (!coverPickerPreview || !coverPickerPreviewImage) {
           return;
@@ -5298,6 +5377,7 @@
         const extras = ensureExtras(coverPickerState.playlist);
         extras[coverPickerState.extrasKey] = trimmed;
         coverPickerState.inputEl.value = trimmed;
+        updateCoverPickerClearButton();
         if (
           coverPickerState.previewContainer &&
           coverPickerState.previewImage &&
@@ -5391,6 +5471,64 @@
         return { path: savedPath, response: payload };
       }
 
+      async function handleCoverPickerUploadChange(event) {
+        if (!coverPickerState.playlist || !coverPickerState.inputEl) {
+          return;
+        }
+        const fileList = event?.target?.files;
+        const file = fileList && fileList[0];
+        if (!file) {
+          return;
+        }
+
+        if (coverPickerUploadBtn) {
+          coverPickerUploadBtn.disabled = true;
+        }
+
+        showPlaylistInlineMessage(
+          coverPickerState.playlist,
+          `Uploading "${file.name}"...`,
+          { persist: true }
+        );
+
+        try {
+          const result = await uploadCoverImage({
+            file,
+            playlist: coverPickerState.playlist,
+            inputEl: coverPickerState.inputEl,
+            extrasKey: coverPickerState.extrasKey,
+            preview: {
+              container: coverPickerState.previewContainer,
+              image: coverPickerState.previewImage,
+              label: coverPickerState.previewLabel,
+            },
+          });
+          coverPickerState.selectedPath = result?.path || "";
+          showPlaylistInlineMessage(
+            coverPickerState.playlist,
+            "Cover uploaded successfully."
+          );
+          closeCoverPicker();
+        } catch (error) {
+          console.error(error);
+          const message =
+            (error && error.message) || "Failed to upload cover image.";
+          showPlaylistInlineMessage(coverPickerState.playlist, message, {
+            isError: true,
+            duration: 8000,
+          });
+        } finally {
+          if (coverPickerUploadBtn) {
+            coverPickerUploadBtn.disabled = false;
+            coverPickerUploadBtn.blur();
+          }
+          if (coverPickerUploadInput) {
+            coverPickerUploadInput.value = "";
+          }
+          updateCoverPickerClearButton();
+        }
+      }
+
       function openCoverPicker(playlist, inputEl, extrasKey, previewElements) {
         if (!coverPickerOverlay || !coverPickerPanel) {
           return;
@@ -5411,6 +5549,13 @@
           coverPickerState.currentRawPath = COVER_PICKER_DEFAULT_DIRECTORY;
         }
         coverPickerState.lastFocus = document.activeElement;
+        updateCoverPickerClearButton();
+        if (coverPickerUploadBtn) {
+          coverPickerUploadBtn.disabled = false;
+        }
+        if (coverPickerUploadInput) {
+          coverPickerUploadInput.value = "";
+        }
         coverPickerOverlay.classList.add("show");
         coverPickerOverlay.setAttribute("aria-hidden", "false");
         if (document.body) {
@@ -5451,6 +5596,15 @@
           coverPickerUpBtn.disabled = true;
           coverPickerUpBtn.dataset.parentPath = "";
         }
+        if (coverPickerUploadInput) {
+          coverPickerUploadInput.value = "";
+        }
+        if (coverPickerUploadBtn) {
+          coverPickerUploadBtn.disabled = false;
+        }
+        if (coverPickerClearBtn) {
+          coverPickerClearBtn.disabled = true;
+        }
         if (coverPickerState.scrollLocked && document.body) {
           if (!configOverlay?.classList.contains("show")) {
             document.body.classList.remove("no-scroll");
@@ -5488,6 +5642,23 @@
           return;
         }
         loadCoverPickerDirectory(parentPath);
+      }
+
+      function clearCoverPickerSelection() {
+        if (!coverPickerState.inputEl || !coverPickerState.playlist) {
+          return;
+        }
+        coverPickerState.selectedPath = "";
+        coverPickerState.inputEl.value = "";
+        coverPickerState.inputEl.dispatchEvent(
+          new Event("input", { bubbles: true })
+        );
+        showPlaylistInlineMessage(
+          coverPickerState.playlist,
+          "Cover cleared."
+        );
+        updateCoverPickerClearButton();
+        previewCoverCandidate("");
       }
 
       function createOptionElements(selectEl, opts, selectedValue = "") {
@@ -6047,14 +6218,6 @@
         });
       }
 
-      function normalizeTop5Boost(value) {
-        const parsed = Number.parseFloat(value);
-        if (!Number.isFinite(parsed) || parsed < 0) {
-          return 1.0;
-        }
-        return parsed;
-      }
-
       function normalizePlaylistSource(value) {
         const normalized = String(value || "").toLowerCase();
         if (normalized === "spotify") {
@@ -6152,9 +6315,6 @@
         duplicate.artist_limit = duplicate.artist_limit ?? 0;
         duplicate.album_limit = duplicate.album_limit ?? 0;
         duplicate.sort_by = duplicate.sort_by || "";
-        duplicate.top_5_boost = normalizeTop5Boost(
-          duplicate.top_5_boost ?? 1.0
-        );
         if (!Array.isArray(duplicate.plex_filter)) {
           duplicate.plex_filter = [];
         }
@@ -6548,28 +6708,6 @@
           });
           afterSortLabel.appendChild(afterSortSelect);
 
-          const top5BoostLabel = document.createElement("label");
-          top5BoostLabel.textContent = "Top 5 Boost";
-          const top5BoostInput = document.createElement("input");
-          top5BoostInput.type = "number";
-          top5BoostInput.min = "0";
-          top5BoostInput.step = "0.1";
-          const normalizedBoost = normalizeTop5Boost(
-            playlist.top_5_boost ?? 1.0
-          );
-          playlist.top_5_boost = normalizedBoost;
-          top5BoostInput.value = normalizedBoost;
-          top5BoostInput.placeholder = "1.0";
-          top5BoostInput.addEventListener("input", (event) => {
-            const parsed = Number.parseFloat(event.target.value);
-            if (Number.isFinite(parsed) && parsed >= 0) {
-              playlist.top_5_boost = parsed;
-            } else {
-              playlist.top_5_boost = undefined;
-            }
-          });
-          top5BoostLabel.appendChild(top5BoostInput);
-
           const coverField = document.createElement("div");
           coverField.className = "cover-field";
           const coverInputId = `coverInput-${Math.random()
@@ -6580,8 +6718,13 @@
           coverLabel.textContent = "Cover Image";
           coverField.appendChild(coverLabel);
 
-          const coverPreviewContainer = document.createElement("div");
+          const coverPreviewContainer = document.createElement("button");
+          coverPreviewContainer.type = "button";
           coverPreviewContainer.className = "cover-preview";
+          coverPreviewContainer.setAttribute(
+            "aria-label",
+            "Choose a cover image"
+          );
           const coverPreviewFrame = document.createElement("div");
           coverPreviewFrame.className = "cover-preview-frame";
           const coverPreviewImage = document.createElement("img");
@@ -6589,16 +6732,16 @@
           coverPreviewImage.draggable = false;
           const coverPreviewPlaceholder = document.createElement("div");
           coverPreviewPlaceholder.className = "cover-preview-placeholder";
-          coverPreviewPlaceholder.textContent = "No cover selected";
+          coverPreviewPlaceholder.textContent = "Select a cover";
           coverPreviewFrame.appendChild(coverPreviewImage);
           coverPreviewFrame.appendChild(coverPreviewPlaceholder);
           const coverPreviewCaption = document.createElement("div");
           coverPreviewCaption.className = "cover-preview-caption";
+          coverPreviewCaption.classList.add("visually-hidden");
           coverPreviewContainer.appendChild(coverPreviewFrame);
           coverPreviewContainer.appendChild(coverPreviewCaption);
           coverField.appendChild(coverPreviewContainer);
 
-          let coverClearBtn = null;
           const coverInput = document.createElement("input");
           coverInput.type = "hidden";
           coverInput.id = coverInputId;
@@ -6613,100 +6756,15 @@
               value,
               CARD_COVER_PREVIEW_TEXTS
             );
-            if (coverClearBtn) {
-              coverClearBtn.disabled = !(value || "").trim();
-            }
           });
           coverField.appendChild(coverInput);
-
-          const coverInputRow = document.createElement("div");
-          coverInputRow.className = "cover-input-row";
-
-          const coverPickerBtn = document.createElement("button");
-          coverPickerBtn.type = "button";
-          coverPickerBtn.className = "cover-picker-button";
-          coverPickerBtn.textContent = "Browse Covers";
-          coverPickerBtn.addEventListener("click", () => {
+          coverPreviewContainer.addEventListener("click", () => {
             openCoverPicker(playlist, coverInput, "cover", {
               container: coverPreviewContainer,
               image: coverPreviewImage,
               label: coverPreviewCaption,
             });
           });
-          coverInputRow.appendChild(coverPickerBtn);
-
-          const coverUploadInput = document.createElement("input");
-          coverUploadInput.type = "file";
-          coverUploadInput.accept = "image/*";
-          coverUploadInput.style.display = "none";
-
-          const coverUploadBtn = document.createElement("button");
-          coverUploadBtn.type = "button";
-          coverUploadBtn.className = "cover-picker-button";
-          coverUploadBtn.textContent = "Upload Cover";
-          coverUploadBtn.addEventListener("click", () => {
-            coverUploadInput.click();
-          });
-          coverInputRow.appendChild(coverUploadBtn);
-
-          coverClearBtn = document.createElement("button");
-          coverClearBtn.type = "button";
-          coverClearBtn.className = "cover-picker-button cover-clear-button";
-          coverClearBtn.textContent = "Clear Cover";
-          coverClearBtn.disabled = !((extras.cover || "").trim());
-          coverClearBtn.addEventListener("click", () => {
-            coverInput.value = "";
-            coverInput.dispatchEvent(new Event("input", { bubbles: true }));
-            coverUploadInput.value = "";
-            if (coverPickerBtn && typeof coverPickerBtn.focus === "function") {
-              coverPickerBtn.focus();
-            }
-          });
-          coverInputRow.appendChild(coverClearBtn);
-
-          coverUploadInput.addEventListener("change", async (event) => {
-            const fileList = event.target.files;
-            const file = fileList && fileList[0];
-            if (!file) {
-              return;
-            }
-
-            coverUploadBtn.disabled = true;
-            showPlaylistInlineMessage(
-              playlist,
-              `Uploading "${file.name}"...`,
-              { persist: true }
-            );
-
-            try {
-              await uploadCoverImage({
-                file,
-                playlist,
-                inputEl: coverInput,
-                extrasKey: "cover",
-              });
-              showPlaylistInlineMessage(
-                playlist,
-                "Cover uploaded successfully."
-              );
-            } catch (error) {
-              console.error(error);
-              const message =
-                (error && error.message) ||
-                "Failed to upload cover image.";
-              showPlaylistInlineMessage(playlist, message, {
-                isError: true,
-                duration: 8000,
-              });
-            } finally {
-              coverUploadBtn.disabled = false;
-              coverUploadBtn.blur();
-              coverUploadInput.value = "";
-            }
-          });
-
-          coverField.appendChild(coverInputRow);
-          coverField.appendChild(coverUploadInput);
 
           updateImagePreview(
             coverPreviewContainer,
@@ -6723,7 +6781,6 @@
           grid.appendChild(artistLimitLabel);
           grid.appendChild(albumLimitLabel);
           grid.appendChild(sortLabel);
-          grid.appendChild(top5BoostLabel);
           grid.appendChild(coverField);
           grid.appendChild(afterSortLabel);
 
@@ -6921,9 +6978,6 @@
               album_limit: playlist.album_limit ?? 0,
               sort_by: playlist.sort_by || "",
               after_sort: playlist.after_sort || "",
-              top_5_boost: normalizeTop5Boost(
-                playlist.top_5_boost ?? 1.0
-              ),
               plex_filter: (playlist.plex_filter || []).map((filter) => ({
                 field: filter.field || "",
                 operator: filter.operator || "equals",
@@ -7028,9 +7082,6 @@
               album_limit: playlist.album_limit ?? 0,
               sort_by: playlist.sort_by || "",
               after_sort: playlist.after_sort || "",
-              top_5_boost: normalizeTop5Boost(
-                playlist.top_5_boost ?? 1.0
-              ),
               plex_filter: prepareFiltersForSave(playlist.plex_filter),
               popularity_boosts: prepareBoostsForSave(
                 playlist.popularity_boosts
@@ -7102,9 +7153,6 @@
             album_limit: playlist.album_limit ?? 0,
             sort_by: playlist.sort_by || "",
             after_sort: playlist.after_sort || "",
-            top_5_boost: normalizeTop5Boost(
-              playlist.top_5_boost ?? 1.0
-            ),
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
             popularity_boosts: prepareBoostsForSave(
               playlist.popularity_boosts
@@ -7262,6 +7310,26 @@
 
       if (coverPickerUpBtn) {
         coverPickerUpBtn.addEventListener("click", handleCoverPickerUp);
+      }
+
+      if (coverPickerUploadBtn && coverPickerUploadInput) {
+        coverPickerUploadBtn.addEventListener("click", () => {
+          coverPickerUploadInput.click();
+        });
+      }
+
+      if (coverPickerUploadInput) {
+        coverPickerUploadInput.addEventListener("change", (event) => {
+          handleCoverPickerUploadChange(event).catch((error) => {
+            console.error(error);
+          });
+        });
+      }
+
+      if (coverPickerClearBtn) {
+        coverPickerClearBtn.addEventListener("click", () => {
+          clearCoverPickerSelection();
+        });
       }
 
       if (coverPickerGrid) {
@@ -7423,17 +7491,16 @@
 
       document.getElementById("addPlaylist").addEventListener("click", () => {
         const defaultSort = options.sort_fields?.[0]?.value || "";
-        const newPlaylist = {
-          name: "New Playlist",
-          limit: 0,
-          artist_limit: 0,
-          album_limit: 0,
-          sort_by: defaultSort,
-          after_sort: "",
-          top_5_boost: 1.0,
-          plex_filter: [],
-          popularity_boosts: [],
-          extras: {},
+          const newPlaylist = {
+            name: "New Playlist",
+            limit: 0,
+            artist_limit: 0,
+            album_limit: 0,
+            sort_by: defaultSort,
+            after_sort: "",
+            plex_filter: [],
+            popularity_boosts: [],
+            extras: {},
           source: "plex",
           spotify_url: "",
           _originalName: "",
