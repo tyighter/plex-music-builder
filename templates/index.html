@@ -1106,20 +1106,26 @@
       .limit-control {
         display: flex;
         flex-direction: column;
-        gap: 0;
+        gap: 6px;
         font-size: 14px;
         color: rgba(255, 255, 255, 0.8);
         align-self: stretch;
         justify-content: flex-start;
-        align-items: flex-start;
+        align-items: stretch;
+        width: 100%;
+      }
+
+      .limit-control-title {
+        font-size: 14px;
+        font-weight: 400;
+        color: rgba(255, 255, 255, 0.8);
       }
 
       button.limit-button {
         display: flex;
         align-items: center;
         justify-content: center;
-        width: auto;
-        max-width: 100%;
+        width: 100%;
         padding: 10px 14px;
         border-radius: 10px;
         border: 1px solid rgba(229, 160, 13, 0.25);
@@ -1129,7 +1135,7 @@
         font-weight: 500;
         box-shadow: none;
         gap: 8px;
-        align-self: flex-start;
+        align-self: stretch;
         white-space: nowrap;
         transition: border 0.2s ease, box-shadow 0.2s ease, background 0.2s ease,
           transform 0.2s ease;
@@ -7321,6 +7327,10 @@
 
           const limitControl = document.createElement("div");
           limitControl.className = "limit-control";
+          const limitControlTitle = document.createElement("span");
+          limitControlTitle.className = "limit-control-title";
+          limitControlTitle.textContent = "Limits";
+          limitControl.appendChild(limitControlTitle);
           const limitButton = document.createElement("button");
           limitButton.type = "button";
           limitButton.className = "limit-button";
