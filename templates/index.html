@@ -2205,7 +2205,14 @@
       const playlistMessageTimeouts = new WeakMap();
       let latestBuildStatus = null;
       let buildStatusTimer = null;
-      let isActivityCollapsed = false;
+      const ACTIVITY_COLLAPSED_STORAGE_KEY =
+        "plexMusicBuilder.activityCollapsed";
+      const DISMISSED_ACTIVITY_STORAGE_KEY =
+        "plexMusicBuilder.dismissedActivity";
+      const MAX_DISMISSED_ACTIVITY_KEYS = 500;
+      let isActivityCollapsed = Boolean(
+        loadActivityCollapsedState() ?? false
+      );
       let isDefaultBoostsOpen = false;
       let isDefaultsPopoverOpen = false;
       const playlistCancellationMessages = new Map();
@@ -2218,9 +2225,6 @@
       const PLAYLIST_INLINE_MESSAGE_DURATION = 4 * 1000;
       const PLAYLIST_CANCELLATION_MESSAGE_TTL = 2 * 60 * 1000;
       const ACTIVITY_ENTRY_TTL_MS = 30 * 1000;
-      const DISMISSED_ACTIVITY_STORAGE_KEY =
-        "plexMusicBuilder.dismissedActivity";
-      const MAX_DISMISSED_ACTIVITY_KEYS = 500;
       let messageHideTimeout = null;
       const waitingPlaylistOrder = new Map();
       let nextWaitingOrderValue = 1;
@@ -2310,7 +2314,55 @@
 
       function setActivityCollapsed(collapsed) {
         isActivityCollapsed = Boolean(collapsed);
+        persistActivityCollapsedState(isActivityCollapsed);
         updateActivityCollapseUi();
+      }
+
+      function loadActivityCollapsedState() {
+        if (typeof window === "undefined") {
+          return null;
+        }
+
+        try {
+          const storage = window.localStorage;
+          if (!storage) {
+            return null;
+          }
+          const rawValue = storage.getItem(ACTIVITY_COLLAPSED_STORAGE_KEY);
+          if (rawValue === null || rawValue === undefined) {
+            return null;
+          }
+          if (rawValue === "1" || rawValue === "true") {
+            return true;
+          }
+          if (rawValue === "0" || rawValue === "false") {
+            return false;
+          }
+          return null;
+        } catch (error) {
+          console.warn("Unable to load activity collapse state", error);
+          return null;
+        }
+      }
+
+      function persistActivityCollapsedState(collapsed) {
+        if (typeof window === "undefined") {
+          return;
+        }
+
+        try {
+          const storage = window.localStorage;
+          if (!storage) {
+            return;
+          }
+          if (collapsed) {
+            storage.setItem(ACTIVITY_COLLAPSED_STORAGE_KEY, "1");
+          } else {
+            storage.removeItem(ACTIVITY_COLLAPSED_STORAGE_KEY);
+          }
+        } catch (error) {
+          console.warn("Unable to persist activity collapse state", error);
+        }
       }
 
       function setConfigStatusMessage(text, isError = false) {
@@ -2387,7 +2439,7 @@
         }
       }
 
-      function dismissAllActivityEntries() {
+      function dismissAllActivityEntries(status = latestBuildStatus) {
         if (!buildLogContainer) {
           return;
         }
@@ -2395,10 +2447,6 @@
         const entries = Array.from(
           buildLogContainer.querySelectorAll(".playlist-log-entry")
         );
-        if (!entries.length) {
-          activityEntryLastSeen.clear();
-          return;
-        }
 
         let shouldPersist = false;
         const cancelledPlaylists = new Set();
@@ -2417,6 +2465,16 @@
           }
         });
 
+        const statusKeys = collectActivityKeysFromStatus(status);
+        if (statusKeys.size) {
+          statusKeys.forEach((key) => {
+            if (key && !dismissedActivityKeys.has(key)) {
+              dismissedActivityKeys.add(key);
+              shouldPersist = true;
+            }
+          });
+        }
+
         activityEntryLastSeen.clear();
         buildLogContainer.innerHTML = "";
 
@@ -2430,6 +2488,40 @@
         if (shouldPersist) {
           persistDismissedActivityKeys();
         }
+      }
+
+      function collectActivityKeysFromStatus(status) {
+        const keys = new Set();
+        if (!status || typeof status !== "object") {
+          return keys;
+        }
+
+        const playlistLogs = status?.logs?.playlists;
+        if (playlistLogs && typeof playlistLogs === "object") {
+          Object.entries(playlistLogs).forEach(([playlistName, entries]) => {
+            if (!Array.isArray(entries)) {
+              return;
+            }
+            entries.forEach((entry) => {
+              const key = getPlaylistActivityKey(playlistName, entry);
+              if (key) {
+                keys.add(key);
+              }
+            });
+          });
+        }
+
+        const generalLogs = status?.logs?.general;
+        if (Array.isArray(generalLogs)) {
+          generalLogs.forEach((entry) => {
+            const key = getGeneralActivityKey(entry);
+            if (key) {
+              keys.add(key);
+            }
+          });
+        }
+
+        return keys;
       }
 
       function buildConfigFieldKey(sectionId, fieldKey) {
@@ -3398,6 +3490,132 @@
           updateBuildLogsUi(latestBuildStatus);
         } finally {
           pendingActivityStopRequests.delete(pendingKey);
+        }
+      }
+
+      async function stopPlaylistBuildSilently(playlistName) {
+        const trimmedName =
+          typeof playlistName === "string" ? playlistName.trim() : "";
+        if (!trimmedName) {
+          return null;
+        }
+
+        try {
+          const response = await fetch("/api/build/stop_playlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ playlist: trimmedName }),
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const message =
+              result?.message ||
+              `Failed to stop playlist build for '${trimmedName}'.`;
+            const isNoActiveBuild =
+              response.status === 404 &&
+              typeof message === "string" &&
+              message.startsWith("No active build found for playlist");
+            if (isNoActiveBuild) {
+              return result?.status || null;
+            }
+            throw new Error(message);
+          }
+
+          return result?.status || null;
+        } catch (error) {
+          const message =
+            (error && error.message) ||
+            `Failed to stop playlist build for '${trimmedName}'.`;
+          throw new Error(message);
+        }
+      }
+
+      async function stopAllBuildSilently() {
+        try {
+          const response = await fetch("/api/build/stop", { method: "POST" });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const message =
+              result?.message || "Failed to stop build.";
+            const builderIdle =
+              response.status === 409 &&
+              typeof message === "string" &&
+              message === "Builder is not running.";
+            if (builderIdle) {
+              return result?.status || null;
+            }
+            throw new Error(message);
+          }
+
+          return result?.status || null;
+        } catch (error) {
+          const message =
+            (error && error.message) || "Failed to stop build.";
+          throw new Error(message);
+        }
+      }
+
+      async function cancelActiveBuilds() {
+        const statusSnapshot = latestBuildStatus;
+        if (!statusSnapshot || !statusSnapshot.running) {
+          return;
+        }
+
+        const waitingSet = collectWaitingPlaylistSet(statusSnapshot);
+        const activeSet = collectActivePlaylistSet(statusSnapshot);
+
+        const playlistTargets = [];
+        activeSet.forEach((name) => {
+          if (name) {
+            playlistTargets.push(name);
+          }
+        });
+        waitingSet.forEach((name) => {
+          if (name && !activeSet.has(name)) {
+            playlistTargets.push(name);
+          }
+        });
+
+        let updatedStatus = null;
+
+        for (const name of playlistTargets) {
+          try {
+            const resultStatus = await stopPlaylistBuildSilently(name);
+            if (resultStatus && typeof resultStatus === "object") {
+              updatedStatus = resultStatus;
+            }
+          } catch (error) {
+            console.error(error);
+            if (error?.message) {
+              showMessage(error.message, true);
+            }
+          }
+        }
+
+        const jobType = statusSnapshot?.job?.type;
+        const shouldStopAll =
+          jobType === "all" ||
+          jobType === "parallel_playlists" ||
+          (!playlistTargets.length && statusSnapshot.running);
+
+        if (shouldStopAll) {
+          try {
+            const resultStatus = await stopAllBuildSilently();
+            if (resultStatus && typeof resultStatus === "object") {
+              updatedStatus = resultStatus;
+            }
+          } catch (error) {
+            console.error(error);
+            if (error?.message) {
+              showMessage(error.message, true);
+            }
+          }
+        }
+
+        if (updatedStatus) {
+          updateBuildStatusUi(updatedStatus);
+        } else {
+          await refreshBuildStatus();
         }
       }
 
@@ -7246,10 +7464,25 @@
         updateActivityCollapseUi();
       }
 
-      if (clearActivityBtn) {
-        clearActivityBtn.addEventListener("click", () => {
+      async function handleClearActivityClick() {
+        if (clearActivityBtn) {
+          clearActivityBtn.disabled = true;
+          clearActivityBtn.setAttribute("aria-disabled", "true");
+        }
+
+        try {
+          await cancelActiveBuilds();
+        } finally {
           dismissAllActivityEntries();
           updateBuildLogsUi(latestBuildStatus);
+        }
+      }
+
+      if (clearActivityBtn) {
+        clearActivityBtn.addEventListener("click", () => {
+          handleClearActivityClick().catch((error) => {
+            console.error(error);
+          });
         });
       }
 
