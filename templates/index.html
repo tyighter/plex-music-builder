@@ -98,7 +98,7 @@
         position: fixed;
         top: 96px;
         right: 48px;
-        width: min(620px, calc(100% - 32px));
+        width: min(720px, calc(100% - 32px));
         background: var(--card-bg);
         border-radius: 18px;
         border: 1px solid rgba(229, 160, 13, 0.22);
@@ -677,6 +677,33 @@
         align-items: start;
         gap: 12px 16px;
         margin-bottom: 18px;
+      }
+
+      .playlist-section-header {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+          "title actions"
+          "search actions";
+        align-items: center;
+      }
+
+      .playlist-section-header > h2 {
+        grid-area: title;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .playlist-section-header .playlist-search {
+        grid-area: search;
+        width: 100%;
+      }
+
+      .playlist-section-header .playlist-list-controls {
+        grid-area: actions;
+        justify-content: flex-end;
+        align-items: center;
       }
 
       .playlist-search {
@@ -2362,7 +2389,7 @@
       </section>
 
       <section>
-        <div class="playlist-header">
+        <div class="playlist-header playlist-section-header">
           <h2><span class="section-icon">🎵</span>Playlists</h2>
           <div class="playlist-search">
             <input
@@ -5883,6 +5910,25 @@
         textarea.style.height = `${nextHeight}px`;
       }
 
+      function autoSizeTextareas(container) {
+        if (!container) {
+          return;
+        }
+
+        const textareas = container.querySelectorAll("textarea");
+        textareas.forEach((textarea) => autoSizeMultiValueTextarea(textarea));
+      }
+
+      function scheduleAutoSizeTextareas(container) {
+        const scheduler =
+          (typeof window !== "undefined" && window.requestAnimationFrame) ||
+          ((callback) => setTimeout(callback, 16));
+
+        scheduler(() => {
+          autoSizeTextareas(container || document);
+        });
+      }
+
       function createMultiValueTextarea({
         value = "",
         placeholder = "",
@@ -6387,6 +6433,8 @@
         if (focusTarget && typeof focusTarget.focus === "function") {
           focusTarget.focus();
         }
+
+        scheduleAutoSizeTextareas(defaultsPopover);
 
         document.addEventListener("mousedown", handleDefaultsOutsideInteraction);
         document.addEventListener("focusin", handleDefaultsOutsideInteraction);
@@ -7608,6 +7656,9 @@
           boostsPopout.appendChild(boostsPanel);
           boostsPopout.addEventListener("toggle", () => {
             playlist._boostsOpen = boostsPopout.open;
+            if (boostsPopout.open) {
+              scheduleAutoSizeTextareas(boostsPopout);
+            }
           });
 
           details.appendChild(boostsPopout);
@@ -7632,11 +7683,17 @@
           toggleBtn.addEventListener("click", () => {
             playlist._collapsed = !playlist._collapsed;
             updatePlaylistCollapseUi(playlist);
+
+            if (!playlist._collapsed) {
+              scheduleAutoSizeTextareas(details);
+            }
           });
 
 
           playlistsContainer.appendChild(card);
         });
+
+        scheduleAutoSizeTextareas(playlistsContainer);
       }
 
       function renderDefaultFilters() {
@@ -7675,6 +7732,10 @@
           if (defaultBoostsPopout.open !== isDefaultBoostsOpen) {
             defaultBoostsPopout.open = isDefaultBoostsOpen;
           }
+        }
+
+        if (isDefaultsPopoverOpen && defaultsPopover) {
+          scheduleAutoSizeTextareas(defaultsPopover);
         }
       }
 
@@ -8204,6 +8265,9 @@
       if (defaultBoostsPopout) {
         defaultBoostsPopout.addEventListener("toggle", () => {
           isDefaultBoostsOpen = defaultBoostsPopout.open;
+          if (defaultBoostsPopout.open) {
+            scheduleAutoSizeTextareas(defaultBoostsPopout);
+          }
         });
       }
 
