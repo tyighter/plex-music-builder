@@ -720,10 +720,15 @@
       .playlist-header-title {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 12px;
         min-width: 0;
         flex: 1 1 220px;
         grid-area: title;
+      }
+
+      .playlist-header-title h3 {
+        flex: 1 1 auto;
+        min-width: 0;
       }
 
       .playlist-status {
@@ -822,6 +827,7 @@
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
         gap: 16px;
         margin-bottom: 12px;
+        align-items: end;
       }
 
       label {
@@ -1025,27 +1031,10 @@
         align-self: center;
       }
 
-      .cover-field {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        color: rgba(255, 255, 255, 0.8);
-        font-size: 14px;
-        align-self: stretch;
-        align-items: flex-start;
-      }
-
-      .cover-field-label {
-        font-weight: 500;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-
       button.cover-preview {
         position: relative;
-        width: 96px;
-        height: 96px;
+        width: 72px;
+        height: 72px;
         border-radius: 14px;
         overflow: hidden;
         border: 1px solid rgba(229, 160, 13, 0.24);
@@ -1056,8 +1045,19 @@
         cursor: pointer;
         padding: 0;
         transition: border 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
-        margin-top: auto;
-        align-self: flex-start;
+        margin: 0;
+        flex-shrink: 0;
+      }
+
+      .playlist-cover-preview {
+        width: 64px;
+        height: 64px;
+        border-radius: 12px;
+      }
+
+      .playlist-cover-preview .cover-preview-placeholder {
+        font-size: 11px;
+        padding: 0 6px;
       }
 
       button.cover-preview:hover,
@@ -1109,7 +1109,7 @@
         gap: 6px;
         font-size: 14px;
         color: rgba(255, 255, 255, 0.8);
-        align-self: stretch;
+        align-self: end;
         justify-content: flex-start;
         align-items: stretch;
         width: 100%;
@@ -7135,6 +7135,8 @@
             playlist.after_sort = "";
           }
 
+          const extras = ensureExtras(playlist);
+
           const card = document.createElement("div");
           card.className = "card playlist-card";
 
@@ -7148,11 +7150,82 @@
           toggleBtn.type = "button";
           toggleBtn.className = "icon-only secondary playlist-collapse-btn";
 
+          const buildBtn = document.createElement("button");
+          buildBtn.type = "button";
+          buildBtn.className = "playlist-build-btn icon-only";
+          buildBtn.textContent = "▶";
+          buildBtn.setAttribute("aria-label", "Build this playlist");
+          buildBtn.title = "Build this playlist.";
+          buildBtn.addEventListener("click", () => togglePlaylistBuild(playlist));
+
           const title = document.createElement("h3");
           title.textContent = playlist.name || "Untitled Playlist";
 
-          titleWrapper.appendChild(toggleBtn);
+          const coverPreviewButton = document.createElement("button");
+          coverPreviewButton.type = "button";
+          coverPreviewButton.className = "cover-preview playlist-cover-preview";
+          const coverPreviewFrame = document.createElement("div");
+          coverPreviewFrame.className = "cover-preview-frame";
+          const coverPreviewImage = document.createElement("img");
+          coverPreviewImage.alt = "Cover preview";
+          coverPreviewImage.draggable = false;
+          const coverPreviewPlaceholder = document.createElement("div");
+          coverPreviewPlaceholder.className = "cover-preview-placeholder";
+          coverPreviewPlaceholder.textContent = "Select a cover";
+          coverPreviewFrame.appendChild(coverPreviewImage);
+          coverPreviewFrame.appendChild(coverPreviewPlaceholder);
+          const coverPreviewCaption = document.createElement("div");
+          coverPreviewCaption.className = "cover-preview-caption";
+          coverPreviewCaption.classList.add("visually-hidden");
+          coverPreviewButton.appendChild(coverPreviewFrame);
+          coverPreviewButton.appendChild(coverPreviewCaption);
+
+          const coverInput = document.createElement("input");
+          coverInput.type = "hidden";
+          coverInput.value = extras.cover || "";
+          coverInput.addEventListener("input", (event) => {
+            const value = event.target.value || "";
+            extras.cover = value;
+            updateImagePreview(
+              coverPreviewButton,
+              coverPreviewImage,
+              coverPreviewCaption,
+              value,
+              CARD_COVER_PREVIEW_TEXTS
+            );
+          });
+
+          const updateCoverButtonLabel = () => {
+            const trimmedName = (playlist.name || "").trim();
+            const label = trimmedName
+              ? `Choose a cover image for ${trimmedName}`
+              : "Choose a cover image";
+            coverPreviewButton.setAttribute("aria-label", label);
+            coverPreviewButton.title = label;
+          };
+
+          updateCoverButtonLabel();
+
+          coverPreviewButton.addEventListener("click", () => {
+            openCoverPicker(playlist, coverInput, "cover", {
+              container: coverPreviewButton,
+              image: coverPreviewImage,
+              label: coverPreviewCaption,
+            });
+          });
+
+          updateImagePreview(
+            coverPreviewButton,
+            coverPreviewImage,
+            coverPreviewCaption,
+            extras.cover || "",
+            CARD_COVER_PREVIEW_TEXTS
+          );
+
+          titleWrapper.appendChild(buildBtn);
+          titleWrapper.appendChild(coverPreviewButton);
           titleWrapper.appendChild(title);
+          titleWrapper.appendChild(coverInput);
 
           const statusGroup = document.createElement("div");
           statusGroup.className = "playlist-status";
@@ -7174,14 +7247,6 @@
           statusTextWrapper.appendChild(statusMessage);
           statusGroup.appendChild(statusIndicator);
           statusGroup.appendChild(statusTextWrapper);
-
-          const buildBtn = document.createElement("button");
-          buildBtn.type = "button";
-          buildBtn.className = "playlist-build-btn icon-only";
-          buildBtn.textContent = "▶";
-          buildBtn.setAttribute("aria-label", "Build this playlist");
-          buildBtn.title = "Build this playlist.";
-          buildBtn.addEventListener("click", () => togglePlaylistBuild(playlist));
 
           const saveBtn = document.createElement("button");
           saveBtn.type = "button";
@@ -7231,7 +7296,7 @@
           header.appendChild(statusGroup);
           const actionButtons = document.createElement("div");
           actionButtons.className = "playlist-action-buttons";
-          actionButtons.appendChild(buildBtn);
+          actionButtons.appendChild(toggleBtn);
           actionButtons.appendChild(saveBtn);
           actionButtons.appendChild(duplicateBtn);
           actionButtons.appendChild(removeBtn);
@@ -7245,8 +7310,6 @@
           details.className = "playlist-details";
           card.appendChild(details);
 
-          const extras = ensureExtras(playlist);
-
           const grid = document.createElement("div");
           grid.className = "input-grid";
 
@@ -7258,6 +7321,7 @@
           nameInput.addEventListener("input", (event) => {
             playlist.name = event.target.value;
             title.textContent = event.target.value || "Untitled Playlist";
+            updateCoverButtonLabel();
             updatePlaylistBuildUi(playlist);
           });
           nameLabel.appendChild(nameInput);
@@ -7403,78 +7467,11 @@
           });
           afterSortLabel.appendChild(afterSortSelect);
 
-          const coverField = document.createElement("div");
-          coverField.className = "cover-field";
-          const coverInputId = `coverInput-${Math.random()
-            .toString(36)
-            .slice(2, 10)}`;
-          const coverLabel = document.createElement("label");
-          coverLabel.className = "cover-field-label";
-          coverLabel.textContent = "Cover Image";
-          coverField.appendChild(coverLabel);
-
-          const coverPreviewContainer = document.createElement("button");
-          coverPreviewContainer.type = "button";
-          coverPreviewContainer.className = "cover-preview";
-          coverPreviewContainer.setAttribute(
-            "aria-label",
-            "Choose a cover image"
-          );
-          const coverPreviewFrame = document.createElement("div");
-          coverPreviewFrame.className = "cover-preview-frame";
-          const coverPreviewImage = document.createElement("img");
-          coverPreviewImage.alt = "Cover preview";
-          coverPreviewImage.draggable = false;
-          const coverPreviewPlaceholder = document.createElement("div");
-          coverPreviewPlaceholder.className = "cover-preview-placeholder";
-          coverPreviewPlaceholder.textContent = "Select a cover";
-          coverPreviewFrame.appendChild(coverPreviewImage);
-          coverPreviewFrame.appendChild(coverPreviewPlaceholder);
-          const coverPreviewCaption = document.createElement("div");
-          coverPreviewCaption.className = "cover-preview-caption";
-          coverPreviewCaption.classList.add("visually-hidden");
-          coverPreviewContainer.appendChild(coverPreviewFrame);
-          coverPreviewContainer.appendChild(coverPreviewCaption);
-          coverField.appendChild(coverPreviewContainer);
-
-          const coverInput = document.createElement("input");
-          coverInput.type = "hidden";
-          coverInput.id = coverInputId;
-          coverInput.value = extras.cover || "";
-          coverInput.addEventListener("input", (event) => {
-            const value = event.target.value || "";
-            extras.cover = value;
-            updateImagePreview(
-              coverPreviewContainer,
-              coverPreviewImage,
-              coverPreviewCaption,
-              value,
-              CARD_COVER_PREVIEW_TEXTS
-            );
-          });
-          coverField.appendChild(coverInput);
-          coverPreviewContainer.addEventListener("click", () => {
-            openCoverPicker(playlist, coverInput, "cover", {
-              container: coverPreviewContainer,
-              image: coverPreviewImage,
-              label: coverPreviewCaption,
-            });
-          });
-
-          updateImagePreview(
-            coverPreviewContainer,
-            coverPreviewImage,
-            coverPreviewCaption,
-            extras.cover || "",
-            CARD_COVER_PREVIEW_TEXTS
-          );
-
           grid.appendChild(nameLabel);
           grid.appendChild(sourceLabel);
           grid.appendChild(spotifyUrlLabel);
           grid.appendChild(limitControl);
           grid.appendChild(sortLabel);
-          grid.appendChild(coverField);
           grid.appendChild(afterSortLabel);
 
           details.appendChild(grid);
