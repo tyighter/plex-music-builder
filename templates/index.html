@@ -98,7 +98,7 @@
         position: fixed;
         top: 96px;
         right: 48px;
-        width: min(420px, calc(100% - 32px));
+        width: min(620px, calc(100% - 32px));
         background: var(--card-bg);
         border-radius: 18px;
         border: 1px solid rgba(229, 160, 13, 0.22);
@@ -684,6 +684,7 @@
         align-self: stretch;
         display: flex;
         align-items: center;
+        justify-content: flex-start;
       }
 
       .playlist-search input {
@@ -865,6 +866,12 @@
       textarea {
         min-height: 42px;
         resize: vertical;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        overflow-y: hidden;
+        text-wrap: pretty;
       }
 
       .filter-row {
@@ -965,7 +972,7 @@
         gap: 8px;
       }
 
-      .boost-condition .value-input input {
+      .boost-condition .value-input textarea {
         width: 100%;
         min-width: 0;
       }
@@ -995,7 +1002,7 @@
         gap: 8px;
       }
 
-      .filter-row .value-input input {
+      .filter-row .value-input textarea {
         width: 100%;
         min-width: 180px;
       }
@@ -2015,7 +2022,7 @@
           justify-content: flex-start;
         }
 
-        .filter-row .value-input input {
+        .filter-row .value-input textarea {
           min-width: 0;
         }
 
@@ -5863,6 +5870,48 @@
         });
       }
 
+      function autoSizeMultiValueTextarea(textarea) {
+        if (!textarea) {
+          return;
+        }
+
+        textarea.style.height = "auto";
+        const computedStyles = window.getComputedStyle(textarea);
+        const minHeight = Number.parseFloat(computedStyles.minHeight) || 0;
+        const scrollHeight = textarea.scrollHeight;
+        const nextHeight = Math.max(scrollHeight, minHeight);
+        textarea.style.height = `${nextHeight}px`;
+      }
+
+      function createMultiValueTextarea({
+        value = "",
+        placeholder = "",
+        onInput,
+      } = {}) {
+        const textarea = document.createElement("textarea");
+        textarea.rows = 1;
+        textarea.wrap = "soft";
+        textarea.placeholder = placeholder;
+        const normalizedValue =
+          value !== undefined && value !== null ? String(value) : "";
+        textarea.value = normalizedValue;
+
+        textarea.addEventListener("input", (event) => {
+          if (typeof onInput === "function") {
+            onInput(event);
+          }
+          autoSizeMultiValueTextarea(event.target);
+        });
+
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => autoSizeMultiValueTextarea(textarea));
+        } else {
+          setTimeout(() => autoSizeMultiValueTextarea(textarea), 0);
+        }
+
+        return textarea;
+      }
+
       function renderFilters(containerEl, filters, onRemove) {
         containerEl.innerHTML = "";
 
@@ -5893,12 +5942,15 @@
 
           const valueWrapper = document.createElement("div");
           valueWrapper.className = "value-input";
-          const valueInput = document.createElement("input");
-          valueInput.type = "text";
-          valueInput.placeholder = "Value (comma separated for multiple)";
-          valueInput.value = filter.value || "";
-          valueInput.addEventListener("input", (event) => {
-            filter.value = event.target.value;
+          const valueInput = createMultiValueTextarea({
+            value:
+              filter.value !== undefined && filter.value !== null
+                ? String(filter.value)
+                : "",
+            placeholder: "Value (comma separated for multiple)",
+            onInput: (event) => {
+              filter.value = event.target.value;
+            },
           });
 
           const flagsWrapper = document.createElement("div");
@@ -5934,6 +5986,7 @@
           flagsWrapper.appendChild(wildcardLabel);
 
           valueWrapper.appendChild(valueInput);
+          autoSizeMultiValueTextarea(valueInput);
 
           const shouldShowRemoveButton =
             filters.length > 1 || !isFilterEmpty(filter);
@@ -6156,14 +6209,18 @@
 
               const valueWrapper = document.createElement("div");
               valueWrapper.className = "value-input";
-              const valueInput = document.createElement("input");
-              valueInput.type = "text";
-              valueInput.placeholder = "Value (comma separated for multiple)";
-              valueInput.value = current.value || "";
-              valueInput.addEventListener("input", (event) => {
-                current.value = event.target.value;
+              const valueInput = createMultiValueTextarea({
+                value:
+                  current.value !== undefined && current.value !== null
+                    ? String(current.value)
+                    : "",
+                placeholder: "Value (comma separated for multiple)",
+                onInput: (event) => {
+                  current.value = event.target.value;
+                },
               });
               valueWrapper.appendChild(valueInput);
+              autoSizeMultiValueTextarea(valueInput);
               conditionRow.appendChild(valueWrapper);
 
               const flagsWrapper = document.createElement("div");
