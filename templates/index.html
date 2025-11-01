@@ -687,12 +687,26 @@
         align-items: center;
       }
 
-      .playlist-section-header > h2 {
+      .playlist-section-header .playlist-title {
         grid-area: title;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+
+      .playlist-section-header .playlist-title h2 {
         margin: 0;
         display: flex;
         align-items: center;
         gap: 12px;
+      }
+
+      .playlist-section-header .playlist-toggle-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
       }
 
       .playlist-section-header .playlist-search {
@@ -2390,7 +2404,17 @@
 
       <section>
         <div class="playlist-header playlist-section-header">
-          <h2><span class="section-icon">🎵</span>Playlists</h2>
+          <div class="playlist-title">
+            <h2><span class="section-icon">🎵</span>Playlists</h2>
+            <div class="playlist-toggle-controls">
+              <button id="expandAllPlaylists" class="secondary" type="button">
+                Expand All
+              </button>
+              <button id="collapseAllPlaylists" class="secondary" type="button">
+                Collapse All
+              </button>
+            </div>
+          </div>
           <div class="playlist-search">
             <input
               id="playlistSearch"
@@ -2400,12 +2424,6 @@
             />
           </div>
           <div class="playlist-list-controls">
-            <button id="expandAllPlaylists" class="secondary" type="button">
-              Expand All
-            </button>
-            <button id="collapseAllPlaylists" class="secondary" type="button">
-              Collapse All
-            </button>
             <button id="addPlaylist" type="button">＋ Add Playlist</button>
           </div>
         </div>
