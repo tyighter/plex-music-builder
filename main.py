@@ -5015,6 +5015,11 @@ def _run_streaming_playlist_build(
     limit,
 ):
     fetch_start = time.perf_counter()
+    duplicate_tiebreaker = _normalize_duplicate_tiebreaker(
+        config.get("duplicate_tiebreaker"), allow_default_token=True
+    )
+    if not duplicate_tiebreaker:
+        duplicate_tiebreaker = DEFAULT_DUPLICATE_TIEBREAKER
     if not playlist_url:
         log.warning(
             "%s playlist '%s' does not have a URL configured; no tracks will be added.",
