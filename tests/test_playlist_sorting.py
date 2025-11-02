@@ -723,3 +723,35 @@ def test_deduplicate_tracks_prefers_newest_when_configured():
 
     assert removed == 1
     assert [track.parentTitle for track in deduped] == ["Album Remaster"]
+
+
+def test_deduplicate_tracks_allow_keeps_duplicates():
+    import main
+
+    class StubTrack:
+        def __init__(self, title, popularity):
+            self.title = title
+            self.grandparentTitle = "Artist"
+            self.parentTitle = "Album"
+            self.ratingCount = popularity
+            self.parentRatingCount = popularity
+            self.parentOriginallyAvailableAt = "2000-01-01"
+            self.originallyAvailableAt = "2000-01-01"
+            self.guid = "shared-guid"
+            self.ratingKey = None
+
+    first = StubTrack("Song 1", 5)
+    second = StubTrack("Song 2", 10)
+
+    log = logging.getLogger("test_deduplicate_allow")
+    log.setLevel(logging.DEBUG)
+
+    deduped, cache, removed = main._deduplicate_tracks(
+        [first, second],
+        log,
+        duplicate_tiebreaker="allow",
+    )
+
+    assert removed == 0
+    assert deduped == [first, second]
+    assert cache == {}

@@ -139,6 +139,16 @@
         overflow-y: auto;
       }
 
+      .defaults-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .defaults-field label {
+        font-weight: 600;
+      }
+
       .defaults-description {
         margin: 0;
         font-size: 14px;
@@ -2178,6 +2188,10 @@
           Configure filters and popularity boosts that apply to every playlist
           by default. Changes here are saved along with your playlists.
         </p>
+        <div class="defaults-field">
+          <label for="defaultDuplicateTiebreaker">Duplicates</label>
+          <select id="defaultDuplicateTiebreaker"></select>
+        </div>
         <div id="defaultFilters" class="filters-container"></div>
         <button id="addDefaultFilter" class="secondary" type="button">
           ＋ Add Default Filter
@@ -2433,7 +2447,12 @@
 
     <script>
       const state = {
-        defaults: { plex_filter: [], popularity_boosts: [], extras: {} },
+        defaults: {
+          plex_filter: [],
+          popularity_boosts: [],
+          extras: {},
+          duplicate_tiebreaker: "",
+        },
         playlists: [],
       };
 
@@ -2457,6 +2476,9 @@
       const configStatusMessage = document.getElementById("configStatusMessage");
       const configSaveBtn = document.getElementById("configSaveBtn");
       const configRestartBtn = document.getElementById("configRestartBtn");
+      const defaultDuplicateSelect = document.getElementById(
+        "defaultDuplicateTiebreaker"
+      );
       const defaultFiltersContainer = document.getElementById("defaultFilters");
       const defaultBoostsPopout = document.getElementById("defaultBoostsPopout");
       const defaultBoostsContainer = document.getElementById(
@@ -2548,12 +2570,21 @@
         "most_popular",
         "oldest",
         "newest",
+        "allow",
       ]);
       const DUPLICATE_TIEBREAKER_OPTIONS = [
         { value: "", label: "Use Global Default" },
         { value: "most_popular", label: "Most Popular" },
         { value: "oldest", label: "Oldest" },
         { value: "newest", label: "Newest" },
+        { value: "allow", label: "Allow" },
+      ];
+      const GLOBAL_DUPLICATE_TIEBREAKER_OPTIONS = [
+        { value: "", label: "Use Config Default" },
+        { value: "most_popular", label: "Most Popular" },
+        { value: "oldest", label: "Oldest" },
+        { value: "newest", label: "Newest" },
+        { value: "allow", label: "Allow" },
       ];
 
       function normalizeDuplicateTiebreaker(value) {
@@ -2565,6 +2596,20 @@
           return "";
         }
         return DUPLICATE_TIEBREAKER_VALUES.has(normalized) ? normalized : "";
+      }
+      if (defaultDuplicateSelect) {
+        defaultDuplicateSelect.innerHTML = "";
+        GLOBAL_DUPLICATE_TIEBREAKER_OPTIONS.forEach((opt) => {
+          const option = document.createElement("option");
+          option.value = opt.value;
+          option.textContent = opt.label;
+          defaultDuplicateSelect.appendChild(option);
+        });
+        defaultDuplicateSelect.addEventListener("change", (event) => {
+          const normalized = normalizeDuplicateTiebreaker(event.target.value);
+          state.defaults.duplicate_tiebreaker = normalized;
+          event.target.value = normalized;
+        });
       }
       const limitMenuState = {
         container: null,
@@ -7620,7 +7665,7 @@
           afterSortLabel.appendChild(afterSortSelect);
 
           const duplicateTiebreakerLabel = document.createElement("label");
-          duplicateTiebreakerLabel.textContent = "Duplicate Tie Breaker";
+          duplicateTiebreakerLabel.textContent = "Duplicates";
           const duplicateTiebreakerSelect = document.createElement("select");
           DUPLICATE_TIEBREAKER_OPTIONS.forEach((opt) => {
             const option = document.createElement("option");
@@ -7768,6 +7813,12 @@
           state.defaults.plex_filter = [];
         }
 
+        if (defaultDuplicateSelect) {
+          defaultDuplicateSelect.value = normalizeDuplicateTiebreaker(
+            state.defaults.duplicate_tiebreaker
+          );
+        }
+
         if (defaultFiltersContainer) {
           renderFilters(
             defaultFiltersContainer,
@@ -7831,6 +7882,9 @@
           state.defaults.popularity_boosts = (
             data.defaults?.popularity_boosts || []
           ).map((boost) => normalizeBoostForClient(boost || {}));
+          state.defaults.duplicate_tiebreaker = normalizeDuplicateTiebreaker(
+            data.defaults?.duplicate_tiebreaker
+          );
 
           isDefaultBoostsOpen = state.defaults.popularity_boosts.length > 0;
 
@@ -7946,6 +8000,9 @@
               state.defaults.popularity_boosts
             ),
             extras: sanitizeExtras(state.defaults.extras || {}),
+            duplicate_tiebreaker: normalizeDuplicateTiebreaker(
+              state.defaults.duplicate_tiebreaker
+            ),
           },
           playlists: state.playlists.map((playlist) => {
             const source = normalizePlaylistSource(playlist.source);
