@@ -2543,6 +2543,29 @@
         { key: "album", label: "Album", field: "album_limit" },
         { key: "year", label: "Year", field: "year_limit" },
       ];
+      const DUPLICATE_TIEBREAKER_VALUES = new Set([
+        "",
+        "most_popular",
+        "oldest",
+        "newest",
+      ]);
+      const DUPLICATE_TIEBREAKER_OPTIONS = [
+        { value: "", label: "Use Global Default" },
+        { value: "most_popular", label: "Most Popular" },
+        { value: "oldest", label: "Oldest" },
+        { value: "newest", label: "Newest" },
+      ];
+
+      function normalizeDuplicateTiebreaker(value) {
+        if (value === null || value === undefined) {
+          return "";
+        }
+        const normalized = String(value).trim().toLowerCase();
+        if (normalized === "" || normalized === "default") {
+          return "";
+        }
+        return DUPLICATE_TIEBREAKER_VALUES.has(normalized) ? normalized : "";
+      }
       const limitMenuState = {
         container: null,
         backdrop: null,
@@ -6624,6 +6647,9 @@
         duplicate.album_limit = duplicate.album_limit ?? 0;
         duplicate.year_limit = duplicate.year_limit ?? 0;
         duplicate.sort_by = duplicate.sort_by || "";
+        duplicate.duplicate_tiebreaker = normalizeDuplicateTiebreaker(
+          duplicate.duplicate_tiebreaker
+        );
         if (!Array.isArray(duplicate.plex_filter)) {
           duplicate.plex_filter = [];
         }
@@ -7257,6 +7283,9 @@
           if (typeof playlist.after_sort !== "string") {
             playlist.after_sort = "";
           }
+          playlist.duplicate_tiebreaker = normalizeDuplicateTiebreaker(
+            playlist.duplicate_tiebreaker
+          );
 
           const extras = ensureExtras(playlist);
 
@@ -7590,12 +7619,32 @@
           });
           afterSortLabel.appendChild(afterSortSelect);
 
+          const duplicateTiebreakerLabel = document.createElement("label");
+          duplicateTiebreakerLabel.textContent = "Duplicate Tie Breaker";
+          const duplicateTiebreakerSelect = document.createElement("select");
+          DUPLICATE_TIEBREAKER_OPTIONS.forEach((opt) => {
+            const option = document.createElement("option");
+            option.value = opt.value;
+            option.textContent = opt.label;
+            duplicateTiebreakerSelect.appendChild(option);
+          });
+          duplicateTiebreakerSelect.value = normalizeDuplicateTiebreaker(
+            playlist.duplicate_tiebreaker
+          );
+          duplicateTiebreakerSelect.addEventListener("change", (event) => {
+            playlist.duplicate_tiebreaker = normalizeDuplicateTiebreaker(
+              event.target.value
+            );
+          });
+          duplicateTiebreakerLabel.appendChild(duplicateTiebreakerSelect);
+
           grid.appendChild(nameLabel);
           grid.appendChild(sourceLabel);
           grid.appendChild(spotifyUrlLabel);
           grid.appendChild(limitControl);
           grid.appendChild(sortLabel);
           grid.appendChild(afterSortLabel);
+          grid.appendChild(duplicateTiebreakerLabel);
 
           details.appendChild(grid);
 
@@ -7805,6 +7854,9 @@
               year_limit: playlist.year_limit ?? 0,
               sort_by: playlist.sort_by || "",
               after_sort: playlist.after_sort || "",
+              duplicate_tiebreaker: normalizeDuplicateTiebreaker(
+                playlist.duplicate_tiebreaker
+              ),
               plex_filter: (playlist.plex_filter || []).map((filter) => ({
                 field: filter.field || "",
                 operator: filter.operator || "equals",
@@ -7910,6 +7962,9 @@
               year_limit: playlist.year_limit ?? 0,
               sort_by: playlist.sort_by || "",
               after_sort: playlist.after_sort || "",
+              duplicate_tiebreaker: normalizeDuplicateTiebreaker(
+                playlist.duplicate_tiebreaker
+              ),
               plex_filter: prepareFiltersForSave(playlist.plex_filter),
               popularity_boosts: prepareBoostsForSave(
                 playlist.popularity_boosts
@@ -7974,14 +8029,17 @@
         delete extras.spotify_url;
 
         const payload = {
-            playlist: {
-              name: trimmedName,
-              limit: playlist.limit ?? 0,
-              artist_limit: playlist.artist_limit ?? 0,
-              album_limit: playlist.album_limit ?? 0,
-              year_limit: playlist.year_limit ?? 0,
-              sort_by: playlist.sort_by || "",
+          playlist: {
+            name: trimmedName,
+            limit: playlist.limit ?? 0,
+            artist_limit: playlist.artist_limit ?? 0,
+            album_limit: playlist.album_limit ?? 0,
+            year_limit: playlist.year_limit ?? 0,
+            sort_by: playlist.sort_by || "",
             after_sort: playlist.after_sort || "",
+            duplicate_tiebreaker: normalizeDuplicateTiebreaker(
+              playlist.duplicate_tiebreaker
+            ),
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
             popularity_boosts: prepareBoostsForSave(
               playlist.popularity_boosts
@@ -8331,6 +8389,7 @@
             year_limit: 0,
             sort_by: defaultSort,
             after_sort: "",
+            duplicate_tiebreaker: "",
             plex_filter: [],
             popularity_boosts: [],
             extras: {},
