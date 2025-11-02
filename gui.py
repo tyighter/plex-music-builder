@@ -134,6 +134,15 @@ CONFIG_LOG_LEVEL_OPTIONS: List[Dict[str, str]] = [
     {"value": "CRITICAL", "label": "Critical"},
 ]
 
+DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest"}
+DEFAULT_DUPLICATE_TIEBREAKER = "most_popular"
+
+CONFIG_DUPLICATE_TIEBREAKER_OPTIONS: List[Dict[str, str]] = [
+    {"value": "most_popular", "label": "Most Popular"},
+    {"value": "oldest", "label": "Oldest"},
+    {"value": "newest", "label": "Newest"},
+]
+
 CONFIG_FORM_DEFINITION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
     [
         (
@@ -263,6 +272,28 @@ CONFIG_FORM_DEFINITION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
                         "input": "number",
                         "min": 1,
                         "helper": "How many tracks to batch when syncing to Plex.",
+                    },
+                ],
+            },
+        ),
+        (
+            "playlists",
+            {
+                "label": "Playlist Defaults",
+                "description": (
+                    "Choose default behaviours that apply when building playlists."
+                ),
+                "fields": [
+                    {
+                        "key": "duplicate_tiebreaker",
+                        "label": "Duplicate Tie-Breaker",
+                        "type": "select",
+                        "input": "select",
+                        "options": CONFIG_DUPLICATE_TIEBREAKER_OPTIONS,
+                        "default": DEFAULT_DUPLICATE_TIEBREAKER,
+                        "helper": (
+                            "Determines which duplicate version to keep when multiple tracks match."
+                        ),
                     },
                 ],
             },
@@ -2223,6 +2254,25 @@ def _normalize_bool_flag(value: Any, default: bool = True) -> bool:
     return bool(value)
 
 
+def normalize_duplicate_tiebreaker(
+    value: Any, *, allow_default: bool = True
+) -> str:
+    if value is None:
+        return "" if allow_default else DEFAULT_DUPLICATE_TIEBREAKER
+
+    text = str(value).strip().lower()
+    if not text:
+        return "" if allow_default else DEFAULT_DUPLICATE_TIEBREAKER
+
+    if allow_default and text == "default":
+        return ""
+
+    if text in DUPLICATE_TIEBREAKER_CHOICES:
+        return text
+
+    return "" if allow_default else DEFAULT_DUPLICATE_TIEBREAKER
+
+
 def normalize_filter_entry(filter_entry: Dict[str, Any]) -> Dict[str, Any]:
     field = filter_entry.get("field", "")
     operator = filter_entry.get("operator", "equals")
@@ -2339,6 +2389,7 @@ def load_playlists() -> Dict[str, Any]:
                 "year_limit",
                 "sort_by",
                 "after_sort",
+                "duplicate_tiebreaker",
                 "plex_filter",
                 "top_5_boost",
                 "popularity_boosts",
@@ -2371,6 +2422,9 @@ def load_playlists() -> Dict[str, Any]:
                 "year_limit": config.get("year_limit", 0) or 0,
                 "sort_by": config.get("sort_by", ""),
                 "after_sort": config.get("after_sort", "") or "",
+                "duplicate_tiebreaker": normalize_duplicate_tiebreaker(
+                    config.get("duplicate_tiebreaker"), allow_default=True
+                ),
                 "plex_filter": serialize_filters(config.get("plex_filter")),
                 "popularity_boosts": serialize_boosts(
                     config.get("popularity_boosts")
@@ -2584,6 +2638,14 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         if after_sort:
             playlist_config["after_sort"] = after_sort
 
+        tiebreaker_value = normalize_duplicate_tiebreaker(
+            playlist_entry.get("duplicate_tiebreaker"), allow_default=True
+        )
+        if tiebreaker_value:
+            playlist_config["duplicate_tiebreaker"] = tiebreaker_value
+        else:
+            playlist_config.pop("duplicate_tiebreaker", None)
+
         raw_source = playlist_entry.get("source")
         if isinstance(raw_source, str):
             normalized_source = raw_source.strip().lower()
@@ -2663,6 +2725,14 @@ def save_single_playlist(
         playlist_config["sort_by"] = sort_by
     if after_sort:
         playlist_config["after_sort"] = after_sort
+
+    tiebreaker_value = normalize_duplicate_tiebreaker(
+        playlist_payload.get("duplicate_tiebreaker"), allow_default=True
+    )
+    if tiebreaker_value:
+        playlist_config["duplicate_tiebreaker"] = tiebreaker_value
+    else:
+        playlist_config.pop("duplicate_tiebreaker", None)
 
     raw_source = playlist_payload.get("source")
     if isinstance(raw_source, str):

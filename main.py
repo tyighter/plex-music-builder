@@ -130,6 +130,29 @@ SAVE_INTERVAL = runtime_cfg.get("save_interval", 100)  # save cache every N item
 PLAYLIST_CHUNK_SIZE = runtime_cfg.get("playlist_chunk_size", 200)
 MAX_WORKERS = runtime_cfg.get("max_workers", 3)
 
+DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest"}
+
+
+def _normalize_duplicate_tiebreaker(value, *, allow_default_token=False):
+    if value is None:
+        return "" if allow_default_token else None
+
+    if isinstance(value, str):
+        text = value.strip().lower()
+    else:
+        text = str(value).strip().lower()
+
+    if not text:
+        return "" if allow_default_token else None
+
+    if allow_default_token and text == "default":
+        return ""
+
+    if text in DUPLICATE_TIEBREAKER_CHOICES:
+        return text
+
+    return "" if allow_default_token else None
+
 def _coerce_positive_float(value):
     try:
         numeric = float(value)
@@ -157,6 +180,15 @@ def _coerce_non_empty_str(value):
     if not text:
         return None
     return text
+
+
+playlists_cfg = cfg.get("playlists", {}) or {}
+DEFAULT_DUPLICATE_TIEBREAKER = (
+    _normalize_duplicate_tiebreaker(
+        playlists_cfg.get("duplicate_tiebreaker"), allow_default_token=False
+    )
+    or "most_popular"
+)
 
 
 allmusic_cfg = cfg.get("allmusic", {}) or {}
@@ -1626,7 +1658,138 @@ def _resolve_track_popularity_value(track, playlist_logger=None):
     return fallback
 
 
-def _deduplicate_tracks(tracks, log):
+def _format_release_date_for_log(value):
+    if isinstance(value, datetime.datetime):
+        return value.date().isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    if value:
+        return str(value)
+    return "unknown"
+
+
+def _compare_release_dates(existing, candidate, *, prefer_oldest):
+    if existing is None and candidate is None:
+        return None
+    if existing is None:
+        return True if candidate is not None else None
+    if candidate is None:
+        return False
+
+    if prefer_oldest:
+        if candidate < existing:
+            return True
+        if candidate > existing:
+            return False
+    else:
+        if candidate > existing:
+            return True
+        if candidate < existing:
+            return False
+
+    return None
+
+
+def _compare_popularity(existing_popularity, candidate_popularity):
+    if candidate_popularity is None and existing_popularity is None:
+        return False
+    if candidate_popularity is None:
+        return False
+    if existing_popularity is None:
+        return True
+    return candidate_popularity > existing_popularity
+
+
+def _log_duplicate_decision(
+    log,
+    *,
+    action,
+    reason,
+    existing,
+    candidate,
+    existing_popularity,
+    candidate_popularity,
+    existing_release,
+    candidate_release,
+):
+    reason_type = reason.get("type")
+    reason_detail = reason.get("detail")
+
+    existing_title = getattr(existing, "title", "<unknown>")
+    existing_artist = getattr(existing, "grandparentTitle", "<unknown>")
+    candidate_title = getattr(candidate, "title", "<unknown>")
+    candidate_album = getattr(candidate, "parentTitle", getattr(existing, "parentTitle", "<unknown album>"))
+    existing_album = getattr(existing, "parentTitle", "<unknown album>")
+
+    if reason_type == "oldest":
+        if action == "replace":
+            log.debug(
+                "Deduplicated track '%s' by '%s' – replacing with version from album '%s' (older release %s < %s)",
+                existing_title,
+                existing_artist,
+                candidate_album,
+                _format_release_date_for_log(candidate_release),
+                _format_release_date_for_log(existing_release),
+            )
+        else:
+            log.debug(
+                "Deduplicated track '%s' by '%s' – keeping existing version from album '%s' (older release %s ≤ %s)",
+                candidate_title,
+                getattr(candidate, "grandparentTitle", "<unknown>"),
+                existing_album,
+                _format_release_date_for_log(existing_release),
+                _format_release_date_for_log(candidate_release),
+            )
+        return
+
+    if reason_type == "newest":
+        if action == "replace":
+            log.debug(
+                "Deduplicated track '%s' by '%s' – replacing with version from album '%s' (newer release %s > %s)",
+                existing_title,
+                existing_artist,
+                candidate_album,
+                _format_release_date_for_log(candidate_release),
+                _format_release_date_for_log(existing_release),
+            )
+        else:
+            log.debug(
+                "Deduplicated track '%s' by '%s' – keeping existing version from album '%s' (newer release %s ≥ %s)",
+                candidate_title,
+                getattr(candidate, "grandparentTitle", "<unknown>"),
+                existing_album,
+                _format_release_date_for_log(existing_release),
+                _format_release_date_for_log(candidate_release),
+            )
+        return
+
+    note = ""
+    if reason_detail:
+        note = f" ({reason_detail})"
+
+    if action == "replace":
+        log.debug(
+            "Deduplicated track '%s' by '%s' – replacing with version from album '%s' (pop %.2f → %.2f)%s",
+            existing_title,
+            existing_artist,
+            candidate_album,
+            existing_popularity if existing_popularity is not None else float("nan"),
+            candidate_popularity if candidate_popularity is not None else float("nan"),
+            note,
+        )
+    else:
+        log.debug(
+            "Deduplicated track '%s' by '%s' – keeping existing version from album '%s' (pop %.2f ≥ %.2f)%s",
+            candidate_title,
+            getattr(candidate, "grandparentTitle", "<unknown>"),
+            existing_album,
+            existing_popularity if existing_popularity is not None else float("nan"),
+            candidate_popularity if candidate_popularity is not None else float("nan"),
+            note,
+        )
+
+
+def _deduplicate_tracks(tracks, log, duplicate_tiebreaker=None):
     if not tracks:
         return tracks, {}, 0
 
@@ -1634,6 +1797,12 @@ def _deduplicate_tracks(tracks, log):
     order = []
     popularity_cache = {}
     duplicates_removed = 0
+
+    normalized_tiebreaker = _normalize_duplicate_tiebreaker(
+        duplicate_tiebreaker, allow_default_token=True
+    )
+    if not normalized_tiebreaker:
+        normalized_tiebreaker = DEFAULT_DUPLICATE_TIEBREAKER
 
     for idx, track in enumerate(tracks):
         key = _build_track_identity_key(track)
@@ -1645,6 +1814,8 @@ def _deduplicate_tracks(tracks, log):
             playlist_logger=log,
         )
 
+        release_date = _resolve_album_release_date(track)
+
         rating_key = getattr(track, "ratingKey", None)
         if rating_key is not None and popularity is not None:
             popularity_cache[str(rating_key)] = popularity
@@ -1653,46 +1824,78 @@ def _deduplicate_tracks(tracks, log):
             dedup_map[key] = {
                 "track": track,
                 "popularity": popularity,
+                "release_date": release_date,
                 "index": idx,
             }
             order.append(key)
             continue
 
         existing_popularity = current_entry["popularity"]
+        existing_release = current_entry.get("release_date")
 
+        reason: Dict[str, Optional[str]] = {"type": "popularity"}
         better_candidate = False
-        if popularity is None and existing_popularity is None:
-            better_candidate = False
-        elif popularity is None:
-            better_candidate = False
-        elif existing_popularity is None:
-            better_candidate = True
-        else:
-            better_candidate = popularity > existing_popularity
+
+        if normalized_tiebreaker == "oldest":
+            decision = _compare_release_dates(
+                existing_release, release_date, prefer_oldest=True
+            )
+            if decision is not None:
+                better_candidate = decision
+                reason = {"type": "oldest"}
+            else:
+                reason = {
+                    "type": "popularity",
+                    "detail": "release date unavailable; comparing popularity",
+                }
+        elif normalized_tiebreaker == "newest":
+            decision = _compare_release_dates(
+                existing_release, release_date, prefer_oldest=False
+            )
+            if decision is not None:
+                better_candidate = decision
+                reason = {"type": "newest"}
+            else:
+                reason = {
+                    "type": "popularity",
+                    "detail": "release date unavailable; comparing popularity",
+                }
+
+        if reason.get("type") == "popularity":
+            better_candidate = _compare_popularity(
+                existing_popularity, popularity
+            )
 
         if better_candidate:
             duplicates_removed += 1
             if log.isEnabledFor(logging.DEBUG):
-                log.debug(
-                    "Deduplicated track '%s' by '%s' – replacing with version from album '%s' (pop %.2f → %.2f)",
-                    getattr(current_entry["track"], "title", "<unknown>"),
-                    getattr(current_entry["track"], "grandparentTitle", "<unknown>"),
-                    getattr(track, "parentTitle", getattr(current_entry["track"], "parentTitle", "<unknown album>")),
-                    existing_popularity if existing_popularity is not None else float("nan"),
-                    popularity,
+                _log_duplicate_decision(
+                    log,
+                    action="replace",
+                    reason=reason,
+                    existing=current_entry["track"],
+                    candidate=track,
+                    existing_popularity=existing_popularity,
+                    candidate_popularity=popularity,
+                    existing_release=existing_release,
+                    candidate_release=release_date,
                 )
             dedup_map[key]["track"] = track
             dedup_map[key]["popularity"] = popularity
+            dedup_map[key]["release_date"] = release_date
         else:
             duplicates_removed += 1
             if log.isEnabledFor(logging.DEBUG):
-                log.debug(
-                    "Deduplicated track '%s' by '%s' – keeping existing version from album '%s' (pop %.2f ≥ %.2f)",
-                    getattr(track, "title", "<unknown>"),
-                    getattr(track, "grandparentTitle", "<unknown>"),
-                    getattr(current_entry["track"], "parentTitle", "<unknown album>"),
-                    existing_popularity if existing_popularity is not None else float("nan"),
-                    popularity if popularity is not None else float("nan"),
+                _log_duplicate_decision(
+                    log,
+                    action="keep",
+                    reason=reason,
+                    existing=current_entry["track"],
+                    candidate=track,
+                    existing_popularity=existing_popularity,
+                    candidate_popularity=popularity,
+                    existing_release=existing_release,
+                    candidate_release=release_date,
                 )
 
     deduped_tracks = [dedup_map[key]["track"] for key in sorted(order, key=lambda item: dedup_map[item]["index"])]
@@ -4901,6 +5104,7 @@ def _run_streaming_playlist_build(
         matched_tracks, dedup_popularity_cache, duplicates_removed = _deduplicate_tracks(
             matched_tracks,
             log,
+            duplicate_tiebreaker=duplicate_tiebreaker,
         )
         dedup_duration = time.perf_counter() - dedup_start
         if duplicates_removed:
@@ -5253,6 +5457,11 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     sort_desc = config.get("sort_desc", True)
     after_sort_desc_in_config = "after_sort_desc" in config
     after_sort_desc = config.get("after_sort_desc", True)
+    duplicate_tiebreaker = _normalize_duplicate_tiebreaker(
+        config.get("duplicate_tiebreaker"), allow_default_token=True
+    )
+    if not duplicate_tiebreaker:
+        duplicate_tiebreaker = DEFAULT_DUPLICATE_TIEBREAKER
     if sort_by == "popularity":
         resolved_sort_by = "__rating_count__"
         if log.isEnabledFor(logging.DEBUG):
@@ -5549,6 +5758,7 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         matched_tracks, dedup_popularity_cache, duplicates_removed = _deduplicate_tracks(
             matched_tracks,
             log,
+            duplicate_tiebreaker=duplicate_tiebreaker,
         )
         dedup_duration = time.perf_counter() - dedup_start
         if duplicates_removed:

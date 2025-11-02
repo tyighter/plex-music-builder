@@ -14,6 +14,9 @@ runtime:
   max_workers: 3             # number of playlists to process in parallel
   build_all_on_start: false   # true = build playlists automatically when services start
 
+playlists:
+  duplicate_tiebreaker: most_popular  # how to resolve duplicate tracks (most_popular, oldest, newest)
+
 allmusic:
   enabled: true
   cache_file: "/app/allmusic_popularity.json"

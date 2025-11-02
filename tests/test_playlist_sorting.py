@@ -630,3 +630,96 @@ def test_run_playlist_build_after_sort_newest_uses_release_date_for_ties(monkeyp
     assert server.created_playlist is not None
     titles = [track.title for track in server.created_playlist.items]
     assert titles == ["Winter", "Summer", "Spring"]
+
+
+def test_deduplicate_tracks_prefers_most_popular_by_default():
+    import main
+
+    class StubTrack:
+        def __init__(self, album, popularity, release_date):
+            self.title = "Song"
+            self.grandparentTitle = "Artist"
+            self.parentTitle = album
+            self.ratingCount = popularity
+            self.parentRatingCount = popularity
+            self.parentOriginallyAvailableAt = release_date
+            self.originallyAvailableAt = release_date
+            self.guid = "shared-guid"
+            self.ratingKey = None
+
+    less_popular = StubTrack("Album B-Side", 10, "2001-01-01")
+    more_popular = StubTrack("Album Hit", 50, "2005-05-05")
+
+    log = logging.getLogger("test_deduplicate_popularity")
+    log.setLevel(logging.DEBUG)
+
+    deduped, cache, removed = main._deduplicate_tracks(
+        [less_popular, more_popular],
+        log,
+    )
+
+    assert removed == 1
+    assert [track.parentTitle for track in deduped] == ["Album Hit"]
+    assert cache == {}
+
+
+def test_deduplicate_tracks_prefers_oldest_when_configured():
+    import main
+
+    class StubTrack:
+        def __init__(self, album, popularity, release_date):
+            self.title = "Song"
+            self.grandparentTitle = "Artist"
+            self.parentTitle = album
+            self.ratingCount = popularity
+            self.parentRatingCount = popularity
+            self.parentOriginallyAvailableAt = release_date
+            self.originallyAvailableAt = release_date
+            self.guid = "shared-guid"
+            self.ratingKey = None
+
+    newer = StubTrack("Album Remaster", 80, "2020-06-01")
+    older = StubTrack("Album Original", 10, "1980-02-02")
+
+    log = logging.getLogger("test_deduplicate_oldest")
+    log.setLevel(logging.DEBUG)
+
+    deduped, _, removed = main._deduplicate_tracks(
+        [newer, older],
+        log,
+        duplicate_tiebreaker="oldest",
+    )
+
+    assert removed == 1
+    assert [track.parentTitle for track in deduped] == ["Album Original"]
+
+
+def test_deduplicate_tracks_prefers_newest_when_configured():
+    import main
+
+    class StubTrack:
+        def __init__(self, album, popularity, release_date):
+            self.title = "Song"
+            self.grandparentTitle = "Artist"
+            self.parentTitle = album
+            self.ratingCount = popularity
+            self.parentRatingCount = popularity
+            self.parentOriginallyAvailableAt = release_date
+            self.originallyAvailableAt = release_date
+            self.guid = "shared-guid"
+            self.ratingKey = None
+
+    older = StubTrack("Album Original", 80, "1975-01-01")
+    newer = StubTrack("Album Remaster", 5, "2022-09-09")
+
+    log = logging.getLogger("test_deduplicate_newest")
+    log.setLevel(logging.DEBUG)
+
+    deduped, _, removed = main._deduplicate_tracks(
+        [older, newer],
+        log,
+        duplicate_tiebreaker="newest",
+    )
+
+    assert removed == 1
+    assert [track.parentTitle for track in deduped] == ["Album Remaster"]
