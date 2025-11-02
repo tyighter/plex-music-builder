@@ -653,7 +653,7 @@ def test_deduplicate_tracks_prefers_most_popular_by_default():
     log = logging.getLogger("test_deduplicate_popularity")
     log.setLevel(logging.DEBUG)
 
-    deduped, cache, removed = main._deduplicate_tracks(
+    deduped, cache, removed, reason_counts = main._deduplicate_tracks(
         [less_popular, more_popular],
         log,
     )
@@ -661,6 +661,7 @@ def test_deduplicate_tracks_prefers_most_popular_by_default():
     assert removed == 1
     assert [track.parentTitle for track in deduped] == ["Album Hit"]
     assert cache == {}
+    assert reason_counts == {"popularity": 1}
 
 
 def test_deduplicate_tracks_prefers_oldest_when_configured():
@@ -684,7 +685,7 @@ def test_deduplicate_tracks_prefers_oldest_when_configured():
     log = logging.getLogger("test_deduplicate_oldest")
     log.setLevel(logging.DEBUG)
 
-    deduped, _, removed = main._deduplicate_tracks(
+    deduped, _, removed, reason_counts = main._deduplicate_tracks(
         [newer, older],
         log,
         duplicate_tiebreaker="oldest",
@@ -692,6 +693,7 @@ def test_deduplicate_tracks_prefers_oldest_when_configured():
 
     assert removed == 1
     assert [track.parentTitle for track in deduped] == ["Album Original"]
+    assert reason_counts == {"oldest": 1}
 
 
 def test_deduplicate_tracks_prefers_oldest_with_non_padded_dates():
@@ -715,7 +717,7 @@ def test_deduplicate_tracks_prefers_oldest_with_non_padded_dates():
     log = logging.getLogger("test_deduplicate_oldest_non_padded")
     log.setLevel(logging.DEBUG)
 
-    deduped, _, removed = main._deduplicate_tracks(
+    deduped, _, removed, reason_counts = main._deduplicate_tracks(
         [newer, older],
         log,
         duplicate_tiebreaker="oldest",
@@ -723,6 +725,7 @@ def test_deduplicate_tracks_prefers_oldest_with_non_padded_dates():
 
     assert removed == 1
     assert [track.parentTitle for track in deduped] == ["Album Original"]
+    assert reason_counts == {"oldest": 1}
 
 
 def test_deduplicate_tracks_prefers_newest_when_configured():
@@ -746,7 +749,7 @@ def test_deduplicate_tracks_prefers_newest_when_configured():
     log = logging.getLogger("test_deduplicate_newest")
     log.setLevel(logging.DEBUG)
 
-    deduped, _, removed = main._deduplicate_tracks(
+    deduped, _, removed, reason_counts = main._deduplicate_tracks(
         [older, newer],
         log,
         duplicate_tiebreaker="newest",
@@ -754,6 +757,7 @@ def test_deduplicate_tracks_prefers_newest_when_configured():
 
     assert removed == 1
     assert [track.parentTitle for track in deduped] == ["Album Remaster"]
+    assert reason_counts == {"newest": 1}
 
 
 def test_deduplicate_tracks_allow_keeps_duplicates():
@@ -777,7 +781,7 @@ def test_deduplicate_tracks_allow_keeps_duplicates():
     log = logging.getLogger("test_deduplicate_allow")
     log.setLevel(logging.DEBUG)
 
-    deduped, cache, removed = main._deduplicate_tracks(
+    deduped, cache, removed, reason_counts = main._deduplicate_tracks(
         [first, second],
         log,
         duplicate_tiebreaker="allow",
@@ -786,3 +790,4 @@ def test_deduplicate_tracks_allow_keeps_duplicates():
     assert removed == 0
     assert deduped == [first, second]
     assert cache == {}
+    assert reason_counts == {}

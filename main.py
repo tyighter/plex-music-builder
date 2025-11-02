@@ -13,7 +13,7 @@ import threading
 import copy
 import datetime
 from pathlib import Path
-from collections import defaultdict, OrderedDict
+from collections import Counter, defaultdict, OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1700,6 +1700,30 @@ def _compare_popularity(existing_popularity, candidate_popularity):
     return candidate_popularity > existing_popularity
 
 
+def _format_duplicate_reason_summary(reason_counts: Counter[str]) -> str:
+    if not reason_counts:
+        return "duplicate comparison"
+
+    label_map = {
+        "popularity": "popularity",
+        "oldest": "oldest release date",
+        "newest": "newest release date",
+    }
+
+    parts = []
+    for reason, count in reason_counts.most_common():
+        label = label_map.get(reason, reason)
+        if count > 1:
+            parts.append(f"{label} (x{count})")
+        else:
+            parts.append(label)
+
+    if len(parts) == 1:
+        return f"{parts[0]} comparison"
+
+    return "comparisons: " + ", ".join(parts)
+
+
 def _log_duplicate_decision(
     log,
     *,
@@ -1791,12 +1815,13 @@ def _log_duplicate_decision(
 
 def _deduplicate_tracks(tracks, log, duplicate_tiebreaker=None):
     if not tracks:
-        return tracks, {}, 0
+        return tracks, {}, 0, Counter()
 
     dedup_map = {}
     order = []
     popularity_cache = {}
     duplicates_removed = 0
+    duplicate_reason_counts: Counter[str] = Counter()
 
     normalized_tiebreaker = _normalize_duplicate_tiebreaker(
         duplicate_tiebreaker, allow_default_token=True
@@ -1805,7 +1830,7 @@ def _deduplicate_tracks(tracks, log, duplicate_tiebreaker=None):
         normalized_tiebreaker = DEFAULT_DUPLICATE_TIEBREAKER
 
     if normalized_tiebreaker == "allow":
-        return list(tracks), {}, 0
+        return list(tracks), {}, 0, Counter()
 
     for idx, track in enumerate(tracks):
         key = _build_track_identity_key(track)
@@ -1869,8 +1894,11 @@ def _deduplicate_tracks(tracks, log, duplicate_tiebreaker=None):
                 existing_popularity, popularity
             )
 
+        reason_type = reason.get("type") or "unknown"
+
         if better_candidate:
             duplicates_removed += 1
+            duplicate_reason_counts[reason_type] += 1
             if log.isEnabledFor(logging.DEBUG):
                 _log_duplicate_decision(
                     log,
@@ -1888,6 +1916,7 @@ def _deduplicate_tracks(tracks, log, duplicate_tiebreaker=None):
             dedup_map[key]["release_date"] = release_date
         else:
             duplicates_removed += 1
+            duplicate_reason_counts[reason_type] += 1
             if log.isEnabledFor(logging.DEBUG):
                 _log_duplicate_decision(
                     log,
@@ -1901,8 +1930,10 @@ def _deduplicate_tracks(tracks, log, duplicate_tiebreaker=None):
                     candidate_release=release_date,
                 )
 
-    deduped_tracks = [dedup_map[key]["track"] for key in sorted(order, key=lambda item: dedup_map[item]["index"])]
-    return deduped_tracks, popularity_cache, duplicates_removed
+    deduped_tracks = [
+        dedup_map[key]["track"] for key in sorted(order, key=lambda item: dedup_map[item]["index"])
+    ]
+    return deduped_tracks, popularity_cache, duplicates_removed, duplicate_reason_counts
 
 
 def _compute_album_popularity_boosts(
@@ -5109,17 +5140,24 @@ def _run_streaming_playlist_build(
     dedup_popularity_cache: Dict[str, Any] = {}
     if matched_tracks:
         dedup_start = time.perf_counter()
-        matched_tracks, dedup_popularity_cache, duplicates_removed = _deduplicate_tracks(
+        (
+            matched_tracks,
+            dedup_popularity_cache,
+            duplicates_removed,
+            duplicate_reason_counts,
+        ) = _deduplicate_tracks(
             matched_tracks,
             log,
             duplicate_tiebreaker=duplicate_tiebreaker,
         )
         dedup_duration = time.perf_counter() - dedup_start
         if duplicates_removed:
+            reason_summary = _format_duplicate_reason_summary(duplicate_reason_counts)
             log.info(
-                "Removed %s duplicate track(s) from playlist '%s' after popularity comparison",
+                "Removed %s duplicate track(s) from playlist '%s' after %s",
                 duplicates_removed,
                 name,
+                reason_summary,
             )
 
     album_popularity_cache: Dict[str, Any] = {}
@@ -5763,17 +5801,24 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     dedup_duration = 0.0
     if matched_tracks:
         dedup_start = time.perf_counter()
-        matched_tracks, dedup_popularity_cache, duplicates_removed = _deduplicate_tracks(
+        (
+            matched_tracks,
+            dedup_popularity_cache,
+            duplicates_removed,
+            duplicate_reason_counts,
+        ) = _deduplicate_tracks(
             matched_tracks,
             log,
             duplicate_tiebreaker=duplicate_tiebreaker,
         )
         dedup_duration = time.perf_counter() - dedup_start
         if duplicates_removed:
+            reason_summary = _format_duplicate_reason_summary(duplicate_reason_counts)
             log.info(
-                "Removed %s duplicate track(s) from playlist '%s' after popularity comparison",
+                "Removed %s duplicate track(s) from playlist '%s' after %s",
                 duplicates_removed,
                 name,
+                reason_summary,
             )
 
     album_popularity_cache: Dict[str, Any] = {}
