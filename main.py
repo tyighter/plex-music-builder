@@ -542,6 +542,8 @@ _TRACK_FIELD_CACHE_MAX_SIZE = 20000
 _CACHE_LOOKUP_SENTINEL = object()
 _ALBUM_YEAR_CACHE = {}
 _ALBUM_YEAR_MISS_KEYS = set()
+_ALBUM_RELEASE_DATE_CACHE = {}
+_ALBUM_RELEASE_DATE_MISS_KEYS = set()
 _ALBUM_GUID_CACHE = {}
 _ALBUM_GUID_MISS_KEYS = set()
 _TRACK_GUID_CACHE = {}
@@ -2221,6 +2223,21 @@ def _normalize_release_date(value):
 def _resolve_album_release_date(track):
     """Return the best-known release date for the provided track's album."""
 
+    cache_keys = []
+    parent_rating_key = getattr(track, "parentRatingKey", None)
+    if parent_rating_key is not None:
+        cache_keys.append(f"album:{parent_rating_key}")
+    track_rating_key = getattr(track, "ratingKey", None)
+    if track_rating_key is not None:
+        cache_keys.append(f"track:{track_rating_key}")
+
+    for key in cache_keys:
+        cached_date = _lookup_cached_value(
+            _ALBUM_RELEASE_DATE_CACHE, _ALBUM_RELEASE_DATE_MISS_KEYS, key
+        )
+        if cached_date is not _CACHE_LOOKUP_SENTINEL:
+            return cached_date
+
     date_candidates = [
         getattr(track, "parentOriginallyAvailableAt", None),
         getattr(track, "originallyAvailableAt", None),
@@ -2229,8 +2246,78 @@ def _resolve_album_release_date(track):
     for candidate in date_candidates:
         normalized = _normalize_release_date(candidate)
         if normalized:
+            for key in cache_keys:
+                _store_cached_value(
+                    _ALBUM_RELEASE_DATE_CACHE,
+                    _ALBUM_RELEASE_DATE_MISS_KEYS,
+                    key,
+                    normalized,
+                )
             return normalized
 
+    if CACHE_ONLY:
+        for key in cache_keys:
+            _store_cached_value(
+                _ALBUM_RELEASE_DATE_CACHE, _ALBUM_RELEASE_DATE_MISS_KEYS, key, None
+            )
+        return None
+
+    log = _get_active_logger()
+
+    rating_key = getattr(track, "ratingKey", None)
+    if rating_key:
+        try:
+            track_xml = fetch_full_metadata(rating_key)
+        except Exception as exc:  # pragma: no cover - network/cache errors
+            log.debug(
+                "Unable to fetch track metadata for ratingKey=%s while resolving album release date: %s",
+                rating_key,
+                exc,
+            )
+        else:
+            for field in ("parentOriginallyAvailableAt", "originallyAvailableAt"):
+                normalized = _normalize_release_date(
+                    parse_field_from_xml(track_xml, field)
+                )
+                if normalized:
+                    for key in cache_keys:
+                        _store_cached_value(
+                            _ALBUM_RELEASE_DATE_CACHE,
+                            _ALBUM_RELEASE_DATE_MISS_KEYS,
+                            key,
+                            normalized,
+                        )
+                    return normalized
+
+    parent_rating_key = getattr(track, "parentRatingKey", None)
+    if parent_rating_key:
+        try:
+            album_xml = fetch_full_metadata(parent_rating_key)
+        except Exception as exc:  # pragma: no cover - network/cache errors
+            log.debug(
+                "Unable to fetch album metadata for ratingKey=%s while resolving album release date: %s",
+                parent_rating_key,
+                exc,
+            )
+        else:
+            for field in ("originallyAvailableAt", "parentOriginallyAvailableAt"):
+                normalized = _normalize_release_date(
+                    parse_field_from_xml(album_xml, field)
+                )
+                if normalized:
+                    for key in cache_keys:
+                        _store_cached_value(
+                            _ALBUM_RELEASE_DATE_CACHE,
+                            _ALBUM_RELEASE_DATE_MISS_KEYS,
+                            key,
+                            normalized,
+                        )
+                    return normalized
+
+    for key in cache_keys:
+        _store_cached_value(
+            _ALBUM_RELEASE_DATE_CACHE, _ALBUM_RELEASE_DATE_MISS_KEYS, key, None
+        )
     return None
 
 

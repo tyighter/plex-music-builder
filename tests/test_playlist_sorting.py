@@ -1,3 +1,4 @@
+import datetime
 import logging
 from collections import OrderedDict
 
@@ -495,6 +496,8 @@ def test_run_playlist_build_sort_by_oldest_uses_album_year(monkeypatch):
     main, server = _prepare_playlist_build(monkeypatch, tracks)
     main._ALBUM_YEAR_CACHE.clear()
     main._ALBUM_YEAR_MISS_KEYS.clear()
+    main._ALBUM_RELEASE_DATE_CACHE.clear()
+    main._ALBUM_RELEASE_DATE_MISS_KEYS.clear()
 
     config = {
         "sort_by": "oldest_first",
@@ -537,6 +540,8 @@ def test_run_playlist_build_sort_by_oldest_uses_release_date_for_ties(monkeypatc
     main, server = _prepare_playlist_build(monkeypatch, tracks)
     main._ALBUM_YEAR_CACHE.clear()
     main._ALBUM_YEAR_MISS_KEYS.clear()
+    main._ALBUM_RELEASE_DATE_CACHE.clear()
+    main._ALBUM_RELEASE_DATE_MISS_KEYS.clear()
 
     config = {
         "sort_by": "oldest_first",
@@ -573,6 +578,8 @@ def test_run_playlist_build_after_sort_newest_uses_album_year(monkeypatch):
     main, server = _prepare_playlist_build(monkeypatch, tracks)
     main._ALBUM_YEAR_CACHE.clear()
     main._ALBUM_YEAR_MISS_KEYS.clear()
+    main._ALBUM_RELEASE_DATE_CACHE.clear()
+    main._ALBUM_RELEASE_DATE_MISS_KEYS.clear()
 
     config = {
         "sort_by": "alphabetical",
@@ -616,6 +623,8 @@ def test_run_playlist_build_after_sort_newest_uses_release_date_for_ties(monkeyp
     main, server = _prepare_playlist_build(monkeypatch, tracks)
     main._ALBUM_YEAR_CACHE.clear()
     main._ALBUM_YEAR_MISS_KEYS.clear()
+    main._ALBUM_RELEASE_DATE_CACHE.clear()
+    main._ALBUM_RELEASE_DATE_MISS_KEYS.clear()
 
     config = {
         "sort_by": "alphabetical",
@@ -791,3 +800,46 @@ def test_deduplicate_tracks_allow_keeps_duplicates():
     assert deduped == [first, second]
     assert cache == {}
     assert reason_counts == {}
+
+
+def test_resolve_album_release_date_fetches_metadata(monkeypatch):
+    import main
+
+    class _Track:
+        parentOriginallyAvailableAt = None
+        originallyAvailableAt = None
+        ratingKey = 111
+        parentRatingKey = 222
+
+    track = _Track()
+
+    main._ALBUM_RELEASE_DATE_CACHE.clear()
+    main._ALBUM_RELEASE_DATE_MISS_KEYS.clear()
+
+    fetched_keys = []
+
+    def _fake_fetch_full_metadata(key):
+        fetched_keys.append(key)
+        if key == track.ratingKey:
+            return (
+                "<MediaContainer><Track parentOriginallyAvailableAt=\"1990-10-17\" />"
+                "</MediaContainer>"
+            )
+        if key == track.parentRatingKey:
+            return "<MediaContainer><Directory originallyAvailableAt=\"1990-11-01\" /></MediaContainer>"
+        raise AssertionError(f"Unexpected metadata lookup for key={key}")
+
+    monkeypatch.setattr(main, "fetch_full_metadata", _fake_fetch_full_metadata)
+
+    result = main._resolve_album_release_date(track)
+
+    assert result == datetime.date(1990, 10, 17)
+    assert fetched_keys == [track.ratingKey]
+
+    fetched_keys.clear()
+
+    # Subsequent lookups should be served from cache without extra fetches.
+    result_again = main._resolve_album_release_date(track)
+
+    assert result_again == datetime.date(1990, 10, 17)
+    assert fetched_keys == []
