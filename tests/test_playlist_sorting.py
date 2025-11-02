@@ -694,6 +694,37 @@ def test_deduplicate_tracks_prefers_oldest_when_configured():
     assert [track.parentTitle for track in deduped] == ["Album Original"]
 
 
+def test_deduplicate_tracks_prefers_oldest_with_non_padded_dates():
+    import main
+
+    class StubTrack:
+        def __init__(self, album, popularity, release_date):
+            self.title = "Song"
+            self.grandparentTitle = "Artist"
+            self.parentTitle = album
+            self.ratingCount = popularity
+            self.parentRatingCount = popularity
+            self.parentOriginallyAvailableAt = release_date
+            self.originallyAvailableAt = release_date
+            self.guid = "shared-guid"
+            self.ratingKey = None
+
+    newer = StubTrack("Album Remaster", 80, "2020-06-01")
+    older = StubTrack("Album Original", 10, "1980-2-2")
+
+    log = logging.getLogger("test_deduplicate_oldest_non_padded")
+    log.setLevel(logging.DEBUG)
+
+    deduped, _, removed = main._deduplicate_tracks(
+        [newer, older],
+        log,
+        duplicate_tiebreaker="oldest",
+    )
+
+    assert removed == 1
+    assert [track.parentTitle for track in deduped] == ["Album Original"]
+
+
 def test_deduplicate_tracks_prefers_newest_when_configured():
     import main
 

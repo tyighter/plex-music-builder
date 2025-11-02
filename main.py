@@ -2159,7 +2159,7 @@ def _normalize_release_date(value):
 
     text = str(value)
 
-    match = re.search(r"(\d{4})[-/](\d{2})[-/](\d{2})", text)
+    match = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
     if match:
         try:
             return datetime.date(
@@ -2170,7 +2170,7 @@ def _normalize_release_date(value):
         except ValueError:
             pass
 
-    match = re.search(r"(\d{4})[-/](\d{2})", text)
+    match = re.search(r"(\d{4})[-/](\d{1,2})", text)
     if match:
         try:
             return datetime.date(int(match.group(1)), int(match.group(2)), 1)
