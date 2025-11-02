@@ -15,7 +15,7 @@ runtime:
   build_all_on_start: false   # true = build playlists automatically when services start
 
 playlists:
-  duplicate_tiebreaker: most_popular  # how to resolve duplicate tracks (most_popular, oldest, newest)
+  duplicate_tiebreaker: most_popular  # how to resolve duplicate tracks (most_popular, oldest, newest, allow)
 
 allmusic:
   enabled: true

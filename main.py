@@ -130,7 +130,7 @@ SAVE_INTERVAL = runtime_cfg.get("save_interval", 100)  # save cache every N item
 PLAYLIST_CHUNK_SIZE = runtime_cfg.get("playlist_chunk_size", 200)
 MAX_WORKERS = runtime_cfg.get("max_workers", 3)
 
-DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest"}
+DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest", "allow"}
 
 
 def _normalize_duplicate_tiebreaker(value, *, allow_default_token=False):
@@ -1803,6 +1803,9 @@ def _deduplicate_tracks(tracks, log, duplicate_tiebreaker=None):
     )
     if not normalized_tiebreaker:
         normalized_tiebreaker = DEFAULT_DUPLICATE_TIEBREAKER
+
+    if normalized_tiebreaker == "allow":
+        return list(tracks), {}, 0
 
     for idx, track in enumerate(tracks):
         key = _build_track_identity_key(track)

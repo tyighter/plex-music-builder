@@ -134,13 +134,14 @@ CONFIG_LOG_LEVEL_OPTIONS: List[Dict[str, str]] = [
     {"value": "CRITICAL", "label": "Critical"},
 ]
 
-DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest"}
+DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest", "allow"}
 DEFAULT_DUPLICATE_TIEBREAKER = "most_popular"
 
 CONFIG_DUPLICATE_TIEBREAKER_OPTIONS: List[Dict[str, str]] = [
     {"value": "most_popular", "label": "Most Popular"},
     {"value": "oldest", "label": "Oldest"},
     {"value": "newest", "label": "Newest"},
+    {"value": "allow", "label": "Allow"},
 ]
 
 CONFIG_FORM_DEFINITION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
@@ -286,13 +287,13 @@ CONFIG_FORM_DEFINITION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
                 "fields": [
                     {
                         "key": "duplicate_tiebreaker",
-                        "label": "Duplicate Tie-Breaker",
+                        "label": "Duplicates",
                         "type": "select",
                         "input": "select",
                         "options": CONFIG_DUPLICATE_TIEBREAKER_OPTIONS,
                         "default": DEFAULT_DUPLICATE_TIEBREAKER,
                         "helper": (
-                            "Determines which duplicate version to keep when multiple tracks match."
+                            "Choose how duplicate tracks are handled. Select Allow to keep duplicates."
                         ),
                     },
                 ],
@@ -2372,8 +2373,11 @@ def load_playlists() -> Dict[str, Any]:
     defaults_extras = {
         key: value
         for key, value in defaults_config.items()
-        if key not in {"plex_filter", "popularity_boosts"}
+        if key not in {"plex_filter", "popularity_boosts", "duplicate_tiebreaker"}
     }
+    defaults_duplicate = normalize_duplicate_tiebreaker(
+        defaults_config.get("duplicate_tiebreaker"), allow_default=True
+    )
 
     playlists_data = []
     for name, config in data.get("playlists", {}).items():
@@ -2440,6 +2444,7 @@ def load_playlists() -> Dict[str, Any]:
             "plex_filter": defaults_filters,
             "popularity_boosts": defaults_boosts,
             "extras": defaults_extras,
+            "duplicate_tiebreaker": defaults_duplicate,
         },
         "playlists": playlists_data,
     }
@@ -2599,13 +2604,21 @@ def save_playlists(payload: Dict[str, Any]) -> None:
             {
                 key: value
                 for key, value in extras.items()
-                if key not in {"source", "spotify_url"}
+                if key not in {"source", "spotify_url", "duplicate_tiebreaker"}
             }
         )
     if defaults_filters:
         defaults_config["plex_filter"] = defaults_filters
     if defaults_boosts:
         defaults_config["popularity_boosts"] = defaults_boosts
+
+    default_tiebreaker = normalize_duplicate_tiebreaker(
+        defaults_payload.get("duplicate_tiebreaker"), allow_default=True
+    )
+    if default_tiebreaker:
+        defaults_config["duplicate_tiebreaker"] = default_tiebreaker
+    else:
+        defaults_config.pop("duplicate_tiebreaker", None)
 
     playlists_dict: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
     for playlist_entry in playlists_payload:
