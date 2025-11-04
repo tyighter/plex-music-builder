@@ -679,11 +679,11 @@
 
       .playlist-header {
         display: grid;
-        grid-template-columns: clamp(96px, 18vw, 180px) minmax(0, 1fr) auto;
+        grid-template-columns:
+          clamp(96px, 18vw, 180px) minmax(0, 1fr) auto auto;
         grid-template-areas:
-          "cover title actions"
-          "cover status actions"
-          "cover message message";
+          "cover title actions status"
+          "cover message message message";
         align-items: start;
         gap: 16px;
         margin-bottom: 18px;
@@ -795,10 +795,13 @@
       .playlist-status {
         display: flex;
         align-items: center;
+        justify-content: flex-end;
         gap: 10px;
         min-width: 0;
-        flex: 1 1 240px;
         grid-area: status;
+        justify-self: end;
+        align-self: start;
+        text-align: right;
       }
 
       .playlist-action-buttons {
@@ -860,6 +863,8 @@
         color: rgba(255, 255, 255, 0.7);
         font-size: 13px;
         min-width: 0;
+        align-items: flex-end;
+        text-align: right;
       }
 
       .playlist-status-line {
@@ -2066,6 +2071,17 @@
         .playlist-action-buttons,
         .playlist-search {
           align-items: flex-start;
+        }
+
+        .playlist-status {
+          justify-content: flex-start;
+          justify-self: flex-start;
+          text-align: left;
+        }
+
+        .playlist-status-text {
+          align-items: flex-start;
+          text-align: left;
         }
 
         .playlist-card .playlist-cover {
@@ -7479,8 +7495,8 @@
 
           statusTextWrapper.appendChild(statusLine);
           statusTextWrapper.appendChild(statusMessage);
-          statusGroup.appendChild(statusIndicator);
           statusGroup.appendChild(statusTextWrapper);
+          statusGroup.appendChild(statusIndicator);
 
           const saveBtn = document.createElement("button");
           saveBtn.type = "button";
