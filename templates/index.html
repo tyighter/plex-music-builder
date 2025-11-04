@@ -680,10 +680,10 @@
       .playlist-header {
         display: grid;
         grid-template-columns:
-          clamp(96px, 18vw, 180px) minmax(0, 1fr) auto auto;
+          clamp(96px, 18vw, 180px) minmax(0, 1fr) auto;
         grid-template-areas:
-          "cover title actions status"
-          "cover message message message";
+          "cover title actions"
+          "cover message actions";
         align-items: start;
         gap: 16px;
         margin-bottom: 18px;
@@ -692,8 +692,10 @@
       .playlist-cover {
         grid-area: cover;
         display: flex;
+        flex-direction: column;
         align-items: flex-start;
         justify-content: flex-start;
+        gap: 12px;
         width: 100%;
       }
 
@@ -795,13 +797,11 @@
       .playlist-status {
         display: flex;
         align-items: center;
-        justify-content: flex-end;
+        justify-content: flex-start;
         gap: 10px;
         min-width: 0;
-        grid-area: status;
-        justify-self: end;
-        align-self: start;
-        text-align: right;
+        text-align: left;
+        width: 100%;
       }
 
       .playlist-action-buttons {
@@ -863,8 +863,8 @@
         color: rgba(255, 255, 255, 0.7);
         font-size: 13px;
         min-width: 0;
-        align-items: flex-end;
-        text-align: right;
+        align-items: flex-start;
+        text-align: left;
       }
 
       .playlist-status-line {
@@ -2052,7 +2052,6 @@
           grid-template-areas:
             "cover title"
             "cover actions"
-            "cover status"
             "cover message";
           align-items: start;
           column-gap: 14px;
@@ -2067,7 +2066,6 @@
         }
 
         .playlist-header-title,
-        .playlist-status,
         .playlist-action-buttons,
         .playlist-search {
           align-items: flex-start;
@@ -2075,7 +2073,6 @@
 
         .playlist-status {
           justify-content: flex-start;
-          justify-self: flex-start;
           text-align: left;
         }
 
@@ -7472,7 +7469,6 @@
           const coverWrapper = document.createElement("div");
           coverWrapper.className = "playlist-cover";
           coverWrapper.appendChild(coverPreviewButton);
-          coverWrapper.appendChild(coverInput);
 
           titleWrapper.appendChild(title);
           titleWrapper.appendChild(buildBtn);
@@ -7495,8 +7491,11 @@
 
           statusTextWrapper.appendChild(statusLine);
           statusTextWrapper.appendChild(statusMessage);
-          statusGroup.appendChild(statusTextWrapper);
           statusGroup.appendChild(statusIndicator);
+          statusGroup.appendChild(statusTextWrapper);
+
+          coverWrapper.appendChild(statusGroup);
+          coverWrapper.appendChild(coverInput);
 
           const saveBtn = document.createElement("button");
           saveBtn.type = "button";
@@ -7544,7 +7543,6 @@
 
           header.appendChild(coverWrapper);
           header.appendChild(titleWrapper);
-          header.appendChild(statusGroup);
           const actionButtons = document.createElement("div");
           actionButtons.className = "playlist-action-buttons";
           actionButtons.appendChild(toggleBtn);
