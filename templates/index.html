@@ -1343,6 +1343,159 @@
         font-size: 14px;
       }
 
+      .track-preview-backdrop {
+        position: fixed;
+        inset: 0;
+        background: transparent;
+        display: none;
+        z-index: 1850;
+      }
+
+      .track-preview-popover {
+        position: absolute;
+        display: none;
+        flex-direction: column;
+        width: min(520px, calc(100vw - 32px));
+        max-height: min(70vh, 520px);
+        background: var(--card-bg);
+        border-radius: 18px;
+        border: 1px solid rgba(229, 160, 13, 0.22);
+        box-shadow: 0 28px 60px rgba(0, 0, 0, 0.6);
+        overflow: hidden;
+        z-index: 1860;
+      }
+
+      .track-preview-popover.show {
+        display: flex;
+      }
+
+      .track-preview-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px 18px;
+        background: rgba(14, 14, 14, 0.65);
+        border-bottom: 1px solid rgba(229, 160, 13, 0.16);
+      }
+
+      .track-preview-title {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .track-preview-body {
+        padding: 16px 18px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        overflow-y: auto;
+      }
+
+      .track-preview-body::-webkit-scrollbar {
+        width: 10px;
+      }
+
+      .track-preview-body::-webkit-scrollbar-thumb {
+        background: rgba(229, 160, 13, 0.25);
+        border-radius: 999px;
+      }
+
+      .track-preview-body::-webkit-scrollbar-track {
+        background: rgba(17, 17, 17, 0.75);
+      }
+
+      .track-preview-meta {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.72);
+      }
+
+      .track-preview-empty {
+        padding: 24px 0;
+        text-align: center;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.75);
+      }
+
+      .track-preview-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .track-preview-item {
+        display: grid;
+        grid-template-columns: 28px 56px 1fr;
+        gap: 12px;
+        align-items: center;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(229, 160, 13, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .track-preview-index {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.65);
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .track-preview-art {
+        width: 56px;
+        height: 56px;
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 20px;
+      }
+
+      .track-preview-art img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
+      .track-preview-text {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        overflow: hidden;
+      }
+
+      .track-preview-track {
+        font-size: 15px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .track-preview-details {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.7);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .track-preview-status {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.65);
+      }
+
       .cover-picker-button {
         display: inline-flex;
         align-items: center;
@@ -2666,6 +2819,16 @@
         updateDisplay: null,
         repositionHandler: null,
         toggleButton: null,
+      };
+      const trackPreviewState = {
+        container: null,
+        backdrop: null,
+        playlist: null,
+        anchor: null,
+        toggleButton: null,
+        body: null,
+        titleEl: null,
+        repositionHandler: null,
       };
       const coverPickerState = {
         playlist: null,
@@ -6943,6 +7106,473 @@
         }
       }
 
+      function ensureTrackPreviewElements() {
+        if (!trackPreviewState.backdrop) {
+          const backdrop = document.createElement("div");
+          backdrop.className = "track-preview-backdrop";
+          backdrop.addEventListener("click", () => {
+            closeTrackPreview();
+          });
+          document.body.appendChild(backdrop);
+          trackPreviewState.backdrop = backdrop;
+        }
+
+        if (!trackPreviewState.container) {
+          const container = document.createElement("div");
+          container.className = "track-preview-popover";
+          container.setAttribute("role", "dialog");
+          container.setAttribute("aria-modal", "true");
+          container.setAttribute("aria-hidden", "true");
+          container.tabIndex = -1;
+          document.body.appendChild(container);
+          trackPreviewState.container = container;
+        }
+      }
+
+      function handleTrackPreviewKeydown(event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeTrackPreview();
+          return;
+        }
+
+        if (event.key === "Tab") {
+          const { container } = trackPreviewState;
+          if (!container) {
+            return;
+          }
+
+          const focusable = Array.from(
+            container.querySelectorAll(
+              'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+            )
+          ).filter(
+            (element) =>
+              !element.hasAttribute("disabled") &&
+              element.getAttribute("aria-hidden") !== "true"
+          );
+
+          if (!focusable.length) {
+            event.preventDefault();
+            return;
+          }
+
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          const active = document.activeElement;
+
+          if (event.shiftKey) {
+            if (!container.contains(active) || active === first) {
+              event.preventDefault();
+              last.focus({ preventScroll: true });
+            }
+          } else if (active === last) {
+            event.preventDefault();
+            first.focus({ preventScroll: true });
+          }
+        }
+      }
+
+      function positionTrackPreview() {
+        const { container, anchor } = trackPreviewState;
+        if (!container || !anchor) {
+          return;
+        }
+
+        const anchorRect = anchor.getBoundingClientRect();
+        const menuRect = container.getBoundingClientRect();
+        const viewportWidth =
+          document.documentElement.clientWidth || window.innerWidth;
+        const viewportHeight =
+          document.documentElement.clientHeight || window.innerHeight;
+
+        const minLeft = window.scrollX + 16;
+        const maxLeft = Math.max(
+          minLeft,
+          window.scrollX + viewportWidth - menuRect.width - 16
+        );
+
+        let left =
+          anchorRect.left +
+          window.scrollX +
+          anchorRect.width / 2 -
+          menuRect.width / 2;
+        if (!Number.isFinite(left)) {
+          left = minLeft;
+        } else {
+          left = Math.min(Math.max(left, minLeft), maxLeft);
+        }
+
+        const minTop = window.scrollY + 16;
+        const maxTop = Math.max(
+          minTop,
+          window.scrollY + viewportHeight - menuRect.height - 16
+        );
+
+        let top = anchorRect.bottom + window.scrollY + 10;
+        if (top > maxTop) {
+          top = anchorRect.top + window.scrollY - menuRect.height - 10;
+        }
+        if (top < minTop) {
+          top = minTop;
+        }
+
+        container.style.left = `${left}px`;
+        container.style.top = `${top}px`;
+      }
+
+      function closeTrackPreview(options = {}) {
+        const { container, backdrop, toggleButton, repositionHandler } =
+          trackPreviewState;
+        if (!container || container.getAttribute("aria-hidden") === "true") {
+          return;
+        }
+
+        container.classList.remove("show");
+        container.setAttribute("aria-hidden", "true");
+        container.style.display = "none";
+        container.style.visibility = "";
+        container.innerHTML = "";
+
+        trackPreviewState.body = null;
+        trackPreviewState.titleEl = null;
+        trackPreviewState.playlist = null;
+        trackPreviewState.anchor = null;
+
+        if (backdrop) {
+          backdrop.style.display = "none";
+        }
+
+        document.removeEventListener("keydown", handleTrackPreviewKeydown, true);
+        if (repositionHandler) {
+          window.removeEventListener("resize", repositionHandler);
+          window.removeEventListener("scroll", repositionHandler, true);
+        }
+        trackPreviewState.repositionHandler = null;
+
+        if (toggleButton) {
+          toggleButton.setAttribute("aria-expanded", "false");
+          if (
+            options.restoreFocus !== false &&
+            document.body.contains(toggleButton)
+          ) {
+            toggleButton.focus({ preventScroll: true });
+          }
+        }
+
+        trackPreviewState.toggleButton = null;
+      }
+
+      async function fetchPlaylistTracks(playlistName) {
+        if (!playlistName) {
+          throw new Error("Playlist name is required.");
+        }
+
+        const params = new URLSearchParams({ playlist: playlistName });
+        let response;
+        try {
+          response = await fetch(
+            `/api/playlists/tracks?${params.toString()}`,
+            {
+              headers: { Accept: "application/json" },
+            }
+          );
+        } catch (error) {
+          throw new Error("Unable to reach the server.");
+        }
+
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (error) {
+          payload = null;
+        }
+
+        if (!response.ok) {
+          const message =
+            (payload && typeof payload === "object" && payload.error) ||
+            "Unable to load tracks for this playlist.";
+          const err = new Error(message);
+          err.status = response.status;
+          throw err;
+        }
+
+        return payload || {};
+      }
+
+      function renderTrackPreviewError(error) {
+        const { body } = trackPreviewState;
+        if (!body) {
+          return;
+        }
+
+        body.innerHTML = "";
+        const message = document.createElement("div");
+        message.className = "track-preview-empty";
+        if (error && typeof error.message === "string" && error.message.trim()) {
+          message.textContent = error.message.trim();
+        } else {
+          message.textContent = "Unable to load tracks for this playlist.";
+        }
+        body.appendChild(message);
+      }
+
+      function renderTrackPreviewData(playlist, payload) {
+        const { body, titleEl } = trackPreviewState;
+        if (!body) {
+          return;
+        }
+
+        const safePayload =
+          payload && typeof payload === "object" ? payload : {};
+        const tracks = Array.isArray(safePayload.tracks)
+          ? safePayload.tracks
+          : [];
+        const playlistName =
+          (playlist && typeof playlist.name === "string"
+            ? playlist.name.trim()
+            : "") || "Untitled Playlist";
+
+        if (titleEl) {
+          if (typeof safePayload.track_count === "number") {
+            const count = safePayload.track_count;
+            const label = `${count} ${count === 1 ? "track" : "tracks"}`;
+            titleEl.textContent = `${playlistName} • ${label}`;
+          } else {
+            titleEl.textContent = `${playlistName} tracks`;
+          }
+        }
+
+        body.innerHTML = "";
+
+        const metaParts = [];
+        if (typeof safePayload.track_count === "number") {
+          const count = safePayload.track_count;
+          metaParts.push(`${count} ${count === 1 ? "track" : "tracks"}`);
+        }
+
+        let statusMessage = "";
+        const lastResult =
+          safePayload.last_result && typeof safePayload.last_result === "object"
+            ? safePayload.last_result
+            : null;
+        if (lastResult) {
+          const finishedText = formatTimestamp(lastResult.finished_at);
+          const startedText = formatTimestamp(lastResult.started_at);
+          if (finishedText) {
+            metaParts.push(`Last built ${finishedText}`);
+          } else if (startedText) {
+            metaParts.push(`Last started ${startedText}`);
+          }
+          if (typeof lastResult.message === "string" && lastResult.message.trim()) {
+            statusMessage = lastResult.message.trim();
+          }
+        }
+
+        const fetchedText = formatTimestamp(safePayload.fetched_at);
+        if (fetchedText) {
+          metaParts.push(`Fetched ${fetchedText}`);
+        }
+
+        if (metaParts.length) {
+          const meta = document.createElement("div");
+          meta.className = "track-preview-meta";
+          meta.textContent = metaParts.join(" • ");
+          body.appendChild(meta);
+        }
+
+        if (!tracks.length) {
+          const empty = document.createElement("div");
+          empty.className = "track-preview-empty";
+          empty.textContent = lastResult
+            ? "The most recent build did not include any tracks."
+            : "No tracks are available for this playlist.";
+          body.appendChild(empty);
+
+          if (statusMessage) {
+            const statusEl = document.createElement("div");
+            statusEl.className = "track-preview-status";
+            statusEl.textContent = statusMessage;
+            body.appendChild(statusEl);
+          }
+          return;
+        }
+
+        const list = document.createElement("ul");
+        list.className = "track-preview-list";
+
+        tracks.forEach((track, index) => {
+          const item = document.createElement("li");
+          item.className = "track-preview-item";
+
+          const indexEl = document.createElement("span");
+          indexEl.className = "track-preview-index";
+          indexEl.textContent = String(index + 1);
+          item.appendChild(indexEl);
+
+          const artWrapper = document.createElement("div");
+          artWrapper.className = "track-preview-art";
+          if (track && track.art) {
+            const img = document.createElement("img");
+            img.src = track.art;
+            img.alt = "";
+            img.loading = "lazy";
+            img.decoding = "async";
+            artWrapper.appendChild(img);
+          } else {
+            artWrapper.textContent = "♪";
+          }
+          item.appendChild(artWrapper);
+
+          const textWrapper = document.createElement("div");
+          textWrapper.className = "track-preview-text";
+
+          const titleLine = document.createElement("div");
+          titleLine.className = "track-preview-track";
+          const trackTitle =
+            track && typeof track.title === "string" && track.title.trim()
+              ? track.title.trim()
+              : "Unknown Track";
+          titleLine.textContent = trackTitle;
+          titleLine.title = trackTitle;
+          textWrapper.appendChild(titleLine);
+
+          const detailParts = [];
+          if (track && typeof track.artist === "string" && track.artist.trim()) {
+            detailParts.push(track.artist.trim());
+          }
+          if (track && typeof track.album === "string" && track.album.trim()) {
+            detailParts.push(track.album.trim());
+          }
+          if (detailParts.length) {
+            const detailLine = document.createElement("div");
+            detailLine.className = "track-preview-details";
+            const detailsText = detailParts.join(" • ");
+            detailLine.textContent = detailsText;
+            detailLine.title = detailsText;
+            textWrapper.appendChild(detailLine);
+          }
+
+          item.appendChild(textWrapper);
+          list.appendChild(item);
+        });
+
+        body.appendChild(list);
+
+        if (statusMessage) {
+          const statusEl = document.createElement("div");
+          statusEl.className = "track-preview-status";
+          statusEl.textContent = statusMessage;
+          body.appendChild(statusEl);
+        }
+      }
+
+      async function openTrackPreview(playlist, anchor) {
+        if (!playlist || !anchor) {
+          return;
+        }
+
+        ensureTrackPreviewElements();
+        closeTrackPreview({ restoreFocus: false });
+
+        const { container, backdrop } = trackPreviewState;
+        if (!container || !backdrop) {
+          return;
+        }
+
+        const playlistName =
+          (typeof playlist.name === "string" ? playlist.name.trim() : "") || "";
+
+        trackPreviewState.playlist = playlist;
+        trackPreviewState.anchor = anchor;
+        trackPreviewState.toggleButton = anchor;
+
+        container.innerHTML = "";
+        container.setAttribute("aria-hidden", "false");
+        container.style.display = "flex";
+        container.style.visibility = "hidden";
+        container.classList.add("show");
+
+        backdrop.style.display = "block";
+        anchor.setAttribute("aria-expanded", "true");
+
+        const header = document.createElement("div");
+        header.className = "track-preview-header";
+
+        const titleEl = document.createElement("h3");
+        titleEl.className = "track-preview-title";
+        titleEl.textContent = `${playlistName || "Untitled Playlist"} tracks`;
+        header.appendChild(titleEl);
+
+        const closeBtn = document.createElement("button");
+        closeBtn.type = "button";
+        closeBtn.className = "icon-only secondary";
+        closeBtn.setAttribute("aria-label", "Close track preview");
+        closeBtn.textContent = "✕";
+        closeBtn.addEventListener("click", () => {
+          closeTrackPreview();
+        });
+        header.appendChild(closeBtn);
+
+        container.appendChild(header);
+
+        const body = document.createElement("div");
+        body.className = "track-preview-body";
+        const loadingMessage = document.createElement("div");
+        loadingMessage.className = "track-preview-empty";
+        loadingMessage.textContent = playlistName
+          ? "Loading tracks…"
+          : "Enter a playlist name to view tracks from Plex.";
+        body.appendChild(loadingMessage);
+        container.appendChild(body);
+
+        trackPreviewState.body = body;
+        trackPreviewState.titleEl = titleEl;
+
+        const repositionHandler = () => {
+          positionTrackPreview();
+        };
+        trackPreviewState.repositionHandler = repositionHandler;
+        window.addEventListener("resize", repositionHandler);
+        window.addEventListener("scroll", repositionHandler, true);
+        document.addEventListener("keydown", handleTrackPreviewKeydown, true);
+
+        requestAnimationFrame(() => {
+          positionTrackPreview();
+          container.style.visibility = "visible";
+          closeBtn.focus({ preventScroll: true });
+        });
+
+        if (!playlistName) {
+          return;
+        }
+
+        try {
+          const payload = await fetchPlaylistTracks(playlistName);
+          renderTrackPreviewData(playlist, payload);
+        } catch (error) {
+          const normalizedError =
+            error instanceof Error ? error : new Error(String(error));
+          renderTrackPreviewError(normalizedError);
+        }
+      }
+
+      function togglePlaylistTrackPreview(playlist, anchor) {
+        if (!playlist || !anchor) {
+          return;
+        }
+
+        const isOpen =
+          trackPreviewState.container &&
+          trackPreviewState.container.getAttribute("aria-hidden") === "false" &&
+          trackPreviewState.toggleButton === anchor;
+        if (isOpen) {
+          closeTrackPreview();
+        } else {
+          openTrackPreview(playlist, anchor);
+        }
+      }
+
       function ensureLimitMenuElements() {
         if (!limitMenuState.backdrop) {
           const backdrop = document.createElement("div");
@@ -7331,6 +7961,7 @@
           closeCoverPicker();
         }
         closeLimitMenu();
+        closeTrackPreview({ restoreFocus: false });
         playlistsContainer.innerHTML = "";
         const totalPlaylists = state.playlists.length;
         const normalizedSearch = (playlistSearchTerm || "").trim().toLowerCase();
@@ -7504,6 +8135,18 @@
           saveBtn.setAttribute("aria-label", "Save playlist");
           saveBtn.title = "Save this playlist to playlists.yml";
 
+          const trackPreviewBtn = document.createElement("button");
+          trackPreviewBtn.type = "button";
+          trackPreviewBtn.className = "icon-only secondary playlist-tracks-btn";
+          trackPreviewBtn.textContent = "🎧";
+          trackPreviewBtn.setAttribute("aria-label", "Show selected tracks");
+          trackPreviewBtn.setAttribute("aria-haspopup", "dialog");
+          trackPreviewBtn.setAttribute("aria-expanded", "false");
+          trackPreviewBtn.title = "Show tracks from the most recent build";
+          trackPreviewBtn.addEventListener("click", () => {
+            togglePlaylistTrackPreview(playlist, trackPreviewBtn);
+          });
+
           const duplicateBtn = document.createElement("button");
           duplicateBtn.type = "button";
           duplicateBtn.className = "icon-only secondary";
@@ -7547,6 +8190,7 @@
           actionButtons.className = "playlist-action-buttons";
           actionButtons.appendChild(toggleBtn);
           actionButtons.appendChild(saveBtn);
+          actionButtons.appendChild(trackPreviewBtn);
           actionButtons.appendChild(duplicateBtn);
           actionButtons.appendChild(removeBtn);
           header.appendChild(actionButtons);
