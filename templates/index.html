@@ -779,9 +779,10 @@
 
       .playlist-header-title {
         display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 8px;
+        flex-wrap: wrap;
+        flex-direction: row;
+        align-items: center;
+        gap: 10px;
         min-width: 0;
         grid-area: title;
       }
@@ -2042,13 +2043,14 @@
         }
 
         .playlist-card .playlist-header {
-          grid-template-columns: minmax(0, 1fr);
+          grid-template-columns: clamp(96px, 30vw, 140px) minmax(0, 1fr);
           grid-template-areas:
-            "cover"
-            "title"
-            "status"
-            "actions"
-            "message";
+            "cover title"
+            "cover actions"
+            "cover status"
+            "cover message";
+          align-items: start;
+          column-gap: 14px;
         }
 
         .playlist-section-header {
@@ -2067,7 +2069,7 @@
         }
 
         .playlist-card .playlist-cover {
-          justify-content: center;
+          justify-content: flex-start;
         }
 
         .playlist-card .playlist-cover .cover-preview {
