@@ -82,9 +82,7 @@ def test_get_config_endpoint_returns_sections(tmp_path, monkeypatch):
     assert runtime_fields["max_workers"]["value"] == "3"
 
     playlists_section = _find_section(payload, "playlists")
-    assert playlists_section is not None
-    playlists_fields = _fields_to_map(playlists_section)
-    assert playlists_fields["duplicate_tiebreaker"]["value"] == "most_popular"
+    assert playlists_section is None
 
 
 def test_update_config_endpoint_persists_changes(tmp_path, monkeypatch):
@@ -113,7 +111,6 @@ def test_update_config_endpoint_persists_changes(tmp_path, monkeypatch):
                 "max_workers": "5",
             },
             "logging": {"level": "DEBUG"},
-            "playlists": {"duplicate_tiebreaker": "oldest"},
         }
     }
 
@@ -131,7 +128,6 @@ def test_update_config_endpoint_persists_changes(tmp_path, monkeypatch):
     assert saved["runtime"]["run_forever"] is False
     assert saved["runtime"]["max_workers"] == 5
     assert saved["logging"]["level"] == "DEBUG"
-    assert saved["playlists"]["duplicate_tiebreaker"] == "oldest"
 
 
 def test_update_config_endpoint_rejects_invalid_numbers(tmp_path, monkeypatch):

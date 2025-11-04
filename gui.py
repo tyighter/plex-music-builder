@@ -253,13 +253,6 @@ CONFIG_LOG_LEVEL_OPTIONS: List[Dict[str, str]] = [
 DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest", "allow"}
 DEFAULT_DUPLICATE_TIEBREAKER = "most_popular"
 
-CONFIG_DUPLICATE_TIEBREAKER_OPTIONS: List[Dict[str, str]] = [
-    {"value": "most_popular", "label": "Most Popular"},
-    {"value": "oldest", "label": "Oldest"},
-    {"value": "newest", "label": "Newest"},
-    {"value": "allow", "label": "Allow"},
-]
-
 CONFIG_FORM_DEFINITION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
     [
         (
@@ -389,28 +382,6 @@ CONFIG_FORM_DEFINITION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
                         "input": "number",
                         "min": 1,
                         "helper": "How many tracks to batch when syncing to Plex.",
-                    },
-                ],
-            },
-        ),
-        (
-            "playlists",
-            {
-                "label": "Playlist Defaults",
-                "description": (
-                    "Choose default behaviours that apply when building playlists."
-                ),
-                "fields": [
-                    {
-                        "key": "duplicate_tiebreaker",
-                        "label": "Duplicates",
-                        "type": "select",
-                        "input": "select",
-                        "options": CONFIG_DUPLICATE_TIEBREAKER_OPTIONS,
-                        "default": DEFAULT_DUPLICATE_TIEBREAKER,
-                        "helper": (
-                            "Choose how duplicate tracks are handled. Select Allow to keep duplicates."
-                        ),
                     },
                 ],
             },
