@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import os
 import re
 import sys
@@ -521,33 +522,51 @@ playlists_data = _merge_playlist_defaults(raw_playlists)
 MANAGED_PLAYLISTS_FILE = str((RUNTIME_DIR / "managed_playlists.json").resolve())
 
 
-def _load_managed_playlists_state() -> Set[str]:
+@dataclass
+class ManagedPlaylistsState:
+    playlist_names: Set[str]
+    name_signatures: Dict[str, str]
+
+    @classmethod
+    def empty(cls) -> "ManagedPlaylistsState":
+        return cls(set(), {})
+
+
+def _load_managed_playlists_state() -> ManagedPlaylistsState:
     try:
         with open(MANAGED_PLAYLISTS_FILE, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except FileNotFoundError:
-        return set()
+        return ManagedPlaylistsState.empty()
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning(
             "Unable to load managed playlist state from '%s': %s",
             MANAGED_PLAYLISTS_FILE,
             exc,
         )
-        return set()
+        return ManagedPlaylistsState.empty()
 
     stored_names = data.get("playlists")
-    if not isinstance(stored_names, list):
-        return set()
-
     names: Set[str] = set()
-    for entry in stored_names:
-        text = str(entry).strip()
-        if text:
-            names.add(text)
-    return names
+    if isinstance(stored_names, list):
+        for entry in stored_names:
+            text = str(entry).strip()
+            if text:
+                names.add(text)
+
+    raw_signature_map = data.get("signature_map")
+    name_signatures: Dict[str, str] = {}
+    if isinstance(raw_signature_map, dict):
+        for raw_name, raw_signature in raw_signature_map.items():
+            stored_name = str(raw_name).strip()
+            signature = str(raw_signature).strip()
+            if stored_name and signature:
+                name_signatures[stored_name] = signature
+
+    return ManagedPlaylistsState(names, name_signatures)
 
 
-def _save_managed_playlists_state(names: Iterable[str]) -> None:
+def _save_managed_playlists_state(state: ManagedPlaylistsState) -> None:
     path = Path(MANAGED_PLAYLISTS_FILE)
     directory = path.parent
     try:
@@ -560,7 +579,13 @@ def _save_managed_playlists_state(names: Iterable[str]) -> None:
         )
         return
 
-    payload = {"playlists": sorted(set(names))}
+    payload: Dict[str, Any] = {
+        "playlists": sorted(set(state.playlist_names))
+    }
+
+    if state.name_signatures:
+        payload["signature_map"] = dict(sorted(state.name_signatures.items()))
+
     try:
         with path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
@@ -623,6 +648,82 @@ def _cleanup_stale_playlists(managed_names: Set[str], configured_names: Set[str]
         remaining.discard(playlist_name)
 
     return remaining
+
+
+def _normalize_signature_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _normalize_signature_value(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_signature_value(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_normalize_signature_value(item) for item in value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _compute_playlist_signature(config: Dict[str, Any]) -> Optional[str]:
+    normalized = _normalize_signature_value(config)
+    try:
+        serialized = json.dumps(
+            normalized,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        logger.debug("Unable to compute playlist signature: %s", exc)
+        return None
+
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _delete_previous_playlist(previous_name: str, new_name: str, playlist_logger: Any) -> bool:
+    try:
+        plex_server = get_plex_server()
+    except Exception as exc:  # pragma: no cover - defensive logging
+        playlist_logger.warning(
+            "Unable to connect to Plex to remove previous playlist '%s': %s",
+            previous_name,
+            exc,
+        )
+        return False
+
+    try:
+        playlist = plex_server.playlist(previous_name)
+    except NotFound:
+        playlist_logger.debug(
+            "Previous playlist '%s' not found when cleaning up rename to '%s'.",
+            previous_name,
+            new_name,
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - defensive logging
+        playlist_logger.warning(
+            "Unable to load previous playlist '%s' for deletion after rename to '%s': %s",
+            previous_name,
+            new_name,
+            exc,
+        )
+        return False
+
+    try:
+        playlist.delete()
+    except Exception as exc:  # pragma: no cover - defensive logging
+        playlist_logger.warning(
+            "Failed to delete previous playlist '%s' after rename to '%s': %s",
+            previous_name,
+            new_name,
+            exc,
+        )
+        return False
+
+    playlist_logger.info(
+        "Deleted previous playlist '%s' after rename to '%s'.",
+        previous_name,
+        new_name,
+    )
+    return True
 
 
 # ----------------------------
@@ -6341,7 +6442,33 @@ def _run_playlists(playlists_subset, completion_message=""):
         return
 
     configured_names = set(playlists_data.keys())
-    managed_names = _load_managed_playlists_state()
+    managed_state = _load_managed_playlists_state()
+    managed_names = set(managed_state.playlist_names)
+    name_signatures = dict(managed_state.name_signatures)
+
+    configured_signatures: Dict[str, Optional[str]] = {}
+    for configured_name, configured_config in playlists_data.items():
+        configured_signatures[configured_name] = _compute_playlist_signature(
+            configured_config
+        )
+
+    rename_candidates: Dict[str, List[str]] = {}
+    for playlist_name in playlists_subset:
+        signature = configured_signatures.get(playlist_name)
+        if signature:
+            candidates = [
+                stored_name
+                for stored_name, stored_signature in name_signatures.items()
+                if stored_signature == signature and stored_name != playlist_name
+            ]
+        else:
+            candidates = []
+
+        rename_candidates[playlist_name] = [
+            candidate
+            for candidate in candidates
+            if candidate not in configured_names
+        ]
 
     playlist_names = list(playlists_subset.keys())
     logger.info(
@@ -6361,15 +6488,18 @@ def _run_playlists(playlists_subset, completion_message=""):
 
     worker_count = max(1, min(configured_workers, len(playlists_subset)))
 
+    successful_playlists: Set[str] = set()
+
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            executor.submit(process_playlist, name, cfg): name
-            for name, cfg in playlists_subset.items()
-        }
+        futures = {}
+        for name, cfg in playlists_subset.items():
+            future = executor.submit(process_playlist, name, cfg)
+            futures[future] = name
         for future in as_completed(futures):
             playlist_name = futures[future]
             try:
                 future.result()
+                successful_playlists.add(playlist_name)
             except Exception as exc:
                 errors = True
                 logger.exception(f"Playlist '{playlist_name}' failed: {exc}")
@@ -6377,9 +6507,35 @@ def _run_playlists(playlists_subset, completion_message=""):
     if errors:
         raise RuntimeError("One or more playlists failed to build.")
 
+    processed_previous_names: Set[str] = set()
+    for playlist_name in successful_playlists:
+        signature = configured_signatures.get(playlist_name)
+        if signature:
+            name_signatures[playlist_name] = signature
+        else:
+            name_signatures.pop(playlist_name, None)
+
+        for previous_name in rename_candidates.get(playlist_name, []):
+            if previous_name in processed_previous_names:
+                continue
+            if previous_name in configured_names:
+                continue
+            if _delete_previous_playlist(previous_name, playlist_name, logger):
+                managed_names.discard(previous_name)
+                name_signatures.pop(previous_name, None)
+                processed_previous_names.add(previous_name)
+
     remaining_managed = _cleanup_stale_playlists(managed_names, configured_names)
-    updated_state = remaining_managed.union(configured_names)
-    _save_managed_playlists_state(updated_state)
+
+    updated_names = remaining_managed.union(configured_names)
+    cleaned_name_signatures = {
+        playlist_name: signature
+        for playlist_name, signature in name_signatures.items()
+        if playlist_name in updated_names and signature
+    }
+    _save_managed_playlists_state(
+        ManagedPlaylistsState(updated_names, cleaned_name_signatures)
+    )
 
     if completion_message:
         logger.info(completion_message)
