@@ -576,6 +576,7 @@
         box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
         border: 1px solid rgba(229, 160, 13, 0.18);
         transition: transform 0.2s ease, box-shadow 0.2s ease;
+        position: relative;
       }
 
       .card:hover {
@@ -814,15 +815,15 @@
         justify-self: end;
         align-self: start;
         grid-area: actions;
-        position: relative;
         padding-right: 48px;
         min-height: 40px;
       }
 
       .playlist-remove-btn {
         position: absolute;
-        top: 0;
-        right: 0;
+        top: 16px;
+        right: 16px;
+        z-index: 1;
       }
 
       .playlist-inline-message {
@@ -866,21 +867,21 @@
         line-height: 1;
       }
 
-      .playlist-collapse-btn[aria-expanded="false"],
+      .playlist-collapse-btn[aria-expanded="true"],
       .playlist-tracks-btn[aria-expanded="true"] {
         background: rgba(229, 160, 13, 0.16);
         color: var(--plex-light);
         box-shadow: none;
       }
 
-      .playlist-collapse-btn[aria-expanded="false"]:hover,
-      .playlist-collapse-btn[aria-expanded="false"]:focus-visible,
+      .playlist-collapse-btn[aria-expanded="true"]:hover,
+      .playlist-collapse-btn[aria-expanded="true"]:focus-visible,
       .playlist-tracks-btn[aria-expanded="true"]:hover,
       .playlist-tracks-btn[aria-expanded="true"]:focus-visible {
         background: rgba(229, 160, 13, 0.24);
       }
 
-      .playlist-collapse-btn[aria-expanded="false"]:active,
+      .playlist-collapse-btn[aria-expanded="true"]:active,
       .playlist-tracks-btn[aria-expanded="true"]:active {
         background: rgba(229, 160, 13, 0.28);
       }
