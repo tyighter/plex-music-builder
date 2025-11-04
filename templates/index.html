@@ -687,6 +687,7 @@
         align-items: start;
         gap: 16px;
         margin-bottom: 18px;
+        position: relative;
       }
 
       .playlist-cover {
@@ -813,6 +814,15 @@
         justify-self: end;
         align-self: start;
         grid-area: actions;
+        position: relative;
+        padding-right: 48px;
+        min-height: 40px;
+      }
+
+      .playlist-remove-btn {
+        position: absolute;
+        top: 0;
+        right: 0;
       }
 
       .playlist-inline-message {
@@ -854,6 +864,25 @@
       .playlist-collapse-btn {
         font-size: 18px;
         line-height: 1;
+      }
+
+      .playlist-collapse-btn[aria-expanded="false"],
+      .playlist-tracks-btn[aria-expanded="true"] {
+        background: rgba(229, 160, 13, 0.16);
+        color: var(--plex-light);
+        box-shadow: none;
+      }
+
+      .playlist-collapse-btn[aria-expanded="false"]:hover,
+      .playlist-collapse-btn[aria-expanded="false"]:focus-visible,
+      .playlist-tracks-btn[aria-expanded="true"]:hover,
+      .playlist-tracks-btn[aria-expanded="true"]:focus-visible {
+        background: rgba(229, 160, 13, 0.24);
+      }
+
+      .playlist-collapse-btn[aria-expanded="false"]:active,
+      .playlist-tracks-btn[aria-expanded="true"]:active {
+        background: rgba(229, 160, 13, 0.28);
       }
 
       .playlist-status-text {
@@ -6707,7 +6736,7 @@
         }
 
         if (toggleButton) {
-          toggleButton.textContent = isCollapsed ? "▸" : "▾";
+          toggleButton.textContent = isCollapsed ? "+" : "−";
           toggleButton.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
           toggleButton.setAttribute("aria-label", label);
           toggleButton.title = label;
@@ -8030,7 +8059,7 @@
 
           const toggleBtn = document.createElement("button");
           toggleBtn.type = "button";
-          toggleBtn.className = "icon-only secondary playlist-collapse-btn";
+          toggleBtn.className = "icon-only playlist-collapse-btn";
 
           const buildBtn = document.createElement("button");
           buildBtn.type = "button";
@@ -8144,7 +8173,7 @@
 
           const trackPreviewBtn = document.createElement("button");
           trackPreviewBtn.type = "button";
-          trackPreviewBtn.className = "icon-only secondary playlist-tracks-btn";
+          trackPreviewBtn.className = "icon-only playlist-tracks-btn";
           trackPreviewBtn.textContent = "🎧";
           trackPreviewBtn.setAttribute("aria-label", "Show selected tracks");
           trackPreviewBtn.setAttribute("aria-haspopup", "dialog");
@@ -8156,7 +8185,7 @@
 
           const duplicateBtn = document.createElement("button");
           duplicateBtn.type = "button";
-          duplicateBtn.className = "icon-only secondary";
+          duplicateBtn.className = "icon-only";
           duplicateBtn.textContent = "⧉";
           duplicateBtn.setAttribute("aria-label", "Duplicate playlist");
           duplicateBtn.title = "Duplicate playlist";
@@ -8170,7 +8199,7 @@
 
           const removeBtn = document.createElement("button");
           removeBtn.type = "button";
-          removeBtn.className = "icon-only danger";
+          removeBtn.className = "icon-only danger playlist-remove-btn";
           removeBtn.textContent = "✕";
           removeBtn.setAttribute("aria-label", "Delete playlist");
           removeBtn.title = "Delete playlist";
