@@ -2042,12 +2042,13 @@
         }
 
         .playlist-card .playlist-header {
-          grid-template-columns: clamp(72px, 32vw, 150px) minmax(0, 1fr);
+          grid-template-columns: minmax(0, 1fr);
           grid-template-areas:
-            "cover title"
-            "cover status"
-            "cover actions"
-            "cover message";
+            "cover"
+            "title"
+            "status"
+            "actions"
+            "message";
         }
 
         .playlist-section-header {
@@ -2066,11 +2067,11 @@
         }
 
         .playlist-card .playlist-cover {
-          justify-content: flex-start;
+          justify-content: center;
         }
 
         .playlist-card .playlist-cover .cover-preview {
-          max-width: clamp(96px, 42vw, 220px);
+          max-width: 220px;
         }
 
         .playlist-search {
