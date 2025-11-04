@@ -516,6 +516,116 @@ def _merge_playlist_defaults(raw_payload):
 playlists_data = _merge_playlist_defaults(raw_playlists)
 
 # ----------------------------
+# Playlist State Tracking
+# ----------------------------
+MANAGED_PLAYLISTS_FILE = str((RUNTIME_DIR / "managed_playlists.json").resolve())
+
+
+def _load_managed_playlists_state() -> Set[str]:
+    try:
+        with open(MANAGED_PLAYLISTS_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return set()
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Unable to load managed playlist state from '%s': %s",
+            MANAGED_PLAYLISTS_FILE,
+            exc,
+        )
+        return set()
+
+    stored_names = data.get("playlists")
+    if not isinstance(stored_names, list):
+        return set()
+
+    names: Set[str] = set()
+    for entry in stored_names:
+        text = str(entry).strip()
+        if text:
+            names.add(text)
+    return names
+
+
+def _save_managed_playlists_state(names: Iterable[str]) -> None:
+    path = Path(MANAGED_PLAYLISTS_FILE)
+    directory = path.parent
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "Unable to create managed playlist state directory '%s': %s",
+            directory,
+            exc,
+        )
+        return
+
+    payload = {"playlists": sorted(set(names))}
+    try:
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except OSError as exc:
+        logger.warning(
+            "Unable to write managed playlist state to '%s': %s",
+            path,
+            exc,
+        )
+
+
+def _cleanup_stale_playlists(managed_names: Set[str], configured_names: Set[str]) -> Set[str]:
+    stale_names = sorted(name for name in managed_names if name not in configured_names)
+    if not stale_names:
+        return set(managed_names)
+
+    try:
+        plex_server = get_plex_server()
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning(
+            "Unable to connect to Plex to remove stale playlists: %s",
+            exc,
+        )
+        return set(managed_names)
+
+    remaining = set(managed_names)
+    for playlist_name in stale_names:
+        try:
+            playlist = plex_server.playlist(playlist_name)
+        except NotFound:
+            logger.debug(
+                "Stale playlist '%s' no longer exists; removing from state.",
+                playlist_name,
+            )
+            remaining.discard(playlist_name)
+            continue
+        except Exception as exc:
+            logger.warning(
+                "Unable to load stale playlist '%s' for deletion: %s",
+                playlist_name,
+                exc,
+            )
+            continue
+
+        try:
+            playlist.delete()
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete stale playlist '%s': %s",
+                playlist_name,
+                exc,
+            )
+            continue
+
+        logger.info(
+            "Deleted stale playlist '%s' that is no longer configured.",
+            playlist_name,
+        )
+        remaining.discard(playlist_name)
+
+    return remaining
+
+
+# ----------------------------
 # Metadata Cache
 # ----------------------------
 CACHE_FILE = str((RUNTIME_DIR / "metadata_cache.json").resolve())
@@ -6230,6 +6340,9 @@ def _run_playlists(playlists_subset, completion_message=""):
         logger.warning("No playlists defined. Nothing to process.")
         return
 
+    configured_names = set(playlists_data.keys())
+    managed_names = _load_managed_playlists_state()
+
     playlist_names = list(playlists_subset.keys())
     logger.info(
         "Processing %d playlist(s): %s",
@@ -6263,6 +6376,10 @@ def _run_playlists(playlists_subset, completion_message=""):
 
     if errors:
         raise RuntimeError("One or more playlists failed to build.")
+
+    remaining_managed = _cleanup_stale_playlists(managed_names, configured_names)
+    updated_state = remaining_managed.union(configured_names)
+    _save_managed_playlists_state(updated_state)
 
     if completion_message:
         logger.info(completion_message)
