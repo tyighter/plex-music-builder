@@ -2646,12 +2646,14 @@
     </main>
 
     <script>
+      const DEFAULT_DUPLICATE_TIEBREAKER = "most_popular";
+
       const state = {
         defaults: {
           plex_filter: [],
           popularity_boosts: [],
           extras: {},
-          duplicate_tiebreaker: "",
+          duplicate_tiebreaker: DEFAULT_DUPLICATE_TIEBREAKER,
         },
         playlists: [],
       };
@@ -2767,35 +2769,38 @@
       ];
       const DUPLICATE_TIEBREAKER_VALUES = new Set([
         "",
-        "most_popular",
+        DEFAULT_DUPLICATE_TIEBREAKER,
         "oldest",
         "newest",
         "allow",
       ]);
       const DUPLICATE_TIEBREAKER_OPTIONS = [
         { value: "", label: "Use Global Default" },
-        { value: "most_popular", label: "Most Popular" },
+        { value: DEFAULT_DUPLICATE_TIEBREAKER, label: "Most Popular" },
         { value: "oldest", label: "Oldest" },
         { value: "newest", label: "Newest" },
         { value: "allow", label: "Allow" },
       ];
       const GLOBAL_DUPLICATE_TIEBREAKER_OPTIONS = [
-        { value: "", label: "Use Config Default" },
-        { value: "most_popular", label: "Most Popular" },
+        { value: DEFAULT_DUPLICATE_TIEBREAKER, label: "Most Popular" },
         { value: "oldest", label: "Oldest" },
         { value: "newest", label: "Newest" },
         { value: "allow", label: "Allow" },
       ];
 
-      function normalizeDuplicateTiebreaker(value) {
+      function normalizeDuplicateTiebreaker(value, options = {}) {
+        const { allowDefault = true } = options;
         if (value === null || value === undefined) {
-          return "";
+          return allowDefault ? "" : DEFAULT_DUPLICATE_TIEBREAKER;
         }
         const normalized = String(value).trim().toLowerCase();
         if (normalized === "" || normalized === "default") {
-          return "";
+          return allowDefault ? "" : DEFAULT_DUPLICATE_TIEBREAKER;
         }
-        return DUPLICATE_TIEBREAKER_VALUES.has(normalized) ? normalized : "";
+        if (!DUPLICATE_TIEBREAKER_VALUES.has(normalized)) {
+          return allowDefault ? "" : DEFAULT_DUPLICATE_TIEBREAKER;
+        }
+        return normalized;
       }
       if (defaultDuplicateSelect) {
         defaultDuplicateSelect.innerHTML = "";
@@ -2806,7 +2811,9 @@
           defaultDuplicateSelect.appendChild(option);
         });
         defaultDuplicateSelect.addEventListener("change", (event) => {
-          const normalized = normalizeDuplicateTiebreaker(event.target.value);
+          const normalized = normalizeDuplicateTiebreaker(event.target.value, {
+            allowDefault: false,
+          });
           state.defaults.duplicate_tiebreaker = normalized;
           event.target.value = normalized;
         });
@@ -8510,9 +8517,12 @@
         }
 
         if (defaultDuplicateSelect) {
-          defaultDuplicateSelect.value = normalizeDuplicateTiebreaker(
-            state.defaults.duplicate_tiebreaker
+          const normalizedDefault = normalizeDuplicateTiebreaker(
+            state.defaults.duplicate_tiebreaker,
+            { allowDefault: false }
           );
+          state.defaults.duplicate_tiebreaker = normalizedDefault;
+          defaultDuplicateSelect.value = normalizedDefault;
         }
 
         if (defaultFiltersContainer) {
@@ -8579,7 +8589,8 @@
             data.defaults?.popularity_boosts || []
           ).map((boost) => normalizeBoostForClient(boost || {}));
           state.defaults.duplicate_tiebreaker = normalizeDuplicateTiebreaker(
-            data.defaults?.duplicate_tiebreaker
+            data.defaults?.duplicate_tiebreaker,
+            { allowDefault: false }
           );
 
           isDefaultBoostsOpen = state.defaults.popularity_boosts.length > 0;
@@ -8697,7 +8708,8 @@
             ),
             extras: sanitizeExtras(state.defaults.extras || {}),
             duplicate_tiebreaker: normalizeDuplicateTiebreaker(
-              state.defaults.duplicate_tiebreaker
+              state.defaults.duplicate_tiebreaker,
+              { allowDefault: false }
             ),
           },
           playlists: state.playlists.map((playlist) => {
