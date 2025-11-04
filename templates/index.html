@@ -5412,20 +5412,35 @@
         }
       }
 
+      let refreshBuildStatusPromise = null;
+      let refreshBuildStatusShouldShowErrors = false;
       async function refreshBuildStatus(showErrors = false) {
-        try {
-          const response = await fetch("/api/build/status");
-          if (!response.ok) {
-            throw new Error("Unable to retrieve build status");
-          }
-          const status = await response.json();
-          updateBuildStatusUi(status);
-        } catch (error) {
-          console.error(error);
-          if (showErrors) {
-            showMessage(error.message, true);
-          }
+        if (showErrors) {
+          refreshBuildStatusShouldShowErrors = true;
         }
+        if (refreshBuildStatusPromise) {
+          return refreshBuildStatusPromise;
+        }
+        refreshBuildStatusPromise = (async () => {
+          const shouldShowErrors = refreshBuildStatusShouldShowErrors;
+          refreshBuildStatusShouldShowErrors = false;
+          try {
+            const response = await fetch("/api/build/status");
+            if (!response.ok) {
+              throw new Error("Unable to retrieve build status");
+            }
+            const status = await response.json();
+            updateBuildStatusUi(status);
+          } catch (error) {
+            console.error(error);
+            if (shouldShowErrors) {
+              showMessage(error.message, true);
+            }
+          } finally {
+            refreshBuildStatusPromise = null;
+          }
+        })();
+        return refreshBuildStatusPromise;
       }
 
       async function toggleBuild() {
@@ -9248,7 +9263,7 @@
       });
 
       refreshBuildStatus();
-      buildStatusTimer = setInterval(() => refreshBuildStatus(), 5000);
+      buildStatusTimer = setInterval(() => refreshBuildStatus(), 250);
       loadData();
     </script>
   </body>
