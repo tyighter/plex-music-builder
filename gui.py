@@ -21,6 +21,13 @@ import yaml
 from flask import Flask, abort, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
+try:  # pragma: no cover - defensive import
+    from plexapi.server import PlexServer
+    from plexapi.exceptions import NotFound
+except Exception:  # pragma: no cover - handled gracefully at runtime
+    PlexServer = None  # type: ignore[assignment]
+    NotFound = Exception  # type: ignore[assignment]
+
 
 def _represent_ordered_dict(dumper: yaml.Dumper, data: OrderedDict) -> Any:
     """Ensure OrderedDict values can be serialized by ``yaml.safe_dump``."""
@@ -79,6 +86,10 @@ DEFAULT_LOG_PATH = (RUNTIME_DIR / "logs/plex_music_builder.log").resolve()
 
 _CONFIG_CACHE: Dict[str, Any] = {"mtime": None, "data": {}}
 
+_PLEX_CLIENT_LOCK = threading.Lock()
+_PLEX_CLIENT: Any = None
+_PLEX_CLIENT_SETTINGS: Dict[str, Optional[str]] = {"url": None, "token": None}
+
 
 def _resolve_path_setting(raw_value: Any, default_path: Path) -> Path:
     if isinstance(raw_value, str) and raw_value.strip():
@@ -124,6 +135,111 @@ def _load_config_data() -> Dict[str, Any]:
     _CONFIG_CACHE["mtime"] = getattr(stat_result, "st_mtime", None)
     _CONFIG_CACHE["data"] = config_data
     return config_data if isinstance(config_data, dict) else {}
+
+
+def _extract_plex_credentials(
+    config_data: Optional[Dict[str, Any]]
+) -> Tuple[Optional[str], Optional[str]]:
+    if not isinstance(config_data, dict):
+        return None, None
+
+    plex_section = config_data.get("plex")
+    if isinstance(plex_section, dict):
+        source = plex_section
+    else:
+        source = config_data
+
+    raw_url = source.get("PLEX_URL")
+    raw_token = source.get("PLEX_TOKEN")
+
+    url = str(raw_url).strip() if isinstance(raw_url, str) else None
+    token = str(raw_token).strip() if isinstance(raw_token, str) else None
+
+    return (url or None, token or None)
+
+
+def _ensure_plex_client(force_refresh: bool = False) -> Any:
+    if PlexServer is None:  # pragma: no cover - depends on optional dependency
+        raise RuntimeError("Plex support is unavailable in this environment.")
+
+    config_data = _load_config_data()
+    url, token = _extract_plex_credentials(config_data)
+    if not url or not token:
+        raise ValueError("Plex server URL and access token are required.")
+
+    with _PLEX_CLIENT_LOCK:
+        cached_url = _PLEX_CLIENT_SETTINGS.get("url")
+        cached_token = _PLEX_CLIENT_SETTINGS.get("token")
+        global _PLEX_CLIENT
+
+        if (
+            force_refresh
+            or _PLEX_CLIENT is None
+            or cached_url != url
+            or cached_token != token
+        ):
+            _PLEX_CLIENT = PlexServer(url, token)
+            _PLEX_CLIENT_SETTINGS["url"] = url
+            _PLEX_CLIENT_SETTINGS["token"] = token
+
+        return _PLEX_CLIENT
+
+
+def _resolve_track_art_url(track: Any) -> Optional[str]:
+    if track is None:
+        return None
+
+    url_attributes = ("thumbUrl", "grandparentThumbUrl", "parentThumbUrl")
+    for attr in url_attributes:
+        candidate = getattr(track, attr, None)
+        if callable(candidate):  # defensive – plexapi properties are not callable
+            try:
+                candidate = candidate()
+            except Exception:  # pragma: no cover - defensive guard
+                candidate = None
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+
+    server = getattr(track, "_server", None)
+    if server is None:
+        return None
+
+    path_attributes = ("thumb", "grandparentThumb", "parentThumb")
+    for attr in path_attributes:
+        candidate = getattr(track, attr, None)
+        if isinstance(candidate, str) and candidate.strip():
+            try:
+                return server.url(candidate, includeToken=True)
+            except Exception:  # pragma: no cover - defensive guard
+                continue
+
+    return None
+
+
+def _track_to_payload(track: Any) -> Dict[str, Any]:
+    artist = getattr(track, "grandparentTitle", None)
+    album = getattr(track, "parentTitle", None)
+
+    payload: Dict[str, Any] = {
+        "title": getattr(track, "title", "") or "",
+        "artist": artist or "",
+        "album": album or "",
+        "art": _resolve_track_art_url(track),
+    }
+
+    rating_key = getattr(track, "ratingKey", None)
+    if rating_key is not None:
+        payload["rating_key"] = rating_key
+
+    guid = getattr(track, "guid", None)
+    if guid is not None:
+        payload["guid"] = guid
+
+    duration = getattr(track, "duration", None)
+    if duration is not None:
+        payload["duration"] = duration
+
+    return payload
 
 
 CONFIG_LOG_LEVEL_OPTIONS: List[Dict[str, str]] = [
@@ -1949,6 +2065,23 @@ class BuildManager:
         with self._lock:
             return self._status_snapshot_locked()
 
+    def get_last_playlist_result(
+        self, playlist_name: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        normalized = self._normalize_playlist_key(playlist_name)
+        if not normalized:
+            return None
+
+        with self._lock:
+            for name, result in self._last_playlist_results.items():
+                if (
+                    self._normalize_playlist_key(name) == normalized
+                    and isinstance(result, dict)
+                ):
+                    return dict(result)
+
+        return None
+
     def start(self, playlist: Optional[str] = None) -> Tuple[bool, Dict[str, Any], Optional[str]]:
         with self._lock:
             self._normalize_process_state_locked()
@@ -3195,6 +3328,72 @@ def create_app() -> Flask:
             },
         }
         return jsonify(response)
+
+    @app.route("/api/playlists/tracks", methods=["GET"])
+    def get_playlist_tracks() -> Any:
+        raw_name = request.args.get("playlist", "") or ""
+        playlist_name = str(raw_name).strip()
+        if not playlist_name:
+            return jsonify({"error": "Playlist name is required."}), 400
+
+        try:
+            plex_client = _ensure_plex_client()
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 503
+        except Exception as exc:  # pragma: no cover - protective logging only
+            app.logger.exception(
+                "Failed to initialize Plex client for playlist '%s': %s",
+                playlist_name,
+                exc,
+            )
+            return jsonify({"error": "Unable to connect to Plex server."}), 502
+
+        try:
+            playlist_obj = plex_client.playlist(playlist_name)
+        except NotFound:
+            message = (
+                f"Playlist '{playlist_name}' was not found on the Plex server."
+            )
+            return jsonify({"error": message}), 404
+        except Exception as exc:  # pragma: no cover - defensive logging only
+            app.logger.exception(
+                "Failed to retrieve playlist '%s' from Plex: %s",
+                playlist_name,
+                exc,
+            )
+            return jsonify({"error": "Unable to load playlist from Plex."}), 502
+
+        try:
+            playlist_items = playlist_obj.items()
+        except Exception as exc:  # pragma: no cover - defensive logging only
+            app.logger.exception(
+                "Failed to retrieve tracks for playlist '%s': %s",
+                playlist_name,
+                exc,
+            )
+            return (
+                jsonify({"error": "Unable to load playlist tracks from Plex."}),
+                502,
+            )
+
+        tracks = [
+            _track_to_payload(item)
+            for item in playlist_items
+            if getattr(item, "type", None) == "track"
+        ]
+
+        last_result = build_manager.get_last_playlist_result(playlist_name)
+        response_payload = {
+            "playlist": playlist_name,
+            "tracks": tracks,
+            "track_count": len(tracks),
+            "fetched_at": _format_timestamp(_utcnow()),
+            "last_result": last_result,
+        }
+
+        return jsonify(response_payload)
 
     @app.route("/api/list_directory", methods=["GET"])
     def list_directory() -> Any:
