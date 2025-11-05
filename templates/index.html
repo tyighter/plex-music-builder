@@ -682,13 +682,15 @@
         display: grid;
         grid-template-columns:
           clamp(96px, 18vw, 180px) minmax(0, 1fr) auto;
+        grid-template-rows: auto auto auto;
         grid-template-areas:
-          "cover title actions"
-          "cover message actions";
+          "cover title remove"
+          "cover message remove"
+          "cover actions actions";
         align-items: start;
-        gap: 16px;
+        column-gap: 16px;
+        row-gap: 12px;
         margin-bottom: 18px;
-        position: relative;
       }
 
       .playlist-cover {
@@ -813,17 +815,15 @@
         flex-wrap: wrap;
         justify-content: flex-end;
         justify-self: end;
-        align-self: start;
+        align-self: end;
         grid-area: actions;
-        padding-right: 48px;
         min-height: 40px;
       }
 
       .playlist-remove-btn {
-        position: absolute;
-        top: 16px;
-        right: 16px;
-        z-index: 1;
+        grid-area: remove;
+        justify-self: end;
+        align-self: start;
       }
 
       .playlist-inline-message {
@@ -8244,8 +8244,8 @@
           actionButtons.appendChild(saveBtn);
           actionButtons.appendChild(trackPreviewBtn);
           actionButtons.appendChild(duplicateBtn);
-          actionButtons.appendChild(removeBtn);
           header.appendChild(actionButtons);
+          header.appendChild(removeBtn);
           const inlineMessage = document.createElement("div");
           inlineMessage.className = "playlist-inline-message";
           header.appendChild(inlineMessage);
