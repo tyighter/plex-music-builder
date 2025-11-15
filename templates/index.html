@@ -2692,6 +2692,7 @@
         fields: [],
         operators: [],
         sort_fields: [],
+        title_card_types: [],
       };
 
       const messageEl = document.getElementById("message");
@@ -8439,6 +8440,49 @@
           grid.appendChild(afterSortLabel);
           grid.appendChild(duplicateTiebreakerLabel);
 
+          const cardTypeLabel = document.createElement("label");
+          cardTypeLabel.textContent = "Card Type";
+          const cardTypeSelect = document.createElement("select");
+          const cardTypePlaceholder = document.createElement("option");
+          cardTypePlaceholder.value = "";
+          cardTypePlaceholder.textContent = "Use default";
+          cardTypeSelect.appendChild(cardTypePlaceholder);
+          const cardTypeOptions = Array.isArray(options.title_card_types)
+            ? options.title_card_types
+            : [];
+          cardTypeOptions.forEach((opt) => {
+            const optionEl = document.createElement("option");
+            if (typeof opt === "string") {
+              optionEl.value = opt;
+              optionEl.textContent = opt;
+            } else if (opt && typeof opt === "object") {
+              optionEl.value = String(opt.value ?? "");
+              optionEl.textContent = opt.label || String(opt.value ?? "");
+            }
+            if (!optionEl.value) {
+              return;
+            }
+            cardTypeSelect.appendChild(optionEl);
+          });
+          const normalizedCardType = (extras.title_card_type || "").trim();
+          if (normalizedCardType) {
+            cardTypeSelect.value = normalizedCardType;
+          }
+          if (!cardTypeOptions.length) {
+            cardTypeSelect.disabled = true;
+            cardTypePlaceholder.textContent = "No card types available";
+          }
+          cardTypeSelect.addEventListener("change", (event) => {
+            const value = (event.target.value || "").trim();
+            if (value) {
+              extras.title_card_type = value;
+            } else {
+              delete extras.title_card_type;
+            }
+          });
+          cardTypeLabel.appendChild(cardTypeSelect);
+          grid.appendChild(cardTypeLabel);
+
           details.appendChild(grid);
 
           const filtersWrapper = document.createElement("div");
@@ -8620,7 +8664,19 @@
             throw new Error("Unable to load playlists.");
           }
           const data = await response.json();
-          options = data.options || options;
+          options = { ...options, ...(data.options || {}) };
+          if (!Array.isArray(options.fields)) {
+            options.fields = [];
+          }
+          if (!Array.isArray(options.operators)) {
+            options.operators = [];
+          }
+          if (!Array.isArray(options.sort_fields)) {
+            options.sort_fields = [];
+          }
+          if (!Array.isArray(options.title_card_types)) {
+            options.title_card_types = [];
+          }
 
           state.defaults.plex_filter = (data.defaults?.plex_filter || []).map((filter) => ({
             field: filter.field || "",
@@ -9191,18 +9247,18 @@
 
       document.getElementById("addPlaylist").addEventListener("click", () => {
         const defaultSort = options.sort_fields?.[0]?.value || "";
-          const newPlaylist = {
-            name: "New Playlist",
-            limit: 0,
-            artist_limit: 0,
-            album_limit: 0,
-            year_limit: 0,
-            sort_by: defaultSort,
-            after_sort: "",
-            duplicate_tiebreaker: "",
-            plex_filter: [],
-            popularity_boosts: [],
-            extras: {},
+        const newPlaylist = {
+          name: "New Playlist",
+          limit: 0,
+          artist_limit: 0,
+          album_limit: 0,
+          year_limit: 0,
+          sort_by: defaultSort,
+          after_sort: "",
+          duplicate_tiebreaker: "",
+          plex_filter: [],
+          popularity_boosts: [],
+          extras: sanitizeExtras(state.defaults.extras || {}),
           source: "plex",
           spotify_url: "",
           _originalName: "",

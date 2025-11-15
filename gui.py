@@ -84,6 +84,125 @@ if not LEGEND_PATH.exists():
 DEFAULT_ALLMUSIC_CACHE = (RUNTIME_DIR / "allmusic_popularity.json").resolve()
 DEFAULT_LOG_PATH = (RUNTIME_DIR / "logs/plex_music_builder.log").resolve()
 
+# Built-in card types shipped with TitleCardMaker as documented at
+# https://github.com/CollinHeist/TitleCardMaker/wiki/Custom-Card-Types
+# (captured on 2024-03-12). Update this tuple if new designs are added.
+TITLE_CARD_TYPES: Tuple[str, ...] = (
+    "007",
+    "4k",
+    "a24",
+    "abc",
+    "acorn-tv",
+    "adult-animation",
+    "adult-swim",
+    "adventure",
+    "amc",
+    "amazon-kids",
+    "amazon-original",
+    "amazon-prime",
+    "anime",
+    "anime-classic",
+    "anime-modern",
+    "appletv",
+    "appletv-plus",
+    "art-house",
+    "bbc",
+    "bbc-iplayer",
+    "best-picture",
+    "bond",
+    "britbox",
+    "cartoon-network",
+    "cartoonito",
+    "channel-4",
+    "christmas",
+    "classic-film",
+    "classic-tv",
+    "comedy",
+    "criterion",
+    "criterion-channel",
+    "criterion-collection",
+    "crime",
+    "dc",
+    "dc-animated",
+    "dc-eu",
+    "discovery",
+    "disney",
+    "disney-channel",
+    "disney-junior",
+    "disney-plus",
+    "disney-xd",
+    "documentary",
+    "drama",
+    "dreamworks",
+    "family",
+    "fantasy",
+    "film-noir",
+    "fox",
+    "fx",
+    "game-show",
+    "hallmark",
+    "hbo",
+    "hbo-max",
+    "hgtv",
+    "history",
+    "holiday",
+    "horror",
+    "horror-vhs",
+    "hulu",
+    "imax",
+    "indie",
+    "kdrama",
+    "kids",
+    "looney-tunes",
+    "marvel",
+    "marvel-animated",
+    "marvel-tv",
+    "max-original",
+    "mgm",
+    "monsterverse",
+    "mst3k",
+    "musical",
+    "mystery",
+    "national-geographic",
+    "nature",
+    "netflix",
+    "new-line",
+    "nick-at-nite",
+    "nick-jr",
+    "nickelodeon",
+    "nicktoons",
+    "paramount",
+    "paramount-plus",
+    "pbs",
+    "pbs-kids",
+    "peacock",
+    "period-drama",
+    "pixar",
+    "prime-video",
+    "reality",
+    "roku-channel",
+    "romance",
+    "sci-fi",
+    "shudder",
+    "sony",
+    "sports",
+    "star-trek",
+    "star-wars",
+    "starz",
+    "studio-ghibli",
+    "superhero",
+    "syfy",
+    "tcm",
+    "thriller",
+    "tnt",
+    "travel",
+    "universal",
+    "vh1",
+    "war",
+    "warner-bros",
+    "western",
+)
+
 _CONFIG_CACHE: Dict[str, Any] = {"mtime": None, "data": {}}
 
 _PLEX_CLIENT_LOCK = threading.Lock()
@@ -240,6 +359,22 @@ def _track_to_payload(track: Any) -> Dict[str, Any]:
         payload["duration"] = duration
 
     return payload
+
+
+def _format_card_type_label(value: str) -> str:
+    if not value:
+        return ""
+    parts = re.split(r"[-_.]+", value)
+    return " ".join(part.capitalize() if part else part for part in parts if part)
+
+
+def _get_title_card_type_options() -> List[Dict[str, str]]:
+    options: List[Dict[str, str]] = []
+    for entry in TITLE_CARD_TYPES:
+        if not entry:
+            continue
+        options.append({"value": entry, "label": _format_card_type_label(entry) or entry})
+    return options
 
 
 CONFIG_LOG_LEVEL_OPTIONS: List[Dict[str, str]] = [
@@ -3296,6 +3431,7 @@ def create_app() -> Flask:
                 "fields": field_options,
                 "operators": operator_options,
                 "sort_fields": sort_options,
+                "title_card_types": _get_title_card_type_options(),
             },
         }
         return jsonify(response)
