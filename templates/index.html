@@ -5615,8 +5615,32 @@
         return sanitized;
       }
 
-      function buildCoverPreviewUrl(rawPath) {
-        return `/api/cover_preview?path=${encodeURIComponent(rawPath)}`;
+      function measureElementWidth(element, fallback = 0) {
+        if (element?.getBoundingClientRect) {
+          const rect = element.getBoundingClientRect();
+          if (rect?.width) {
+            return rect.width;
+          }
+        }
+        return fallback;
+      }
+
+      function computeHiDpiSize(targetDisplayPx, options = {}) {
+        const ratio = Math.max(window.devicePixelRatio || 1, 1);
+        const min = Math.max(1, options.min || targetDisplayPx || 1);
+        const max = Math.max(min, options.max || 1200);
+        const scaled = Math.round((targetDisplayPx || min) * ratio);
+        return Math.min(Math.max(scaled, min), max);
+      }
+
+      function buildCoverPreviewUrl(rawPath, options = {}) {
+        const params = new URLSearchParams();
+        params.set("path", rawPath);
+        const { maxSize } = options;
+        if (typeof maxSize === "number" && Number.isFinite(maxSize) && maxSize > 0) {
+          params.set("size", String(Math.round(maxSize)));
+        }
+        return `/api/cover_preview?${params.toString()}`;
       }
 
       function updateImagePreview(
@@ -5672,7 +5696,14 @@
           container.title = errorText;
           container.setAttribute("aria-label", errorText);
         };
-        imageEl.src = buildCoverPreviewUrl(previewPath);
+
+        const containerWidth = measureElementWidth(container, 220);
+        const imageWidth = measureElementWidth(imageEl, containerWidth);
+        const previewSize = computeHiDpiSize(imageWidth || containerWidth || 220, {
+          min: 240,
+          max: 1400,
+        });
+        imageEl.src = buildCoverPreviewUrl(previewPath, { maxSize: previewSize });
       }
 
       function determineDirectoryHint(rawPath) {
@@ -5736,6 +5767,7 @@
         }
         coverPickerGrid.innerHTML = "";
         const images = entries.filter((entry) => entry && entry.is_image);
+        const thumbMaxSize = computeHiDpiSize(180, { min: 260, max: 900 });
         if (!images.length) {
           const empty = document.createElement("div");
           empty.className = "cover-picker-empty";
@@ -5747,7 +5779,9 @@
           const button = document.createElement("button");
           button.type = "button";
           const thumb = document.createElement("img");
-          thumb.src = buildCoverPreviewUrl(entry.suggestion || "");
+          thumb.src = buildCoverPreviewUrl(entry.suggestion || "", {
+            maxSize: thumbMaxSize,
+          });
           thumb.alt = entry.name || "Cover image";
           thumb.loading = "lazy";
           thumb.draggable = false;

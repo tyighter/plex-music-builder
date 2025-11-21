@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import json
 import os
+import importlib.util
 import math
 import mimetypes
 import subprocess
@@ -14,12 +15,19 @@ from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, IO, Iterable, List, Optional, Set, Tuple
 
 import yaml
 from flask import Flask, abort, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
+
+_PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None
+if _PIL_AVAILABLE:
+    from PIL import Image  # type: ignore[import-untyped]
+else:  # pragma: no cover - optional dependency guard
+    Image = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - defensive import
     from plexapi.server import PlexServer
@@ -3478,6 +3486,15 @@ def create_app() -> Flask:
     @app.route("/api/cover_preview", methods=["GET"])
     def cover_preview() -> Any:
         raw_path = request.args.get("path", "") or ""
+        resize_param = request.args.get("size")
+        resize_target: Optional[int] = None
+        if resize_param:
+            try:
+                parsed_size = int(resize_param)
+            except (TypeError, ValueError):
+                parsed_size = 0
+            if parsed_size > 0:
+                resize_target = min(parsed_size, 2048)
         resolved_path = resolve_file_request(raw_path)
         if resolved_path is None:
             abort(404)
@@ -3486,6 +3503,32 @@ def create_app() -> Flask:
             abort(404)
 
         mime_type, _ = mimetypes.guess_type(str(resolved_path))
+
+        if resize_target and Image:
+            try:
+                with Image.open(resolved_path) as image:
+                    resampling = getattr(Image, "Resampling", Image)
+                    resample = getattr(resampling, "LANCZOS", getattr(Image, "LANCZOS", 1))
+                    image.thumbnail((resize_target, resize_target), resample=resample)
+                    save_format = (image.format or "").upper() or (
+                        (resolved_path.suffix.lstrip(".") or "png").upper()
+                    )
+                    if save_format == "JPEG" and image.mode in ("RGBA", "LA"):
+                        image = image.convert("RGB")
+                    buffer = BytesIO()
+                    image.save(buffer, format=save_format)
+                    buffer.seek(0)
+                    return send_file(
+                        buffer,
+                        mimetype=mime_type or f"image/{save_format.lower()}",
+                        conditional=True,
+                    )
+            except FileNotFoundError:
+                abort(404)
+            except PermissionError:
+                abort(403)
+            except Exception:  # pragma: no cover - defensive logging only
+                app.logger.exception("Failed to generate resized cover preview")
 
         try:
             return send_file(
