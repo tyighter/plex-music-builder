@@ -5,6 +5,7 @@ services:
     container_name: plex-music-builder
     volumes:
       - /mnt/appdatacache/appdata/pmb:/app
+      - /mnt/user/Media/Posters/Playlists:/images
     working_dir: /app
     command: ["python", "start_services.py"]
     ports:
