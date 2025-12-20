@@ -84,7 +84,39 @@ CONFIG_PATH = _resolve_config_path()
 CONFIG_DIR = CONFIG_PATH.parent
 RUNTIME_DIR = _resolve_runtime_dir(CONFIG_DIR).resolve()
 
-COVER_PICKER_BASE_DIR = Path("/mnt/user/Media/Posters/Playlists").resolve()
+COVER_PICKER_DEFAULT_BASE_DIRS: Tuple[Path, ...] = (
+    Path("/images"),
+    Path("/mnt/user/Media/Posters/Playlists"),
+)
+
+
+def _resolve_cover_picker_base_dir() -> Path:
+    env_override = os.environ.get("PMB_COVER_DIR")
+    if env_override and env_override.strip():
+        candidate = Path(env_override.strip()).expanduser()
+        if not candidate.is_absolute():
+            candidate = (CONFIG_DIR / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        return candidate
+
+    for candidate in COVER_PICKER_DEFAULT_BASE_DIRS:
+        try:
+            return candidate.resolve()
+        except OSError:
+            continue
+
+    return COVER_PICKER_DEFAULT_BASE_DIRS[0]
+
+
+def _cover_picker_default_directory() -> str:
+    base_dir = COVER_PICKER_BASE_DIR.as_posix()
+    if base_dir.endswith("/"):
+        return base_dir
+    return f"{base_dir}/"
+
+
+COVER_PICKER_BASE_DIR = _resolve_cover_picker_base_dir()
 
 PLAYLISTS_PATH = CONFIG_DIR / "playlists.yml"
 LEGEND_PATH = CONFIG_DIR / "legend.txt"
@@ -3126,7 +3158,10 @@ def create_app() -> Flask:
 
     @app.route("/")
     def index() -> str:
-        return render_template("index.html")
+        return render_template(
+            "index.html",
+            cover_picker_default_directory=_cover_picker_default_directory(),
+        )
 
     @app.route("/api/build/status", methods=["GET"])
     def build_status() -> Any:
