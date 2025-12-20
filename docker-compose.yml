@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   plex-music-builder:
     build: .
