@@ -1,6 +1,7 @@
 version: "3.9"
 services:
   plex-music-builder:
+    build: .
     image: plex-music-builder
     container_name: plex-music-builder
     volumes:
