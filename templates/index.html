@@ -581,7 +581,7 @@
 
       #playlistsContainer {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr));
         gap: 18px;
         align-items: start;
       }
@@ -825,7 +825,7 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         justify-content: flex-end;
         justify-self: end;
         align-self: end;
@@ -833,9 +833,16 @@
         min-height: 40px;
       }
 
-      .playlist-remove-btn {
+      .playlist-header-controls {
         grid-area: remove;
-        justify-self: end;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        align-self: start;
+      }
+
+      .playlist-remove-btn {
         align-self: start;
       }
 
@@ -2291,6 +2298,7 @@
 
         .playlist-action-buttons {
           justify-content: flex-start;
+          flex-wrap: wrap;
         }
 
         .playlist-inline-message {
@@ -8201,7 +8209,6 @@
           coverWrapper.appendChild(coverPreviewButton);
 
           titleWrapper.appendChild(title);
-          titleWrapper.appendChild(buildBtn);
 
           const statusGroup = document.createElement("div");
           statusGroup.className = "playlist-status";
@@ -8283,16 +8290,21 @@
             renderPlaylists();
           });
 
+          const headerControls = document.createElement("div");
+          headerControls.className = "playlist-header-controls";
+
           header.appendChild(coverWrapper);
           header.appendChild(titleWrapper);
           const actionButtons = document.createElement("div");
           actionButtons.className = "playlist-action-buttons";
-          actionButtons.appendChild(toggleBtn);
+          actionButtons.appendChild(buildBtn);
           actionButtons.appendChild(saveBtn);
           actionButtons.appendChild(trackPreviewBtn);
           actionButtons.appendChild(duplicateBtn);
           header.appendChild(actionButtons);
-          header.appendChild(removeBtn);
+          headerControls.appendChild(toggleBtn);
+          headerControls.appendChild(removeBtn);
+          header.appendChild(headerControls);
           const inlineMessage = document.createElement("div");
           inlineMessage.className = "playlist-inline-message";
           header.appendChild(inlineMessage);
