@@ -84,6 +84,8 @@ CONFIG_PATH = _resolve_config_path()
 CONFIG_DIR = CONFIG_PATH.parent
 RUNTIME_DIR = _resolve_runtime_dir(CONFIG_DIR).resolve()
 
+COVER_PICKER_BASE_DIR = Path("/mnt/user/Media/Posters/Playlists").resolve()
+
 PLAYLISTS_PATH = CONFIG_DIR / "playlists.yml"
 LEGEND_PATH = CONFIG_DIR / "legend.txt"
 if not LEGEND_PATH.exists():
@@ -2975,18 +2977,7 @@ def _is_image_file(path: Path) -> bool:
 
 
 def _cover_upload_directories() -> List[Path]:
-    candidates: List[Path] = []
-    env_override = os.environ.get("PMB_COVER_UPLOAD_DIR")
-    if env_override:
-        candidate = Path(env_override).expanduser()
-        if not candidate.is_absolute():
-            candidate = (CONFIG_DIR / candidate).resolve()
-        candidates.append(candidate)
-
-    candidates.append(Path("/images"))
-    candidates.append((CONFIG_DIR / "images").resolve())
-
-    return candidates
+    return [COVER_PICKER_BASE_DIR]
 
 
 def _ensure_cover_upload_dir() -> Path:
@@ -3029,9 +3020,9 @@ def _format_cover_upload_path(path: Path) -> str:
         resolved_path = path
 
     try:
-        base_dir = PLAYLISTS_PATH.parent.resolve()
+        base_dir = COVER_PICKER_BASE_DIR.resolve()
     except OSError:
-        base_dir = PLAYLISTS_PATH.parent
+        base_dir = COVER_PICKER_BASE_DIR
 
     try:
         relative = resolved_path.relative_to(base_dir)
@@ -3060,14 +3051,14 @@ def resolve_directory_request(raw_path: str) -> Tuple[Path, str, str]:
     trimmed = (raw_path or "").strip()
     separator = _determine_separator(trimmed) if trimmed else os.sep
 
-    base_dir = PLAYLISTS_PATH.parent
+    base_dir = COVER_PICKER_BASE_DIR
     if not trimmed:
         return base_dir, "", separator
 
     expanded = os.path.expanduser(trimmed)
     path = Path(expanded)
     if not path.is_absolute():
-        path = (PLAYLISTS_PATH.parent / path).resolve()
+        path = (base_dir / path).resolve()
     else:
         path = path.resolve()
 
@@ -3081,6 +3072,11 @@ def resolve_directory_request(raw_path: str) -> Tuple[Path, str, str]:
 
     existing_directory = _find_existing_directory(directory_candidate)
     if existing_directory is None:
+        return base_dir, "", separator
+
+    try:
+        existing_directory.relative_to(base_dir)
+    except ValueError:
         return base_dir, "", separator
 
     if prefix and not prefix.endswith(("/", "\\")):
@@ -3097,9 +3093,14 @@ def resolve_file_request(raw_path: str) -> Optional[Path]:
     expanded = os.path.expanduser(trimmed)
     candidate = Path(expanded)
     if not candidate.is_absolute():
-        candidate = (PLAYLISTS_PATH.parent / candidate).resolve()
+        candidate = (COVER_PICKER_BASE_DIR / candidate).resolve()
     else:
         candidate = candidate.resolve()
+
+    try:
+        candidate.relative_to(COVER_PICKER_BASE_DIR)
+    except ValueError:
+        return None
 
     try:
         if candidate.exists() and candidate.is_file():
