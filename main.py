@@ -130,6 +130,8 @@ REFRESH_INTERVAL = runtime_cfg.get("refresh_interval_minutes", 60)
 SAVE_INTERVAL = runtime_cfg.get("save_interval", 100)  # save cache every N items
 PLAYLIST_CHUNK_SIZE = runtime_cfg.get("playlist_chunk_size", 200)
 MAX_WORKERS = runtime_cfg.get("max_workers", 3)
+_metadata_cache_limit_raw = runtime_cfg.get("metadata_cache_max_entries")
+METADATA_CACHE_MAX_ENTRIES = _coerce_positive_int(_metadata_cache_limit_raw) or 10000
 
 DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest", "allow"}
 
@@ -732,14 +734,40 @@ def _delete_previous_playlist(previous_name: str, new_name: str, playlist_logger
 CACHE_FILE = str((RUNTIME_DIR / "metadata_cache.json").resolve())
 METADATA_PROVIDER_URL = "https://metadata.provider.plex.tv"
 
-if os.path.exists(CACHE_FILE):
-    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+
+def _enforce_metadata_cache_limit_locked(cache: "OrderedDict[str, Any]") -> bool:
+    """Evict the oldest metadata cache entries to enforce the size limit."""
+
+    if not METADATA_CACHE_MAX_ENTRIES or METADATA_CACHE_MAX_ENTRIES <= 0:
+        return False
+
+    evicted = False
+    while len(cache) > METADATA_CACHE_MAX_ENTRIES:
+        cache.popitem(last=False)
+        evicted = True
+    return evicted
+
+
+def _initialize_metadata_cache() -> Tuple["OrderedDict[str, Any]", bool]:
+    """Load metadata cache from disk, trimming to the configured maximum size."""
+
+    cache: "OrderedDict[str, Any]" = OrderedDict()
+    evicted = False
+
+    if os.path.exists(CACHE_FILE):
         try:
-            metadata_cache = json.load(f)
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    cache = OrderedDict(loaded)
         except json.JSONDecodeError:
-            metadata_cache = {}
-else:
-    metadata_cache = {}
+            cache = OrderedDict()
+
+    evicted = _enforce_metadata_cache_limit_locked(cache)
+    return cache, evicted
+
+
+metadata_cache, _metadata_cache_trimmed_on_load = _initialize_metadata_cache()
 
 # In-memory caches used during filtering. These dramatically reduce repeated
 # metadata parsing and field aggregation work when evaluating large playlists.
@@ -808,14 +836,26 @@ def _build_track_cache_key(track):
     return f"object:{id(track)}"
 
 metadata_cache_lock = threading.Lock()
-metadata_cache_dirty = False
+metadata_cache_dirty = bool(_metadata_cache_trimmed_on_load)
 _metadata_cache_inserts_since_save = 0
+
+if _metadata_cache_trimmed_on_load:
+    logger.info(
+        "Trimmed metadata cache to %d entries on load; oldest items were evicted.",
+        METADATA_CACHE_MAX_ENTRIES,
+    )
 
 
 def _write_metadata_cache_locked():
     cache_dir = os.path.dirname(CACHE_FILE)
     if cache_dir and not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)
+
+    evicted = _enforce_metadata_cache_limit_locked(metadata_cache)
+    if evicted:
+        # Ensure eviction gets persisted and counted as a write.
+        global metadata_cache_dirty
+        metadata_cache_dirty = True
 
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(metadata_cache, f)
@@ -3813,10 +3853,12 @@ def fetch_full_metadata(rating_key):
         return None
 
     key_str = str(rating_key)
+    evicted = False
 
     with metadata_cache_lock:
         cached = metadata_cache.get(key_str)
         if cached is not None:
+            _touch_cache_entry(metadata_cache, key_str)
             return cached
 
     url = f"{PLEX_URL}/library/metadata/{key_str}"
@@ -3828,10 +3870,19 @@ def fetch_full_metadata(rating_key):
     with metadata_cache_lock:
         cached = metadata_cache.get(key_str)
         if cached is not None:
+            _touch_cache_entry(metadata_cache, key_str)
             return cached
 
         metadata_cache[key_str] = xml_text
+        _touch_cache_entry(metadata_cache, key_str)
+        evicted = _enforce_metadata_cache_limit_locked(metadata_cache)
         _mark_metadata_cache_dirty_locked()
+
+    if evicted:
+        logger.debug(
+            "Metadata cache hit the configured limit (%d entries); evicting oldest entries.",
+            METADATA_CACHE_MAX_ENTRIES,
+        )
 
     return xml_text
 
