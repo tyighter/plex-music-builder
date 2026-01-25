@@ -875,6 +875,11 @@ class BuildManager:
         self._pending_jobs: List[Dict[str, Any]] = []
         self._start_log_watcher()
 
+    def _format_log_hint(self) -> str:
+        if self._log_file_path is None:
+            return ""
+        return f" Check the log file at {self._log_file_path}."
+
     @staticmethod
     def _normalize_playlist_key(name: Optional[str]) -> Optional[str]:
         if name is None:
@@ -1856,7 +1861,7 @@ class BuildManager:
                     message = "Build completed successfully."
                     state = "success"
                 else:
-                    message = f"Build exited with code {return_code}."
+                    message = f"Build exited with code {return_code}.{self._format_log_hint()}"
                     state = "error"
 
             self._last_message = message
