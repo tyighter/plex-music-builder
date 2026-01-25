@@ -229,10 +229,6 @@ if isinstance(PLAYLIST_LOG_DIR, str) and not PLAYLIST_LOG_DIR.strip():
 if PLAYLIST_LOG_DIR is None:
     PLAYLIST_LOG_DIR = os.path.join(_default_log_dir, "playlists")
 
-if not PLEX_URL or not PLEX_TOKEN:
-    raise EnvironmentError("PLEX_URL and PLEX_TOKEN must be set in config.yml")
-
-
 def setup_logging():
     """Configure logging to stream to stdout and a persistent log file."""
     logger_name = "plex_music_builder"
@@ -295,6 +291,10 @@ def setup_logging():
 logger = setup_logging()
 if ACTIVE_LOG_FILE:
     logger.info(f"Detailed logs will be written to: {ACTIVE_LOG_FILE}")
+
+if not PLEX_URL or not PLEX_TOKEN:
+    logger.error("PLEX_URL and PLEX_TOKEN must be set in config.yml")
+    raise EnvironmentError("PLEX_URL and PLEX_TOKEN must be set in config.yml")
 
 
 _thread_local_logger = threading.local()
