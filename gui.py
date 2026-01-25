@@ -1630,6 +1630,18 @@ class BuildManager:
 
         info_message = self._extract_info_message(line)
         if info_message is None:
+            if handled_progress:
+                return
+            raw_message = line.strip()
+            if not raw_message:
+                return
+            with self._lock:
+                if is_bootstrap:
+                    self._passive_last_message = raw_message
+                    if not self._processes:
+                        self._last_message = raw_message
+                else:
+                    self._append_general_log_locked(raw_message)
             return
 
         playlist_name = self._extract_playlist_from_message(info_message)
