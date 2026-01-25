@@ -122,6 +122,35 @@ else:
     PLEX_TOKEN = cfg.get("PLEX_TOKEN")
     LIBRARY_NAME = cfg.get("library_name", "Music")
 
+def _coerce_positive_float(value):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    return numeric
+
+
+def _coerce_positive_int(value):
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    return numeric
+
+
+def _coerce_non_empty_str(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
+
+
 # Runtime control
 runtime_cfg = cfg.get("runtime", {})
 RUN_FOREVER = runtime_cfg.get("run_forever", False)
@@ -155,34 +184,6 @@ def _normalize_duplicate_tiebreaker(value, *, allow_default_token=False):
         return text
 
     return "" if allow_default_token else None
-
-def _coerce_positive_float(value):
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    if numeric <= 0:
-        return None
-    return numeric
-
-
-def _coerce_positive_int(value):
-    try:
-        numeric = int(value)
-    except (TypeError, ValueError):
-        return None
-    if numeric <= 0:
-        return None
-    return numeric
-
-
-def _coerce_non_empty_str(value):
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    return text
 
 
 playlists_cfg = cfg.get("playlists", {}) or {}
