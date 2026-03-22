@@ -217,6 +217,34 @@ def _normalize_auto_build_frequency(value):
     return "hourly"
 
 
+def _is_playlist_auto_build_enabled(playlist_config):
+    if not isinstance(playlist_config, dict):
+        return True
+
+    raw_value = playlist_config.get("auto_build")
+    if raw_value is None:
+        return True
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, (int, float)):
+        return bool(raw_value)
+    if isinstance(raw_value, str):
+        lowered = raw_value.strip().lower()
+        if lowered in {"1", "true", "yes", "on", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "off", "n"}:
+            return False
+    return True
+
+
+def _get_auto_build_playlist_subset(playlists):
+    return {
+        name: config
+        for name, config in playlists.items()
+        if _is_playlist_auto_build_enabled(config)
+    }
+
+
 def _parse_auto_build_time(value):
     text = _coerce_non_empty_str(value) or "00:00"
     try:
@@ -6791,7 +6819,16 @@ if __name__ == "__main__":
         logger.info("Automatic build scheduling enabled (%s).", schedule)
         while True:
             try:
-                run_all_playlists()
+                auto_build_playlists = _get_auto_build_playlist_subset(playlists_data)
+                if auto_build_playlists:
+                    _run_playlists(
+                        auto_build_playlists,
+                        "✅ Auto-build playlists processed successfully.",
+                    )
+                else:
+                    logger.info(
+                        "Automatic builds are enabled, but no playlists are marked for auto-build."
+                    )
             except Exception as exc:
                 logger.exception(f"Error while processing playlists: {exc}")
 

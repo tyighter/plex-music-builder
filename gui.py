@@ -2639,6 +2639,7 @@ def load_playlists() -> Dict[str, Any]:
                 "plex_filter",
                 "top_5_boost",
                 "popularity_boosts",
+                "auto_build",
                 "source",
                 "spotify_url",
             }
@@ -2670,6 +2671,9 @@ def load_playlists() -> Dict[str, Any]:
                 "after_sort": config.get("after_sort", "") or "",
                 "duplicate_tiebreaker": normalize_duplicate_tiebreaker(
                     config.get("duplicate_tiebreaker"), allow_default=True
+                ),
+                "auto_build": _normalize_bool_flag(
+                    config.get("auto_build"), default=True
                 ),
                 "plex_filter": serialize_filters(config.get("plex_filter")),
                 "popularity_boosts": serialize_boosts(
@@ -2901,6 +2905,10 @@ def save_playlists(payload: Dict[str, Any]) -> None:
         else:
             playlist_config.pop("duplicate_tiebreaker", None)
 
+        playlist_config["auto_build"] = _normalize_bool_flag(
+            playlist_entry.get("auto_build"), default=True
+        )
+
         raw_source = playlist_entry.get("source")
         if isinstance(raw_source, str):
             normalized_source = raw_source.strip().lower()
@@ -2988,6 +2996,10 @@ def save_single_playlist(
         playlist_config["duplicate_tiebreaker"] = tiebreaker_value
     else:
         playlist_config.pop("duplicate_tiebreaker", None)
+
+    playlist_config["auto_build"] = _normalize_bool_flag(
+        playlist_payload.get("auto_build"), default=True
+    )
 
     raw_source = playlist_payload.get("source")
     if isinstance(raw_source, str):

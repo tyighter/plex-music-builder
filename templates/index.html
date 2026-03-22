@@ -2853,6 +2853,29 @@
         }
         return normalized;
       }
+
+      function normalizeAutoBuildEnabled(value) {
+        if (value === null || value === undefined) {
+          return true;
+        }
+        if (typeof value === "boolean") {
+          return value;
+        }
+        if (typeof value === "number") {
+          return value !== 0;
+        }
+        const normalized = String(value).trim().toLowerCase();
+        if (!normalized) {
+          return true;
+        }
+        if (["1", "true", "yes", "on", "y"].includes(normalized)) {
+          return true;
+        }
+        if (["0", "false", "no", "off", "n"].includes(normalized)) {
+          return false;
+        }
+        return true;
+      }
       if (defaultDuplicateSelect) {
         defaultDuplicateSelect.innerHTML = "";
         GLOBAL_DUPLICATE_TIEBREAKER_OPTIONS.forEach((opt) => {
@@ -7052,6 +7075,7 @@
         duplicate.duplicate_tiebreaker = normalizeDuplicateTiebreaker(
           duplicate.duplicate_tiebreaker
         );
+        duplicate.auto_build = normalizeAutoBuildEnabled(duplicate.auto_build);
         if (!Array.isArray(duplicate.plex_filter)) {
           duplicate.plex_filter = [];
         }
@@ -8156,6 +8180,7 @@
           playlist.duplicate_tiebreaker = normalizeDuplicateTiebreaker(
             playlist.duplicate_tiebreaker
           );
+          playlist.auto_build = normalizeAutoBuildEnabled(playlist.auto_build);
 
           const extras = ensureExtras(playlist);
 
@@ -8530,6 +8555,18 @@
           });
           duplicateTiebreakerLabel.appendChild(duplicateTiebreakerSelect);
 
+          const autoBuildLabel = document.createElement("label");
+          autoBuildLabel.textContent = "Auto Build";
+          const autoBuildInput = document.createElement("input");
+          autoBuildInput.type = "checkbox";
+          autoBuildInput.checked = normalizeAutoBuildEnabled(
+            playlist.auto_build
+          );
+          autoBuildInput.addEventListener("change", (event) => {
+            playlist.auto_build = !!event.target.checked;
+          });
+          autoBuildLabel.appendChild(autoBuildInput);
+
           grid.appendChild(nameLabel);
           grid.appendChild(sourceLabel);
           grid.appendChild(spotifyUrlLabel);
@@ -8537,6 +8574,7 @@
           grid.appendChild(sortLabel);
           grid.appendChild(afterSortLabel);
           grid.appendChild(duplicateTiebreakerLabel);
+          grid.appendChild(autoBuildLabel);
 
           details.appendChild(grid);
 
@@ -8762,6 +8800,7 @@
               duplicate_tiebreaker: normalizeDuplicateTiebreaker(
                 playlist.duplicate_tiebreaker
               ),
+              auto_build: normalizeAutoBuildEnabled(playlist.auto_build),
               plex_filter: (playlist.plex_filter || []).map((filter) => ({
                 field: filter.field || "",
                 operator: filter.operator || "equals",
@@ -8874,6 +8913,7 @@
               duplicate_tiebreaker: normalizeDuplicateTiebreaker(
                 playlist.duplicate_tiebreaker
               ),
+              auto_build: normalizeAutoBuildEnabled(playlist.auto_build),
               plex_filter: prepareFiltersForSave(playlist.plex_filter),
               popularity_boosts: prepareBoostsForSave(
                 playlist.popularity_boosts
@@ -8949,6 +8989,7 @@
             duplicate_tiebreaker: normalizeDuplicateTiebreaker(
               playlist.duplicate_tiebreaker
             ),
+            auto_build: normalizeAutoBuildEnabled(playlist.auto_build),
             plex_filter: prepareFiltersForSave(playlist.plex_filter),
             popularity_boosts: prepareBoostsForSave(
               playlist.popularity_boosts
@@ -9290,18 +9331,19 @@
 
       document.getElementById("addPlaylist").addEventListener("click", () => {
         const defaultSort = options.sort_fields?.[0]?.value || "";
-          const newPlaylist = {
-            name: "New Playlist",
-            limit: 0,
-            artist_limit: 0,
-            album_limit: 0,
-            year_limit: 0,
-            sort_by: defaultSort,
-            after_sort: "",
-            duplicate_tiebreaker: "",
-            plex_filter: [],
-            popularity_boosts: [],
-            extras: {},
+        const newPlaylist = {
+          name: "New Playlist",
+          limit: 0,
+          artist_limit: 0,
+          album_limit: 0,
+          year_limit: 0,
+          sort_by: defaultSort,
+          after_sort: "",
+          duplicate_tiebreaker: "",
+          auto_build: true,
+          plex_filter: [],
+          popularity_boosts: [],
+          extras: {},
           source: "plex",
           spotify_url: "",
           _originalName: "",

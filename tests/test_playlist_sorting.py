@@ -396,6 +396,78 @@ def test_save_single_playlist_persists_after_sort(tmp_path, monkeypatch):
     assert saved["playlists"]["Focus"]["after_sort"] == "alphabetical"
 
 
+def test_save_playlists_persists_playlist_auto_build_flag(tmp_path, monkeypatch):
+    from gui import save_playlists
+
+    playlist_path = tmp_path / "playlists.yml"
+    monkeypatch.setattr("gui.PLAYLISTS_PATH", playlist_path)
+
+    payload = {
+        "defaults": {},
+        "playlists": [
+            {
+                "name": "Manual Only",
+                "limit": 25,
+                "artist_limit": 0,
+                "album_limit": 0,
+                "year_limit": 0,
+                "auto_build": False,
+            }
+        ],
+    }
+
+    save_playlists(payload)
+
+    with playlist_path.open("r", encoding="utf-8") as handle:
+        saved = yaml.safe_load(handle)
+
+    assert saved["playlists"]["Manual Only"]["auto_build"] is False
+
+
+def test_load_playlists_defaults_auto_build_to_true(tmp_path, monkeypatch):
+    from gui import load_playlists
+
+    playlist_path = tmp_path / "playlists.yml"
+    monkeypatch.setattr("gui.PLAYLISTS_PATH", playlist_path)
+
+    write_yaml(
+        playlist_path,
+        {
+            "defaults": {},
+            "playlists": {
+                "No Explicit Flag": {"limit": 10},
+                "Disabled": {"limit": 10, "auto_build": False},
+            },
+        },
+    )
+
+    result = load_playlists()
+    by_name = {entry["name"]: entry for entry in result["playlists"]}
+
+    assert by_name["No Explicit Flag"]["auto_build"] is True
+    assert by_name["Disabled"]["auto_build"] is False
+
+
+def test_get_auto_build_playlist_subset_respects_playlist_override():
+    import main
+
+    playlists = {
+        "DefaultEnabled": {},
+        "ExplicitEnabled": {"auto_build": True},
+        "Disabled": {"auto_build": False},
+        "StringDisabled": {"auto_build": "no"},
+        "StringEnabled": {"auto_build": "yes"},
+    }
+
+    selected = main._get_auto_build_playlist_subset(playlists)
+
+    assert set(selected.keys()) == {
+        "DefaultEnabled",
+        "ExplicitEnabled",
+        "StringEnabled",
+    }
+
+
 def test_sort_tracks_in_place_alphabetical():
     import main
 
