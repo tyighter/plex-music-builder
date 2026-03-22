@@ -27,10 +27,25 @@ class DummyTqdm:
 class _StubPlaylist:
     def __init__(self, name, initial_items):
         self.title = name
-        self.items = list(initial_items)
+        self._items = list(initial_items)
+        self.removed_batches = []
+        self.deleted = False
 
     def addItems(self, items):
-        self.items.extend(items)
+        self._items.extend(items)
+
+    def removeItems(self, items):
+        self.removed_batches.append(list(items))
+        to_remove = {getattr(item, "ratingKey", id(item)) for item in items}
+        self._items = [
+            item for item in self._items if getattr(item, "ratingKey", id(item)) not in to_remove
+        ]
+
+    def delete(self):
+        self.deleted = True
+
+    def items(self):
+        return list(self._items)
 
     def uploadPoster(self, filepath=None):  # pragma: no cover - stub
         pass
@@ -74,6 +89,15 @@ def _prepare_playlist_build(monkeypatch, tracks):
     monkeypatch.setattr(main, "apply_playlist_cover", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "tqdm", DummyTqdm)
     return main, server
+
+
+class _ExistingPlaylistServer(_StubServer):
+    def __init__(self, tracks, existing_playlist):
+        super().__init__(tracks)
+        self._existing_playlist = existing_playlist
+
+    def playlist(self, name):
+        return self._existing_playlist
 
 
 def test_save_playlists_alphabetizes_entries(tmp_path, monkeypatch):
@@ -430,8 +454,73 @@ def test_run_playlist_build_after_sort_case_insensitive(monkeypatch):
     main._run_playlist_build("Test", config, logger, None, None)
 
     assert server.created_playlist is not None
-    titles = [track.title for track in server.created_playlist.items]
+    titles = [track.title for track in server.created_playlist.items()]
     assert titles == ["Alpha", "Beta", "Gamma"]
+
+
+def test_run_playlist_build_updates_existing_playlist_in_place(monkeypatch):
+    import main
+
+    class StubTrack:
+        def __init__(self, rating_key, title):
+            self.ratingKey = rating_key
+            self.title = title
+            self.grandparentTitle = "Artist"
+            self.parentTitle = f"Album {title}"
+
+    existing_track = StubTrack("legacy", "Legacy")
+    replacement_tracks = [
+        StubTrack("1", "Alpha"),
+        StubTrack("2", "Beta"),
+    ]
+
+    existing_playlist = _StubPlaylist("Test", [existing_track])
+    server = _ExistingPlaylistServer(replacement_tracks, existing_playlist)
+    monkeypatch.setattr(main, "get_plex_server", lambda: server)
+    monkeypatch.setattr(main, "apply_playlist_cover", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "tqdm", DummyTqdm)
+
+    logger = logging.getLogger("test_replace_in_place")
+    logger.setLevel(logging.INFO)
+    main._run_playlist_build("Test", {}, logger, None, None)
+
+    assert server.created_playlist is None
+    assert existing_playlist.deleted is False
+    assert [track.title for track in existing_playlist.items()] == ["Alpha", "Beta"]
+
+
+def test_run_playlist_build_falls_back_to_recreate_when_in_place_clear_fails(monkeypatch):
+    import main
+
+    class StubTrack:
+        def __init__(self, rating_key, title):
+            self.ratingKey = rating_key
+            self.title = title
+            self.grandparentTitle = "Artist"
+            self.parentTitle = f"Album {title}"
+
+    class _FailingClearPlaylist(_StubPlaylist):
+        def removeItems(self, items):
+            raise RuntimeError("cannot clear")
+
+    replacement_tracks = [
+        StubTrack("1", "Alpha"),
+        StubTrack("2", "Beta"),
+    ]
+
+    existing_playlist = _FailingClearPlaylist("Test", [StubTrack("legacy", "Legacy")])
+    server = _ExistingPlaylistServer(replacement_tracks, existing_playlist)
+    monkeypatch.setattr(main, "get_plex_server", lambda: server)
+    monkeypatch.setattr(main, "apply_playlist_cover", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "tqdm", DummyTqdm)
+
+    logger = logging.getLogger("test_fallback_recreate")
+    logger.setLevel(logging.INFO)
+    main._run_playlist_build("Test", {}, logger, None, None)
+
+    assert existing_playlist.deleted is True
+    assert server.created_playlist is not None
+    assert [track.title for track in server.created_playlist.items()] == ["Alpha", "Beta"]
 
 
 def test_run_playlist_build_limit_applies_before_after_sort(monkeypatch):
@@ -463,7 +552,7 @@ def test_run_playlist_build_limit_applies_before_after_sort(monkeypatch):
     main._run_playlist_build("Test", config, logger, None, None)
 
     assert server.created_playlist is not None
-    titles = [track.title for track in server.created_playlist.items]
+    titles = [track.title for track in server.created_playlist.items()]
     assert titles == ["Beta", "Gamma"]
 
 
@@ -509,7 +598,7 @@ def test_run_playlist_build_sort_by_oldest_uses_album_year(monkeypatch):
     main._run_playlist_build("Test", config, logger, None, None)
 
     assert server.created_playlist is not None
-    titles = [track.title for track in server.created_playlist.items]
+    titles = [track.title for track in server.created_playlist.items()]
     assert titles == ["Classic", "Recent", "Modern"]
 
 
@@ -553,7 +642,7 @@ def test_run_playlist_build_sort_by_oldest_uses_release_date_for_ties(monkeypatc
     main._run_playlist_build("Test", config, logger, None, None)
 
     assert server.created_playlist is not None
-    titles = [track.title for track in server.created_playlist.items]
+    titles = [track.title for track in server.created_playlist.items()]
     assert titles == ["Early", "Middle", "Late"]
 
 
@@ -592,7 +681,7 @@ def test_run_playlist_build_after_sort_newest_uses_album_year(monkeypatch):
     main._run_playlist_build("Test", config, logger, None, None)
 
     assert server.created_playlist is not None
-    titles = [track.title for track in server.created_playlist.items]
+    titles = [track.title for track in server.created_playlist.items()]
     assert titles == ["Modern", "Contemporary", "Vintage"]
 
 
@@ -637,7 +726,7 @@ def test_run_playlist_build_after_sort_newest_uses_release_date_for_ties(monkeyp
     main._run_playlist_build("Test", config, logger, None, None)
 
     assert server.created_playlist is not None
-    titles = [track.title for track in server.created_playlist.items]
+    titles = [track.title for track in server.created_playlist.items()]
     assert titles == ["Winter", "Summer", "Spring"]
 
 

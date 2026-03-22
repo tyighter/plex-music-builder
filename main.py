@@ -5822,6 +5822,39 @@ def _run_spotify_playlist_build(
     )
 
 
+def _replace_playlist_items(playlist, new_items, chunk_size, log, name):
+    """Replace playlist contents in place so downloads follow the same playlist."""
+
+    try:
+        existing_items = list(playlist.items())
+    except Exception as exc:
+        log.warning(
+            "Failed to load existing items for playlist '%s' before refresh: %s",
+            name,
+            exc,
+        )
+        existing_items = []
+
+    if existing_items:
+        try:
+            playlist.removeItems(existing_items)
+        except Exception as exc:
+            log.warning(
+                "Failed to clear existing playlist '%s' in place: %s",
+                name,
+                exc,
+            )
+            return False
+
+    for chunk in chunked(new_items, chunk_size):
+        try:
+            playlist.addItems(chunk)
+        except Exception as exc:
+            log.error(f"Failed to update playlist '{name}': {exc}")
+            raise
+    return True
+
+
 def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     if playlist_handler:
         log.debug(
@@ -6041,8 +6074,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         existing = plex_server.playlist(name)
     except Exception:
         existing = None
-    deleted_existing = False
-
     matched_tracks = []
     stream_buffer = []
     playlist_obj = None
@@ -6051,19 +6082,30 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
     playlist_update_duration = 0.0
 
     def flush_stream_buffer():
-        nonlocal playlist_obj, stream_buffer, deleted_existing, playlist_update_duration
+        nonlocal playlist_obj, stream_buffer, playlist_update_duration
         if not stream_buffer:
             return
-        if existing and not deleted_existing:
-            try:
-                existing.delete()
-            except Exception as exc:
-                log.warning(f"Failed to delete existing playlist '{name}': {exc}")
-            deleted_existing = True
         flush_start = time.perf_counter()
         try:
             if playlist_obj is None:
-                playlist_obj = plex_server.createPlaylist(name, items=list(stream_buffer))
+                if existing:
+                    replaced = _replace_playlist_items(
+                        existing,
+                        list(stream_buffer),
+                        chunk_size,
+                        log,
+                        name,
+                    )
+                    if replaced:
+                        playlist_obj = existing
+                    else:
+                        try:
+                            existing.delete()
+                        except Exception as exc:
+                            log.warning(f"Failed to delete existing playlist '{name}': {exc}")
+                        playlist_obj = plex_server.createPlaylist(name, items=list(stream_buffer))
+                else:
+                    playlist_obj = plex_server.createPlaylist(name, items=list(stream_buffer))
             else:
                 playlist_obj.addItems(list(stream_buffer))
         except Exception as exc:
@@ -6123,12 +6165,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
 
     if stream_enabled:
         flush_stream_buffer()
-        if not deleted_existing and existing:
-            try:
-                existing.delete()
-            except Exception as exc:
-                log.warning(f"Failed to delete existing playlist '{name}': {exc}")
-            deleted_existing = True
         apply_playlist_cover(playlist_obj, cover_path)
         log.info(f"Playlist '{name}' → {match_count} matching tracks")
         if match_count == 0:
@@ -6396,12 +6432,6 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
 
     log.info(f"Playlist '{name}' → {match_count} matching tracks")
 
-    if existing and not deleted_existing:
-        try:
-            existing.delete()
-        except Exception as exc:
-            log.warning(f"Failed to delete existing playlist '{name}': {exc}")
-
     if not matched_tracks:
         log.info(f"No tracks matched for '{name}'. Playlist will not be recreated.")
         total_duration = time.perf_counter() - build_start
@@ -6421,15 +6451,34 @@ def _run_playlist_build(name, config, log, playlist_handler, playlist_log_path):
         return
 
     update_start = time.perf_counter()
-    for chunk in chunked(matched_tracks, chunk_size):
-        try:
-            if playlist_obj is None:
-                playlist_obj = plex_server.createPlaylist(name, items=chunk)
-            else:
-                playlist_obj.addItems(chunk)
-        except Exception as exc:
-            log.error(f"Failed to update playlist '{name}': {exc}")
-            raise
+    if existing:
+        replaced = _replace_playlist_items(existing, matched_tracks, chunk_size, log, name)
+        if replaced:
+            playlist_obj = existing
+        else:
+            try:
+                existing.delete()
+            except Exception as exc:
+                log.warning(f"Failed to delete existing playlist '{name}': {exc}")
+            for chunk in chunked(matched_tracks, chunk_size):
+                try:
+                    if playlist_obj is None:
+                        playlist_obj = plex_server.createPlaylist(name, items=chunk)
+                    else:
+                        playlist_obj.addItems(chunk)
+                except Exception as exc:
+                    log.error(f"Failed to update playlist '{name}': {exc}")
+                    raise
+    else:
+        for chunk in chunked(matched_tracks, chunk_size):
+            try:
+                if playlist_obj is None:
+                    playlist_obj = plex_server.createPlaylist(name, items=chunk)
+                else:
+                    playlist_obj.addItems(chunk)
+            except Exception as exc:
+                log.error(f"Failed to update playlist '{name}': {exc}")
+                raise
     playlist_update_duration += time.perf_counter() - update_start
 
     apply_playlist_cover(playlist_obj, cover_path)
