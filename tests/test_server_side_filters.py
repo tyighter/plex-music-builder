@@ -161,6 +161,23 @@ class _UnionLibrary:
         return []
 
 
+class _YearRangeLibrary:
+    def __init__(self):
+        self.calls = []
+        self.search_tracks_called = False
+
+    def search(self, **kwargs):
+        self.calls.append(kwargs)
+        filters = kwargs.get("filters", {})
+        if filters.get("album.year>>") == 1969 and filters.get("album.year<<") == 1980:
+            return [_DummyTrack("in-range")]
+        return []
+
+    def searchTracks(self):
+        self.search_tracks_called = True
+        return []
+
+
 class _WildcardFailureLibrary:
     def __init__(self, not_found_exc):
         self.calls = []
@@ -437,3 +454,49 @@ def test_prefetch_tracks_handles_multiple_wildcard_filters_independently():
         {"libtype": "track", "filters": {"artist.title": "Pretty Lights"}},
         {"libtype": "track", "filters": {"album.title": "Malibu Ken"}},
     ]
+
+
+def test_server_filters_map_album_year_range_operators():
+    main = _load_main_module()
+
+    greater = main._compile_filter_entry(
+        {"field": "album.year", "operator": "greater_than", "value": 1969}
+    )
+    less = main._compile_filter_entry(
+        {"field": "album.year", "operator": "less_than", "value": 1980}
+    )
+
+    server_kwargs, server_filters, multi_filters = main._build_server_side_search_filters([greater, less])
+
+    assert server_kwargs == {}
+    assert server_filters == {"album.year>>": 1969, "album.year<<": 1980}
+    assert multi_filters == []
+
+
+def test_prefetch_tracks_applies_album_year_bracket_as_intersection():
+    main = _load_main_module()
+
+    library = _YearRangeLibrary()
+    regular_filters = [
+        main._compile_filter_entry(
+            {"field": "album.year", "operator": "greater_than", "value": 1969}
+        ),
+        main._compile_filter_entry(
+            {"field": "album.year", "operator": "less_than", "value": 1980}
+        ),
+    ]
+
+    tracks, stats = main._prefetch_tracks_for_filters(
+        library,
+        regular_filters,
+        [],
+        logging.getLogger("test"),
+        playlist_name="All Out 70s",
+    )
+
+    assert [track.ratingKey for track in tracks] == ["in-range"]
+    assert stats is not None and stats["requests"] == 1
+    assert library.calls == [
+        {"libtype": "track", "filters": {"album.year>>": 1969, "album.year<<": 1980}}
+    ]
+    assert library.search_tracks_called is False

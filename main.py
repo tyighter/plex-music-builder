@@ -4639,6 +4639,8 @@ _SERVER_FILTER_FIELD_MAP: Dict[str, Tuple[str, str]] = {
     "parentratingkey": ("filters", "album.ratingKey"),
     "album.guid": ("filters", "album.guid"),
     "parentguid": ("filters", "album.guid"),
+    "album.year": ("filters", "album.year"),
+    "parentyear": ("filters", "album.year"),
     "title": ("filters", "track.title"),
     "track.title": ("filters", "track.title"),
     "track": ("filters", "track.title"),
@@ -4689,6 +4691,13 @@ _SERVER_FILTER_FIELD_MAP: Dict[str, Tuple[str, str]] = {
     "track.duration": ("filters", "track.duration"),
     "viewoffset": ("filters", "track.viewOffset"),
     "track.viewoffset": ("filters", "track.viewOffset"),
+}
+
+_SERVER_FILTER_OPERATOR_SUFFIX: Dict[str, str] = {
+    "equals": "",
+    "contains": "",
+    "greater_than": ">>",
+    "less_than": "<<",
 }
 
 
@@ -4808,7 +4817,8 @@ def _build_server_side_search_filters(
 
     for compiled in filters:
         operator = (compiled.operator or "").lower()
-        if operator not in {"equals", "contains"}:
+        suffix = _SERVER_FILTER_OPERATOR_SUFFIX.get(operator)
+        if suffix is None:
             continue
 
         normalized = FIELD_ALIASES.get(compiled.field, compiled.field)
@@ -4822,9 +4832,11 @@ def _build_server_side_search_filters(
             continue
 
         key_type, key_name = mapping
-        effective_key = key_name
+        effective_key = f"{key_name}{suffix}"
 
         if len(values) > 1:
+            if suffix:
+                continue
             if compiled.match_all:
                 if key_type != "filters":
                     continue
