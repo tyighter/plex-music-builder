@@ -1,4 +1,5 @@
 import argparse
+import calendar
 import hashlib
 import os
 import re
@@ -161,6 +162,26 @@ PLAYLIST_CHUNK_SIZE = runtime_cfg.get("playlist_chunk_size", 200)
 MAX_WORKERS = runtime_cfg.get("max_workers", 3)
 _metadata_cache_limit_raw = runtime_cfg.get("metadata_cache_max_entries")
 METADATA_CACHE_MAX_ENTRIES = _coerce_positive_int(_metadata_cache_limit_raw) or 10000
+AUTO_BUILD_ENABLED = runtime_cfg.get("auto_build_enabled", RUN_FOREVER)
+AUTO_BUILD_FREQUENCY = _coerce_non_empty_str(
+    runtime_cfg.get("auto_build_frequency", "hourly")
+) or "hourly"
+AUTO_BUILD_TIME = _coerce_non_empty_str(runtime_cfg.get("auto_build_time", "00:00")) or "00:00"
+AUTO_BUILD_WEEKDAY = _coerce_non_empty_str(
+    runtime_cfg.get("auto_build_weekday", "monday")
+) or "monday"
+AUTO_BUILD_MONTH_DAY = _coerce_positive_int(runtime_cfg.get("auto_build_month_day")) or 1
+
+AUTO_BUILD_FREQUENCIES = {"hourly", "daily", "weekly", "monthly"}
+AUTO_BUILD_WEEKDAY_MAP = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
 
 DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest", "allow"}
 
@@ -184,6 +205,90 @@ def _normalize_duplicate_tiebreaker(value, *, allow_default_token=False):
         return text
 
     return "" if allow_default_token else None
+
+
+def _normalize_auto_build_frequency(value):
+    normalized = _coerce_non_empty_str(value)
+    if not normalized:
+        return "hourly"
+    lowered = normalized.lower()
+    if lowered in AUTO_BUILD_FREQUENCIES:
+        return lowered
+    return "hourly"
+
+
+def _parse_auto_build_time(value):
+    text = _coerce_non_empty_str(value) or "00:00"
+    try:
+        parsed = datetime.datetime.strptime(text, "%H:%M")
+    except ValueError:
+        parsed = datetime.datetime.strptime("00:00", "%H:%M")
+    return parsed.hour, parsed.minute
+
+
+def _resolve_auto_build_weekday(value):
+    text = (_coerce_non_empty_str(value) or "monday").lower()
+    return AUTO_BUILD_WEEKDAY_MAP.get(text, AUTO_BUILD_WEEKDAY_MAP["monday"])
+
+
+def _next_monthly_occurrence(now, day_of_month, run_hour, run_minute):
+    safe_day = min(max(int(day_of_month), 1), 31)
+    year = now.year
+    month = now.month
+    for _ in range(14):
+        max_day = calendar.monthrange(year, month)[1]
+        day = min(safe_day, max_day)
+        candidate = now.replace(
+            year=year,
+            month=month,
+            day=day,
+            hour=run_hour,
+            minute=run_minute,
+            second=0,
+            microsecond=0,
+        )
+        if candidate > now:
+            return candidate
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return now + datetime.timedelta(days=31)
+
+
+def compute_next_auto_build_run(
+    now,
+    frequency,
+    run_time,
+    weekly_day,
+    monthly_day,
+):
+    schedule = _normalize_auto_build_frequency(frequency)
+    hour, minute = _parse_auto_build_time(run_time)
+
+    if schedule == "hourly":
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(
+            hours=1
+        )
+        return next_hour
+
+    if schedule == "daily":
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += datetime.timedelta(days=1)
+        return candidate
+
+    if schedule == "weekly":
+        target_weekday = _resolve_auto_build_weekday(weekly_day)
+        day_delta = (target_weekday - now.weekday()) % 7
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + datetime.timedelta(
+            days=day_delta
+        )
+        if candidate <= now:
+            candidate += datetime.timedelta(days=7)
+        return candidate
+
+    return _next_monthly_occurrence(now, monthly_day, hour, minute)
 
 
 playlists_cfg = cfg.get("playlists", {}) or {}
@@ -6681,16 +6786,79 @@ if __name__ == "__main__":
         except Exception as exc:
             logger.exception(f"Error while processing playlists: {exc}")
             sys.exit(1)
-    elif RUN_FOREVER:
-        logger.info("Running in loop mode.")
+    elif AUTO_BUILD_ENABLED:
+        schedule = _normalize_auto_build_frequency(AUTO_BUILD_FREQUENCY)
+        logger.info("Automatic build scheduling enabled (%s).", schedule)
         while True:
             try:
                 run_all_playlists()
             except Exception as exc:
                 logger.exception(f"Error while processing playlists: {exc}")
-            logger.info(f"Sleeping for {REFRESH_INTERVAL} minutes before next run...")
+
+            now = datetime.datetime.now()
+            if schedule == "hourly":
+                next_run_at = compute_next_auto_build_run(
+                    now,
+                    schedule,
+                    AUTO_BUILD_TIME,
+                    AUTO_BUILD_WEEKDAY,
+                    AUTO_BUILD_MONTH_DAY,
+                )
+                sleep_seconds = max((next_run_at - now).total_seconds(), 0)
+                logger.info(
+                    "Next scheduled run at %s (top of the hour).",
+                    next_run_at.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+            elif schedule == "daily":
+                next_run_at = compute_next_auto_build_run(
+                    now,
+                    schedule,
+                    AUTO_BUILD_TIME,
+                    AUTO_BUILD_WEEKDAY,
+                    AUTO_BUILD_MONTH_DAY,
+                )
+                sleep_seconds = max((next_run_at - now).total_seconds(), 0)
+                logger.info(
+                    "Next scheduled run at %s (daily schedule).",
+                    next_run_at.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+            elif schedule == "weekly":
+                next_run_at = compute_next_auto_build_run(
+                    now,
+                    schedule,
+                    AUTO_BUILD_TIME,
+                    AUTO_BUILD_WEEKDAY,
+                    AUTO_BUILD_MONTH_DAY,
+                )
+                sleep_seconds = max((next_run_at - now).total_seconds(), 0)
+                logger.info(
+                    "Next scheduled run at %s (weekly schedule).",
+                    next_run_at.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+            elif schedule == "monthly":
+                next_run_at = compute_next_auto_build_run(
+                    now,
+                    schedule,
+                    AUTO_BUILD_TIME,
+                    AUTO_BUILD_WEEKDAY,
+                    AUTO_BUILD_MONTH_DAY,
+                )
+                sleep_seconds = max((next_run_at - now).total_seconds(), 0)
+                logger.info(
+                    "Next scheduled run at %s (monthly schedule).",
+                    next_run_at.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+            elif RUN_FOREVER:
+                logger.warning(
+                    "Unknown auto-build frequency '%s'; falling back to refresh interval.",
+                    AUTO_BUILD_FREQUENCY,
+                )
+                sleep_seconds = max(REFRESH_INTERVAL, 0) * 60
+            else:
+                sleep_seconds = max(REFRESH_INTERVAL, 0) * 60
+
             try:
-                time.sleep(max(REFRESH_INTERVAL, 0) * 60)
+                time.sleep(sleep_seconds)
             except KeyboardInterrupt:
                 logger.info("Loop interrupted by user. Exiting.")
                 break

@@ -3220,6 +3220,42 @@
         return dirty;
       }
 
+      function getConfigFieldEntry(sectionId, fieldKey) {
+        return configFieldElements.get(buildConfigFieldKey(sectionId, fieldKey)) || null;
+      }
+
+      function setConfigFieldVisibility(entry, visible) {
+        if (!entry || !entry.input) {
+          return;
+        }
+        const container = entry.input.closest(".config-field");
+        if (!container) {
+          return;
+        }
+        container.style.display = visible ? "" : "none";
+      }
+
+      function updateAutoBuildFieldVisibility() {
+        const enabledEntry = getConfigFieldEntry("runtime", "auto_build_enabled");
+        const frequencyEntry = getConfigFieldEntry("runtime", "auto_build_frequency");
+        const timeEntry = getConfigFieldEntry("runtime", "auto_build_time");
+        const weekdayEntry = getConfigFieldEntry("runtime", "auto_build_weekday");
+        const monthDayEntry = getConfigFieldEntry("runtime", "auto_build_month_day");
+
+        const enabled = enabledEntry ? Boolean(enabledEntry.input.checked) : false;
+        const frequency = frequencyEntry
+          ? String(frequencyEntry.input.value || "").toLowerCase()
+          : "";
+
+        const showTime = enabled && ["daily", "weekly", "monthly"].includes(frequency);
+        const showWeekday = enabled && frequency === "weekly";
+        const showMonthDay = enabled && frequency === "monthly";
+
+        setConfigFieldVisibility(timeEntry, showTime);
+        setConfigFieldVisibility(weekdayEntry, showWeekday);
+        setConfigFieldVisibility(monthDayEntry, showMonthDay);
+      }
+
       function createConfigField(sectionId, field) {
         if (!field || !field.key) {
           return null;
@@ -3277,6 +3313,8 @@
             let htmlInputType = "text";
             if (inputType === "password") {
               htmlInputType = "password";
+            } else if (inputType === "time") {
+              htmlInputType = "time";
             } else if (inputType === "number" || field.type === "integer" || field.type === "float") {
               htmlInputType = "number";
             }
@@ -3345,6 +3383,7 @@
         const listenEvent = inputType === "checkbox" ? "change" : inputType === "select" ? "change" : "input";
         input.addEventListener(listenEvent, () => {
           updateConfigDirtyState();
+          updateAutoBuildFieldVisibility();
         });
 
         return container;
@@ -3439,6 +3478,7 @@
           configRestartBtn.disabled = !configSupportsRestart;
         }
 
+        updateAutoBuildFieldVisibility();
         updateConfigDirtyState();
       }
 

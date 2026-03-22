@@ -9,6 +9,11 @@ logging:
 runtime:
   run_forever: true          # true = loop forever, false = run once
   cache_only: false            # true = only cache metadata and exit
+  auto_build_enabled: true     # master switch for scheduled automatic builds
+  auto_build_frequency: hourly # hourly, daily, weekly, monthly
+  auto_build_time: "00:00"     # used for daily/weekly/monthly (24h HH:MM)
+  auto_build_weekday: monday   # used when frequency is weekly
+  auto_build_month_day: 1      # used when frequency is monthly (1-31)
   refresh_interval_minutes: 60
   save_interval: 500
   max_workers: 3             # number of playlists to process in parallel

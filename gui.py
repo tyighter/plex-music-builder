@@ -291,6 +291,21 @@ CONFIG_LOG_LEVEL_OPTIONS: List[Dict[str, str]] = [
     {"value": "ERROR", "label": "Error"},
     {"value": "CRITICAL", "label": "Critical"},
 ]
+AUTO_BUILD_FREQUENCY_OPTIONS: List[Dict[str, str]] = [
+    {"value": "hourly", "label": "Hourly"},
+    {"value": "daily", "label": "Daily"},
+    {"value": "weekly", "label": "Weekly"},
+    {"value": "monthly", "label": "Monthly"},
+]
+AUTO_BUILD_WEEKDAY_OPTIONS: List[Dict[str, str]] = [
+    {"value": "monday", "label": "Monday"},
+    {"value": "tuesday", "label": "Tuesday"},
+    {"value": "wednesday", "label": "Wednesday"},
+    {"value": "thursday", "label": "Thursday"},
+    {"value": "friday", "label": "Friday"},
+    {"value": "saturday", "label": "Saturday"},
+    {"value": "sunday", "label": "Sunday"},
+]
 
 DUPLICATE_TIEBREAKER_CHOICES = {"most_popular", "oldest", "newest", "allow"}
 DEFAULT_DUPLICATE_TIEBREAKER = "most_popular"
@@ -396,6 +411,53 @@ CONFIG_FORM_DEFINITION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
                         "helper": "Automatically start building playlists when services launch.",
                     },
                     {
+                        "key": "auto_build_enabled",
+                        "label": "Enable Auto Builds",
+                        "type": "boolean",
+                        "input": "checkbox",
+                        "helper": "Turn scheduled automatic playlist building on or off.",
+                    },
+                    {
+                        "key": "auto_build_frequency",
+                        "label": "Auto Build Frequency",
+                        "type": "select",
+                        "input": "select",
+                        "default": "hourly",
+                        "options": AUTO_BUILD_FREQUENCY_OPTIONS,
+                        "helper": (
+                            "Hourly runs at the top of each hour. Daily/weekly/monthly "
+                            "schedules use the selectors below."
+                        ),
+                    },
+                    {
+                        "key": "auto_build_time",
+                        "label": "Auto Build Time",
+                        "type": "time",
+                        "input": "time",
+                        "default": "00:00",
+                        "helper": "Used for daily, weekly, and monthly schedules.",
+                    },
+                    {
+                        "key": "auto_build_weekday",
+                        "label": "Weekly Build Day",
+                        "type": "select",
+                        "input": "select",
+                        "default": "monday",
+                        "options": AUTO_BUILD_WEEKDAY_OPTIONS,
+                    },
+                    {
+                        "key": "auto_build_month_day",
+                        "label": "Monthly Build Date",
+                        "type": "integer",
+                        "input": "select",
+                        "default": 1,
+                        "options": [
+                            {"value": str(day), "label": str(day)}
+                            for day in range(1, 32)
+                        ],
+                        "helper": "If a month is shorter, the build runs on that month's last day.",
+                    },
+                    {
                         "key": "refresh_interval_minutes",
                         "label": "Refresh Interval (minutes)",
                         "type": "integer",
@@ -486,6 +548,7 @@ CONFIG_FORM_DEFINITION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
 
 _CONFIG_TRUE_VALUES = {"1", "true", "yes", "on", "y"}
 _CONFIG_FALSE_VALUES = {"0", "false", "no", "off", "n"}
+_CONFIG_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 def _coerce_config_boolean(value: Any) -> bool:
@@ -566,6 +629,20 @@ def _coerce_config_select(value: Any, field: Dict[str, Any]) -> Optional[str]:
     raise ValueError(f"Choose one of: {valid}.")
 
 
+def _coerce_config_time(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if not _CONFIG_TIME_PATTERN.match(text):
+        raise ValueError("Enter a valid time in 24-hour HH:MM format.")
+
+    return text
+
+
 def _normalize_field_display_value(value: Any, field: Dict[str, Any]) -> Any:
     input_type = field.get("input")
     if input_type == "checkbox":
@@ -642,6 +719,8 @@ def _coerce_config_field_value(value: Any, field: Dict[str, Any]) -> Optional[An
     if field_type == "float":
         coerced = _coerce_config_number(value, field, is_float=True)
         return None if coerced is None else float(coerced)
+    if field_type == "time":
+        return _coerce_config_time(value)
     if field_type == "select":
         return _coerce_config_select(value, field)
     return _coerce_config_string(value, field)
