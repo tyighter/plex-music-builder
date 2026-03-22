@@ -80,6 +80,8 @@ def test_get_config_endpoint_returns_sections(tmp_path, monkeypatch):
     runtime_fields = _fields_to_map(runtime_section)
     assert runtime_fields["run_forever"]["value"] is True
     assert runtime_fields["max_workers"]["value"] == "3"
+    assert runtime_fields["auto_build_frequency"]["value"] == "hourly"
+    assert runtime_fields["auto_build_time"]["value"] == "00:00"
 
     playlists_section = _find_section(payload, "playlists")
     assert playlists_section is None
@@ -136,6 +138,49 @@ def test_update_config_endpoint_rejects_invalid_numbers(tmp_path, monkeypatch):
     client = app.test_client()
 
     payload = {"sections": {"runtime": {"max_workers": "not-a-number"}}}
+    response = client.post(
+        "/api/config", data=json.dumps(payload), content_type="application/json"
+    )
+    assert response.status_code == 400
+    data = response.get_json()
+    assert "error" in data
+
+
+def test_update_config_endpoint_accepts_auto_build_schedule(tmp_path, monkeypatch):
+    config_data = {"runtime": {"run_forever": False}}
+    app, config_path = _prepare_app(tmp_path, monkeypatch, config_data)
+    client = app.test_client()
+
+    payload = {
+        "sections": {
+            "runtime": {
+                "auto_build_enabled": True,
+                "auto_build_frequency": "weekly",
+                "auto_build_time": "13:45",
+                "auto_build_weekday": "thursday",
+                "auto_build_month_day": "15",
+            }
+        }
+    }
+    response = client.post(
+        "/api/config", data=json.dumps(payload), content_type="application/json"
+    )
+    assert response.status_code == 200
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    runtime = saved["runtime"]
+    assert runtime["auto_build_enabled"] is True
+    assert runtime["auto_build_frequency"] == "weekly"
+    assert runtime["auto_build_time"] == "13:45"
+    assert runtime["auto_build_weekday"] == "thursday"
+    assert runtime["auto_build_month_day"] == 15
+
+
+def test_update_config_endpoint_rejects_invalid_auto_build_time(tmp_path, monkeypatch):
+    config_data = {"runtime": {}}
+    app, _ = _prepare_app(tmp_path, monkeypatch, config_data)
+    client = app.test_client()
+
+    payload = {"sections": {"runtime": {"auto_build_time": "25:99"}}}
     response = client.post(
         "/api/config", data=json.dumps(payload), content_type="application/json"
     )
