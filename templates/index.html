@@ -1988,6 +1988,48 @@
         justify-content: flex-end;
       }
 
+      .build-log-filters {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .build-log-filter-chips {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .build-log-filter-chip {
+        border: 1px solid rgba(229, 160, 13, 0.28);
+        background: rgba(229, 160, 13, 0.08);
+        color: rgba(255, 255, 255, 0.85);
+        padding: 5px 11px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+
+      .build-log-filter-chip.active {
+        background: rgba(229, 160, 13, 0.26);
+        border-color: rgba(229, 160, 13, 0.6);
+      }
+
+      .build-log-filter-search {
+        margin-left: auto;
+        min-width: 210px;
+        max-width: 320px;
+        flex: 1 1 240px;
+      }
+
+      .build-log-filter-search input {
+        width: 100%;
+      }
+
       .playlist-log-list {
         display: flex;
         flex-direction: column;
@@ -2732,6 +2774,56 @@
                     Clear Activity History
                   </button>
                 </div>
+                <div class="build-log-filters" aria-label="Activity filters">
+                  <div
+                    id="buildLogFilterChips"
+                    class="build-log-filter-chips"
+                    role="tablist"
+                    aria-label="Filter activity"
+                  >
+                    <button
+                      class="build-log-filter-chip"
+                      type="button"
+                      data-filter="all"
+                      aria-pressed="true"
+                    >
+                      All
+                    </button>
+                    <button
+                      class="build-log-filter-chip"
+                      type="button"
+                      data-filter="errors"
+                      aria-pressed="false"
+                    >
+                      Errors
+                    </button>
+                    <button
+                      class="build-log-filter-chip"
+                      type="button"
+                      data-filter="active"
+                      aria-pressed="false"
+                    >
+                      Active
+                    </button>
+                    <button
+                      class="build-log-filter-chip"
+                      type="button"
+                      data-filter="completed"
+                      aria-pressed="false"
+                    >
+                      Completed
+                    </button>
+                  </div>
+                  <label class="build-log-filter-search">
+                    <span class="visually-hidden">Search playlist activity</span>
+                    <input
+                      id="buildLogSearchInput"
+                      type="search"
+                      placeholder="Search playlist name…"
+                      aria-label="Search playlist activity by playlist name"
+                    />
+                  </label>
+                </div>
                 <div id="buildLogContainer" class="build-log-list"></div>
               </div>
             </div>
@@ -2829,6 +2921,8 @@
       );
       const clearActivityBtn = document.getElementById("clearActivityBtn");
       const stopActiveBuildsBtn = document.getElementById("stopActiveBuildsBtn");
+      const buildLogFilterChips = document.getElementById("buildLogFilterChips");
+      const buildLogSearchInput = document.getElementById("buildLogSearchInput");
       const buildLogContainer = document.getElementById("buildLogContainer");
       const playlistMessageTimeouts = new WeakMap();
       let latestBuildStatus = null;
@@ -2837,7 +2931,14 @@
         "plexMusicBuilder.activityCollapsed";
       const DISMISSED_ACTIVITY_STORAGE_KEY =
         "plexMusicBuilder.dismissedActivity";
+      const ACTIVITY_FILTER_STORAGE_KEY = "plexMusicBuilder.activityFilter";
       const MAX_DISMISSED_ACTIVITY_KEYS = 500;
+      const VALID_ACTIVITY_FILTERS = new Set([
+        "all",
+        "errors",
+        "active",
+        "completed",
+      ]);
       let isActivityCollapsed = Boolean(
         loadActivityCollapsedState() ?? false
       );
@@ -3014,7 +3115,95 @@
       let configLoading = false;
       const dismissedActivityKeys = new Set(loadDismissedActivityKeys());
       const activityEntryLastSeen = new Map();
+      const activityFilterState = loadActivityFilterState();
       let playlistSearchTerm = "";
+
+      function normalizeActivityFilter(value) {
+        const normalized = String(value ?? "")
+          .trim()
+          .toLowerCase();
+        return VALID_ACTIVITY_FILTERS.has(normalized) ? normalized : "all";
+      }
+
+      function loadActivityFilterState() {
+        const fallback = { filter: "all", search: "" };
+        if (typeof window === "undefined") {
+          return fallback;
+        }
+
+        try {
+          const storage = window.localStorage;
+          if (!storage) {
+            return fallback;
+          }
+          const rawValue = storage.getItem(ACTIVITY_FILTER_STORAGE_KEY);
+          if (!rawValue) {
+            return fallback;
+          }
+          const parsed = JSON.parse(rawValue);
+          return {
+            filter: normalizeActivityFilter(parsed?.filter),
+            search:
+              typeof parsed?.search === "string"
+                ? parsed.search.trim().toLowerCase()
+                : "",
+          };
+        } catch (error) {
+          console.warn("Unable to load activity filter state", error);
+          return fallback;
+        }
+      }
+
+      function persistActivityFilterState() {
+        if (typeof window === "undefined") {
+          return;
+        }
+
+        try {
+          const storage = window.localStorage;
+          if (!storage) {
+            return;
+          }
+          storage.setItem(
+            ACTIVITY_FILTER_STORAGE_KEY,
+            JSON.stringify({
+              filter: normalizeActivityFilter(activityFilterState.filter),
+              search:
+                typeof activityFilterState.search === "string"
+                  ? activityFilterState.search.trim().toLowerCase()
+                  : "",
+            })
+          );
+        } catch (error) {
+          console.warn("Unable to persist activity filter state", error);
+        }
+      }
+
+      function updateActivityFilterControlsUi() {
+        if (buildLogFilterChips) {
+          Array.from(
+            buildLogFilterChips.querySelectorAll("[data-filter]")
+          ).forEach((button) => {
+            const isActive =
+              normalizeActivityFilter(button.dataset.filter) ===
+              normalizeActivityFilter(activityFilterState.filter);
+            button.classList.toggle("active", isActive);
+            button.setAttribute("aria-pressed", isActive ? "true" : "false");
+          });
+        }
+
+        if (buildLogSearchInput) {
+          const current = String(buildLogSearchInput.value ?? "")
+            .trim()
+            .toLowerCase();
+          const expected = String(activityFilterState.search ?? "")
+            .trim()
+            .toLowerCase();
+          if (current !== expected) {
+            buildLogSearchInput.value = activityFilterState.search || "";
+          }
+        }
+      }
 
       function updateActivityCollapseUi() {
         const collapsed = Boolean(isActivityCollapsed);
@@ -4886,6 +5075,10 @@
         const running = Boolean(status?.running);
         const activePlaylists = getActivePlaylistNames(status);
         const activePlaylistsSet = new Set(activePlaylists);
+        const selectedFilter = normalizeActivityFilter(activityFilterState.filter);
+        const searchTerm = String(activityFilterState.search ?? "")
+          .trim()
+          .toLowerCase();
 
         const normalizeWaitingNames = (names) =>
           Array.isArray(names)
@@ -5099,7 +5292,13 @@
           const isWaiting = waitingSet.has(trimmedName);
           const cancellationInfo = playlistCancellationMessages.get(trimmedName);
           const hasCancellationMessage = Boolean(cancellationInfo);
+          const playlistResult = status?.results?.playlists?.[trimmedName] || null;
+          const hasResultError = Boolean(playlistResult?.state === "error");
           if (!entries.length && !running && !isWaiting && !hasCancellationMessage) {
+            return;
+          }
+
+          if (searchTerm && !trimmedName.toLowerCase().includes(searchTerm)) {
             return;
           }
 
@@ -5169,6 +5368,48 @@
             playlistCancellationCutoffs.delete(trimmedName);
           }
           const hadAnyRawEntries = Array.isArray(entries) && entries.length > 0;
+          const latestEntryTimestampMs = normalizedEntries.reduce((latest, entry) => {
+            const timestampMs = parseTimestampMs(entry?.timestamp);
+            if (timestampMs === null) {
+              return latest;
+            }
+            if (latest === null || timestampMs > latest) {
+              return timestampMs;
+            }
+            return latest;
+          }, null);
+          const latestTimestampMs =
+            latestEntryTimestampMs ?? (hasCancellationMessage ? nowMs : null);
+          const latestEntry = normalizedEntries.length
+            ? normalizedEntries[normalizedEntries.length - 1]
+            : null;
+          const latestEntryText =
+            typeof latestEntry?.text === "string"
+              ? latestEntry.text.toLowerCase()
+              : "";
+          const hasEntryErrorHint = Boolean(
+            latestEntryText &&
+              (latestEntryText.includes("error") ||
+                latestEntryText.includes("failed") ||
+                latestEntryText.includes("cancel"))
+          );
+          const isActiveEntry =
+            (running && activePlaylistsSet.has(trimmedName)) || isWaiting;
+          const isErrorEntry = hasResultError || hasCancellationMessage || hasEntryErrorHint;
+          const isCompletedEntry = Boolean(
+            !isActiveEntry &&
+              !isErrorEntry &&
+              (playlistResult?.state === "success" || normalizedEntries.length > 0)
+          );
+
+          const filterMatches =
+            selectedFilter === "all" ||
+            (selectedFilter === "active" && isActiveEntry) ||
+            (selectedFilter === "errors" && isErrorEntry) ||
+            (selectedFilter === "completed" && isCompletedEntry);
+          if (!filterMatches) {
+            return;
+          }
 
           let hasContent = false;
 
@@ -5328,11 +5569,29 @@
           }
 
           block.appendChild(listEl);
+          block.dataset.priorityPinned =
+            isActiveEntry || isErrorEntry ? "1" : "0";
+          block.dataset.latestTimestamp = String(latestTimestampMs ?? 0);
           playlistBlocks.push(block);
           renderedPlaylistNames.add(trimmedName);
         });
 
         if (playlistBlocks.length) {
+          playlistBlocks.sort((a, b) => {
+            const pinnedDiff =
+              Number(b.dataset.priorityPinned || "0") -
+              Number(a.dataset.priorityPinned || "0");
+            if (pinnedDiff !== 0) {
+              return pinnedDiff;
+            }
+            const tsDiff =
+              Number(b.dataset.latestTimestamp || "0") -
+              Number(a.dataset.latestTimestamp || "0");
+            if (tsDiff !== 0) {
+              return tsDiff;
+            }
+            return 0;
+          });
           renderedGroups += playlistBlocks.length;
           playlistBlocks.forEach((block) => blocksToRender.push(block));
         }
@@ -9539,6 +9798,42 @@
         });
       } else {
         updateActivityCollapseUi();
+      }
+
+      updateActivityFilterControlsUi();
+      if (buildLogFilterChips) {
+        buildLogFilterChips.addEventListener("click", (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLElement)) {
+            return;
+          }
+          const chip = target.closest("[data-filter]");
+          if (!(chip instanceof HTMLElement)) {
+            return;
+          }
+          const nextFilter = normalizeActivityFilter(chip.dataset.filter);
+          if (nextFilter === activityFilterState.filter) {
+            return;
+          }
+          activityFilterState.filter = nextFilter;
+          persistActivityFilterState();
+          updateActivityFilterControlsUi();
+          updateBuildLogsUi(latestBuildStatus);
+        });
+      }
+
+      if (buildLogSearchInput) {
+        buildLogSearchInput.addEventListener("input", (event) => {
+          const nextSearch = String(event.target?.value ?? "")
+            .trim()
+            .toLowerCase();
+          if (nextSearch === activityFilterState.search) {
+            return;
+          }
+          activityFilterState.search = nextSearch;
+          persistActivityFilterState();
+          updateBuildLogsUi(latestBuildStatus);
+        });
       }
 
       async function handleClearActivityClick() {
