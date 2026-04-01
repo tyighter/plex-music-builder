@@ -1983,6 +1983,8 @@
 
       .build-log-actions {
         display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
         justify-content: flex-end;
       }
 
@@ -2710,15 +2712,24 @@
               <div class="build-log-collapsible">
                 <div class="build-log-actions">
                   <button
+                    id="stopActiveBuildsBtn"
+                    class="playlist-log-clear danger"
+                    type="button"
+                    title="Stop all active or queued playlist builds"
+                    aria-label="Stop active builds"
+                  >
+                    Stop Active Build(s)
+                  </button>
+                  <button
                     id="clearActivityBtn"
                     class="playlist-log-clear secondary"
                     type="button"
-                    title="Dismiss all activity messages"
-                    aria-label="Dismiss all activity messages"
+                    title="Clear activity history from this panel"
+                    aria-label="Clear activity history"
                     aria-disabled="true"
                     disabled
                   >
-                    Clear All
+                    Clear Activity History
                   </button>
                 </div>
                 <div id="buildLogContainer" class="build-log-list"></div>
@@ -2817,6 +2828,7 @@
         "playlistActivityToggle"
       );
       const clearActivityBtn = document.getElementById("clearActivityBtn");
+      const stopActiveBuildsBtn = document.getElementById("stopActiveBuildsBtn");
       const buildLogContainer = document.getElementById("buildLogContainer");
       const playlistMessageTimeouts = new WeakMap();
       let latestBuildStatus = null;
@@ -5468,6 +5480,15 @@
           clearActivityBtn.setAttribute(
             "aria-disabled",
             clearActivityBtn.disabled ? "true" : "false"
+          );
+        }
+
+        if (stopActiveBuildsBtn) {
+          const canStop = Boolean(running);
+          stopActiveBuildsBtn.disabled = !canStop;
+          stopActiveBuildsBtn.setAttribute(
+            "aria-disabled",
+            stopActiveBuildsBtn.disabled ? "true" : "false"
           );
         }
       }
@@ -9527,9 +9548,32 @@
         }
 
         try {
+          dismissAllActivityEntries();
+        } finally {
+          updateBuildLogsUi(latestBuildStatus);
+        }
+      }
+
+      async function handleStopActiveBuildsClick() {
+        if (!latestBuildStatus || !latestBuildStatus.running) {
+          return;
+        }
+
+        const confirmed = window.confirm(
+          "Stop all active and queued playlist builds?"
+        );
+        if (!confirmed) {
+          return;
+        }
+
+        if (stopActiveBuildsBtn) {
+          stopActiveBuildsBtn.disabled = true;
+          stopActiveBuildsBtn.setAttribute("aria-disabled", "true");
+        }
+
+        try {
           await cancelActiveBuilds();
         } finally {
-          dismissAllActivityEntries();
           updateBuildLogsUi(latestBuildStatus);
         }
       }
@@ -9537,6 +9581,14 @@
       if (clearActivityBtn) {
         clearActivityBtn.addEventListener("click", () => {
           handleClearActivityClick().catch((error) => {
+            console.error(error);
+          });
+        });
+      }
+
+      if (stopActiveBuildsBtn) {
+        stopActiveBuildsBtn.addEventListener("click", () => {
+          handleStopActiveBuildsClick().catch((error) => {
             console.error(error);
           });
         });
