@@ -603,6 +603,25 @@
         gap: 20px;
       }
 
+      .build-status-modal-panel {
+        width: min(980px, 100%);
+        max-width: 980px;
+      }
+
+      .build-status-modal-body {
+        min-height: 0;
+        max-height: min(78vh, 860px);
+      }
+
+      .build-status-modal-body #buildStatusPanel {
+        margin: 0;
+      }
+
+      .build-status-modal-body #buildStatusLogs {
+        max-height: min(52vh, 560px);
+        overflow-y: auto;
+      }
+
       .build-status-header {
         display: flex;
         align-items: center;
@@ -2238,6 +2257,18 @@
           max-height: 90vh;
         }
 
+        .build-status-modal-panel {
+          max-height: 92vh;
+        }
+
+        .build-status-modal-body {
+          max-height: 82vh;
+        }
+
+        .build-status-modal-body #buildStatusLogs {
+          max-height: min(58vh, 520px);
+        }
+
         #addPlaylist {
           bottom: 24px;
           right: 24px;
@@ -2408,6 +2439,17 @@
           aria-label="Build all playlists"
         >
           ▶
+        </button>
+        <button
+          id="buildStatusBtn"
+          class="icon-only secondary"
+          type="button"
+          title="Open build status"
+          aria-label="Open build status"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          📊
         </button>
         <span id="message" class="message"></span>
       </div>
@@ -2618,54 +2660,75 @@
         </div>
       </div>
     </div>
-    <main>
-      <section>
-        <h2><span class="section-icon">🛠</span>Build Status</h2>
-        <div id="buildStatusPanel" class="card build-status-panel">
-          <div class="build-status-header">
-            <div class="status-info">
-              <div class="status-headline">
-                <span id="buildStatusIndicator" class="status-indicator idle"></span>
-                <div class="status-text">
-                  <div id="buildStatusText">Checking build status…</div>
-                  <div id="buildStatusMessage" class="status-message"></div>
+    <div
+      id="buildStatusOverlay"
+      class="config-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div class="config-panel build-status-modal-panel" role="document" tabindex="-1">
+        <div class="config-panel-header">
+          <h2><span class="section-icon">🛠</span>Build Status</h2>
+          <button
+            id="buildStatusCloseBtn"
+            class="icon-only secondary"
+            type="button"
+            title="Close build status"
+            aria-label="Close build status"
+            data-build-status-initial-focus
+          >
+            ✕
+          </button>
+        </div>
+        <div class="config-panel-body build-status-modal-body">
+          <div id="buildStatusPanel" class="card build-status-panel">
+            <div class="build-status-header">
+              <div class="status-info">
+                <div class="status-headline">
+                  <span id="buildStatusIndicator" class="status-indicator idle"></span>
+                  <div class="status-text">
+                    <div id="buildStatusText">Checking build status…</div>
+                    <div id="buildStatusMessage" class="status-message"></div>
+                  </div>
                 </div>
+                <div id="buildStatusMeta" class="status-meta"></div>
               </div>
-              <div id="buildStatusMeta" class="status-meta"></div>
             </div>
-          </div>
-          <div id="buildStatusLogs" class="build-status-logs">
-            <div class="build-status-logs-toolbar">
-              <button
-                id="playlistActivityToggle"
-                class="playlist-log-toggle"
-                type="button"
-                aria-expanded="true"
-              >
-                <span class="playlist-log-toggle-label">Activity</span>
-                <span class="playlist-log-toggle-icon" aria-hidden="true">▾</span>
-              </button>
-            </div>
-            <div class="build-log-collapsible">
-              <div class="build-log-actions">
+            <div id="buildStatusLogs" class="build-status-logs">
+              <div class="build-status-logs-toolbar">
                 <button
-                  id="clearActivityBtn"
-                  class="playlist-log-clear secondary"
+                  id="playlistActivityToggle"
+                  class="playlist-log-toggle"
                   type="button"
-                  title="Dismiss all activity messages"
-                  aria-label="Dismiss all activity messages"
-                  aria-disabled="true"
-                  disabled
+                  aria-expanded="true"
                 >
-                  Clear All
+                  <span class="playlist-log-toggle-label">Activity</span>
+                  <span class="playlist-log-toggle-icon" aria-hidden="true">▾</span>
                 </button>
               </div>
-              <div id="buildLogContainer" class="build-log-list"></div>
+              <div class="build-log-collapsible">
+                <div class="build-log-actions">
+                  <button
+                    id="clearActivityBtn"
+                    class="playlist-log-clear secondary"
+                    type="button"
+                    title="Dismiss all activity messages"
+                    aria-label="Dismiss all activity messages"
+                    aria-disabled="true"
+                    disabled
+                  >
+                    Clear All
+                  </button>
+                </div>
+                <div id="buildLogContainer" class="build-log-list"></div>
+              </div>
             </div>
           </div>
         </div>
-      </section>
-
+      </div>
+    </div>
+    <main>
       <section>
         <div class="playlist-header playlist-section-header">
           <div class="playlist-title">
@@ -2745,6 +2808,9 @@
       const buildStatusMessage = document.getElementById("buildStatusMessage");
       const buildStatusMeta = document.getElementById("buildStatusMeta");
       const buildToggleBtn = document.getElementById("buildToggleBtn");
+      const buildStatusBtn = document.getElementById("buildStatusBtn");
+      const buildStatusOverlay = document.getElementById("buildStatusOverlay");
+      const buildStatusCloseBtn = document.getElementById("buildStatusCloseBtn");
       const buildStatusPanel = document.getElementById("buildStatusPanel");
       const buildStatusLogs = document.getElementById("buildStatusLogs");
       const playlistActivityToggle = document.getElementById(
@@ -2925,6 +2991,7 @@
         scrollLocked: false,
       };
       let lastFocusedBeforeConfig = null;
+      let lastFocusedBeforeBuildStatus = null;
       let defaultsLastFocused = null;
       const configFieldElements = new Map();
       const configOriginalValues = new Map();
@@ -3735,6 +3802,56 @@
 
         lastFocusedBeforeConfig = null;
         clearConfigStatusMessage();
+      }
+
+      function openBuildStatusModal() {
+        if (!buildStatusOverlay) {
+          return;
+        }
+
+        lastFocusedBeforeBuildStatus = document.activeElement;
+        buildStatusOverlay.classList.add("show");
+        buildStatusOverlay.setAttribute("aria-hidden", "false");
+
+        if (buildStatusBtn) {
+          buildStatusBtn.setAttribute("aria-expanded", "true");
+        }
+
+        const focusTarget =
+          buildStatusOverlay.querySelector("[data-build-status-initial-focus]") ||
+          buildStatusOverlay.querySelector(".build-status-modal-panel") ||
+          buildStatusCloseBtn ||
+          buildStatusOverlay;
+
+        window.requestAnimationFrame(() => {
+          if (focusTarget && typeof focusTarget.focus === "function") {
+            focusTarget.focus();
+          }
+        });
+      }
+
+      function closeBuildStatusModal() {
+        if (!buildStatusOverlay) {
+          return;
+        }
+
+        buildStatusOverlay.classList.remove("show");
+        buildStatusOverlay.setAttribute("aria-hidden", "true");
+
+        if (buildStatusBtn) {
+          buildStatusBtn.setAttribute("aria-expanded", "false");
+        }
+
+        if (
+          lastFocusedBeforeBuildStatus &&
+          typeof lastFocusedBeforeBuildStatus.focus === "function"
+        ) {
+          lastFocusedBeforeBuildStatus.focus();
+        } else if (buildStatusBtn && typeof buildStatusBtn.focus === "function") {
+          buildStatusBtn.focus();
+        }
+
+        lastFocusedBeforeBuildStatus = null;
       }
 
       function parseTimestampMs(value) {
@@ -9068,6 +9185,16 @@
         });
       }
 
+      if (buildStatusBtn && buildStatusOverlay) {
+        buildStatusBtn.addEventListener("click", () => {
+          if (buildStatusOverlay.classList.contains("show")) {
+            closeBuildStatusModal();
+          } else {
+            openBuildStatusModal();
+          }
+        });
+      }
+
       if (configSaveBtn) {
         configSaveBtn.addEventListener("click", () => {
           saveConfigSettings();
@@ -9088,10 +9215,24 @@
         }
       });
 
+      if (buildStatusCloseBtn) {
+        buildStatusCloseBtn.addEventListener("click", () => {
+          closeBuildStatusModal();
+        });
+      }
+
       if (configOverlay) {
         configOverlay.addEventListener("click", (event) => {
           if (event.target === configOverlay) {
             closeConfigMenu();
+          }
+        });
+      }
+
+      if (buildStatusOverlay) {
+        buildStatusOverlay.addEventListener("click", (event) => {
+          if (event.target === buildStatusOverlay) {
+            closeBuildStatusModal();
           }
         });
       }
@@ -9245,6 +9386,12 @@
         if (coverPickerOverlay?.classList.contains("show")) {
           event.preventDefault();
           closeCoverPicker();
+          return;
+        }
+
+        if (buildStatusOverlay?.classList.contains("show")) {
+          event.preventDefault();
+          closeBuildStatusModal();
           return;
         }
 
